@@ -14,7 +14,7 @@
 <script>
 const CFG = {
   wsUrl:          'ws://localhost:21213/',
-  maxRoses:       20,
+  maxRoses:       50,
   fallSpeedMin:   1.2,
   fallSpeedMax:   2.8,
   rotSpeedMin:    0.4,
@@ -71,7 +71,7 @@ function getRose(size) {
 }
 
 function spawnRose(count) {
-  const n = Math.min(parseInt(count) || 1, 20);
+  const n = Math.min(parseInt(count) || 1, 50);
   for (let i = 0; i < n; i++) setTimeout(_spawnOne, i * 130);
 }
 window.spawnRose = spawnRose;

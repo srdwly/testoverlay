@@ -115,6 +115,18 @@ function emitParticles(x, y, n) {
 
 function update() {
   frame++;
+
+  if (frame % 300 === 0) {  // every 300 frames = ~5 seconds at 60fps
+  const resting = roses.filter(r => r.resting);
+  if (resting.length >= 50) {
+    const oldest = roses.findIndex(r => r.resting);
+    if (oldest !== -1) {
+      roses.splice(oldest, 1);
+      rebuildStack();
+    }
+  }
+}
+ 
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
     p.x += p.vx; p.y += p.vy; p.vy += 0.04; p.life--;

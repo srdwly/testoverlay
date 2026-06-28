@@ -6,7 +6,7 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; }
-  canvas { position: fixed; top: 0; left: 0; width: 480px; height: 640px; pointer-events: none; }
+  canvas { position: fixed; top: 0; left: 0; width: 480px; height: 720px; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -14,7 +14,7 @@
 <script>
 const CFG = {
   wsUrl:          'ws://localhost:21213/',
-  maxRoses:       70,
+  maxRoses:       50,
   fallSpeedMin:   1.2,
   fallSpeedMax:   2.8,
   rotSpeedMin:    0.4,
@@ -33,7 +33,7 @@ let W, H;
 
 function resize() {
   W = canvas.width  = 480;
-  H = canvas.height = 640;
+  H = canvas.height = 720;
   rebuildStack();
 }
 window.addEventListener('resize', resize);
@@ -118,7 +118,7 @@ function update() {
 
   if (frame % 300 === 0) {  // every 300 frames = ~5 seconds at 60fps
   const resting = roses.filter(r => r.resting);
-  if (resting.length >= 50) {
+  if (resting.length >= 25) {
     const oldest = roses.findIndex(r => r.resting);
     if (oldest !== -1) {
       roses.splice(oldest, 1);

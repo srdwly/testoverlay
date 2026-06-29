@@ -84,7 +84,7 @@ function _spawnOne() {
   }
   const size = 32 + Math.random() * 16;
   const center = W / 2;
-  const spread = W * 0.35; // 0.35 = how tight to center, increase for wider spread
+  const spread = W * 0.5; // 0.35 = how tight to center, increase for wider spread
   const x = Math.max(size, Math.min(W - size, center + (Math.random() - 0.5) * 2 * spread));
   roses.push({
     x, y: -size,

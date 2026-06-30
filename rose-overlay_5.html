@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Gift Overlay</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; }
+  canvas { position: fixed; top: 0; left: 0; width: 1080px; height: 1920px; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+const CFG = {
+  wsUrl:          'ws://localhost:21213/',
+  maxItems:       100,
+  despawnThreshold: 50,   // start despawning oldest once resting count reaches this
+  despawnEveryMs: 5000,   // one despawn every 5s once threshold reached
+  fallSpeedMin:   1.2,
+  fallSpeedMax:   2.8,
+  rotSpeedMin:    0.4,
+  rotSpeedMax:    2.0,
+  swayAmp:        18,
+  swayFreq:       0.018,
+  stackPad:       4,
+  particlesEvery: 2,
+  particleLife:   28,
+  COLS:           12,
+  centerSpreadRatio: 0.35, // 0 = dead center, 0.5 = fully random across width
+  maxComboSpawn:  50,
+};
+
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+let W, H;
+
+function resize() {
+  W = canvas.width  = 1080;
+  H = canvas.height = 1920;
+  rebuildStack();
+}
+window.addEventListener('resize', resize);
+
+let items      = [];
+let particles  = [];
+let stackH     = [];
+let frame      = 0;
+let lastDespawn = 0;
+
+function initStack() { stackH = new Array(CFG.COLS).fill(0); }
+function colFor(x)   { return Math.max(0, Math.min(CFG.COLS - 1, Math.floor((x / W) * CFG.COLS))); }
+
+function rebuildStack() {
+  initStack();
+  items.filter(r => r.resting).forEach(r => {
+    const col = colFor(r.x);
+    r.restY   = H - r.size * 0.5 - stackH[col];
+    stackH[col] += r.size * 0.7 + CFG.stackPad;
+  });
+}
+
+/* ── IMAGE CACHE ─────────────────────────────── */
+// Keyed by giftId. Each entry: { img: HTMLImageElement, loaded: bool }
+const giftImageCache = {};
+const FALLBACK_EMOJI = '🎁';
+
+const fallbackCache = {};
+function getFallbackImg(size) {
+  const s = Math.round(size);
+  if (fallbackCache[s]) return fallbackCache[s];
+  const oc = document.createElement('canvas');
+  oc.width = oc.height = s * 2;
+  const ox = oc.getContext('2d');
+  ox.font = `${s * 1.4}px serif`;
+  ox.textAlign = 'center';
+  ox.textBaseline = 'middle';
+  ox.fillText(FALLBACK_EMOJI, s, s);
+  fallbackCache[s] = oc;
+  return oc;
+}
+
+function loadGiftImage(giftId, url) {
+  if (giftImageCache[giftId]) return giftImageCache[giftId];
+  const entry = { img: new Image(), loaded: false };
+  entry.img.crossOrigin = 'anonymous';
+  entry.img.onload  = () => { entry.loaded = true; };
+  entry.img.onerror = () => { entry.loaded = false; };
+  entry.img.src = url;
+  giftImageCache[giftId] = entry;
+  return entry;
+}
+
+/* ── SPAWN ───────────────────────────────────── */
+function spawnGift(giftId, imageUrl, count) {
+  const n = Math.min(parseInt(count) || 1, CFG.maxComboSpawn);
+  if (imageUrl) loadGiftImage(giftId, imageUrl);
+  for (let i = 0; i < n; i++) {
+    setTimeout(() => _spawnOne(giftId), i * 130);
+  }
+}
+// Backward-compatible helper, defaults to rose-style fallback emoji
+window.spawnGift = spawnGift;
+window.spawnRose  = (count) => spawnGift(null, null, count); // legacy/manual test trigger
+
+function _spawnOne(giftId) {
+  if (items.length >= CFG.maxItems) {
+    const idx = items.findIndex(r => r.resting);
+    if (idx !== -1) { items.splice(idx, 1); rebuildStack(); }
+    else items.shift();
+  }
+  const size   = 56 + Math.random() * 24;
+  const center = W / 2;
+  const spread = W * CFG.centerSpreadRatio;
+  const x = Math.max(size, Math.min(W - size, center + (Math.random() - 0.5) * 2 * spread));
+  items.push({
+    giftId,
+    x, y: -size,
+    vy:       CFG.fallSpeedMin + Math.random() * (CFG.fallSpeedMax - CFG.fallSpeedMin),
+    rot:      Math.random() * Math.PI * 2,
+    rotSpeed: (CFG.rotSpeedMin + Math.random() * (CFG.rotSpeedMax - CFG.rotSpeedMin))
+              * (Math.random() < 0.5 ? 1 : -1) * (Math.PI / 180),
+    swayOff:  Math.random() * Math.PI * 2,
+    size, resting: false, restY: 0,
+  });
+}
+
+/* ── PARTICLES ───────────────────────────────── */
+const PETAL_COLS = ['#ff3366','#ff6699','#ff99bb','#ffccdd','#ff1144','#e8004d'];
+function emitParticles(x, y, n) {
+  for (let i = 0; i < n; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 0.3 + Math.random() * 1.1;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 0.6,
+      life: CFG.particleLife, maxLife: CFG.particleLife,
+      size: 2 + Math.random() * 3.5,
+      color: PETAL_COLS[Math.floor(Math.random() * PETAL_COLS.length)],
+    });
+  }
+}
+
+/* ── UPDATE ──────────────────────────────────── */
+function update(now) {
+  frame++;
+
+  // Threshold-based despawn: one per 5s once resting count >= threshold
+  if (now - lastDespawn >= CFG.despawnEveryMs) {
+    const restingCount = items.filter(r => r.resting).length;
+    if (restingCount >= CFG.despawnThreshold) {
+      const oldestIdx = items.findIndex(r => r.resting);
+      if (oldestIdx !== -1) {
+        items.splice(oldestIdx, 1);
+        rebuildStack();
+      }
+    }
+    lastDespawn = now;
+  }
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx; p.y += p.vy; p.vy += 0.04; p.life--;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+
+  for (let i = items.length - 1; i >= 0; i--) {
+    const r = items[i];
+    if (r.resting) { r.rot += r.rotSpeed * 0.06; continue; }
+    r.x += Math.sin(frame * CFG.swayFreq + r.swayOff) * CFG.swayAmp * 0.04;
+    r.x  = Math.max(r.size * 0.5, Math.min(W - r.size * 0.5, r.x));
+    r.y += r.vy;
+    r.rot += r.rotSpeed;
+    if (frame % CFG.particlesEvery === 0) emitParticles(r.x, r.y, 2);
+    const col   = colFor(r.x);
+    const restY = H - r.size * 0.5 - stackH[col];
+    if (r.y >= restY) {
+      r.resting = true; r.restY = restY;
+      stackH[col] += r.size * 0.7 + CFG.stackPad;
+      emitParticles(r.x, restY, 8);
+    }
+    if (r.y > H + r.size) items.splice(i, 1);
+  }
+}
+
+/* ── DRAW ────────────────────────────────────── */
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  particles.forEach(p => {
+    const t = p.life / p.maxLife;
+    ctx.globalAlpha = t * 0.85;
+    ctx.fillStyle   = p.color;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size * t, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  items.forEach(r => {
+    const cached = r.giftId != null ? giftImageCache[r.giftId] : null;
+    const useImg = cached && cached.loaded ? cached.img : getFallbackImg(r.size);
+    const half = r.size;
+
+    ctx.globalAlpha = 1;
+    ctx.save();
+    ctx.translate(r.x, r.resting ? r.restY : r.y);
+    ctx.rotate(r.rot);
+    if (!r.resting) { ctx.shadowColor = '#ff3366'; ctx.shadowBlur = 10; }
+    try {
+      ctx.drawImage(useImg, -half, -half, half * 2, half * 2);
+    } catch(e) {
+      ctx.drawImage(getFallbackImg(r.size), -half, -half, half * 2, half * 2);
+    }
+    ctx.restore();
+  });
+
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur  = 0;
+}
+
+/* ── LOOP ────────────────────────────────────── */
+function loop(now) { update(now); draw(); requestAnimationFrame(loop); }
+resize();
+requestAnimationFrame(loop);
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'r' || e.key === 'R') spawnGift(null, null, 1 + Math.floor(Math.random() * 5));
+});
+
+/* ── TIKFINITY WEBSOCKET ─────────────────────── */
+let ws, reconnectTimer;
+
+function connect() {
+  try { ws = new WebSocket(CFG.wsUrl); } catch(e) { scheduleReconnect(); return; }
+
+  ws.onopen = () => {
+    clearTimeout(reconnectTimer);
+    console.log('[Gift Overlay] Connected to Tikfinity');
+  };
+
+  ws.onmessage = (evt) => {
+    let msg;
+    try { msg = JSON.parse(evt.data); } catch { return; }
+    if (msg.event !== 'gift') return;
+
+    const d         = msg.data || {};
+    const giftId    = d.giftId ?? d.gift?.gift_id ?? null;
+    const giftName  = d.originalName || d.giftName || d.name || '';
+    const imageUrl  = d.giftPictureUrl || '';
+    const count     = parseInt(d.repeatCount || d.gift?.repeat_count || 1, 10);
+    const isStreak  = d.repeatEnd === false;
+
+    console.log(`[Gift Overlay] "${giftName}" id=${giftId} x${count} streak=${isStreak} img=${imageUrl ? 'yes' : 'no'}`);
+
+    if (isStreak) return; // wait for the streak to end so combo count is final
+
+    spawnGift(giftId, imageUrl, count);
+  };
+
+  ws.onerror = () => {};
+  ws.onclose = () => { console.log('[Gift Overlay] Disconnected, retrying...'); scheduleReconnect(); };
+}
+
+function scheduleReconnect() {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(connect, 5000);
+}
+
+connect();
+</script>
+</body>
+</html>

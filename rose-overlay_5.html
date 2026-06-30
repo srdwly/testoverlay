@@ -6,7 +6,7 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; }
-  canvas { position: fixed; top: 0; left: 0; width: 1080px; height: 1920px; pointer-events: none; }
+  canvas { position: fixed; top: 0; left: 0; width: 480px; height: 720px; pointer-events: none; }
 </style>
 </head>
 <body>
@@ -14,8 +14,8 @@
 <script>
 const CFG = {
   wsUrl:          'ws://localhost:21213/',
-  maxItems:       100,
-  despawnThreshold: 50,   // start despawning oldest once resting count reaches this
+  maxItems:       50,
+  despawnThreshold: 25,   // start despawning oldest once resting count reaches this
   despawnEveryMs: 5000,   // one despawn every 5s once threshold reached
   fallSpeedMin:   1.2,
   fallSpeedMax:   2.8,
@@ -27,7 +27,7 @@ const CFG = {
   particlesEvery: 2,
   particleLife:   28,
   COLS:           12,
-  centerSpreadRatio: 0.35, // 0 = dead center, 0.5 = fully random across width
+  centerSpreadRatio: 0.5, // 0 = dead center, 0.5 = fully random across width
   maxComboSpawn:  50,
 };
 
@@ -36,8 +36,8 @@ const ctx    = canvas.getContext('2d');
 let W, H;
 
 function resize() {
-  W = canvas.width  = 1080;
-  H = canvas.height = 1920;
+  W = canvas.width  = 480;
+  H = canvas.height = 720;
   rebuildStack();
 }
 window.addEventListener('resize', resize);
@@ -109,7 +109,7 @@ function _spawnOne(giftId) {
     if (idx !== -1) { items.splice(idx, 1); rebuildStack(); }
     else items.shift();
   }
-  const size   = 56 + Math.random() * 24;
+  const size   = 32 + Math.random() * 24;
   const center = W / 2;
   const spread = W * CFG.centerSpreadRatio;
   const x = Math.max(size, Math.min(W - size, center + (Math.random() - 0.5) * 2 * spread));

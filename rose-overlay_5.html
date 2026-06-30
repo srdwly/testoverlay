@@ -109,7 +109,7 @@ function _spawnOne(giftId) {
     if (idx !== -1) { items.splice(idx, 1); rebuildStack(); }
     else items.shift();
   }
-  const size   = 32 + Math.random() * 24;
+  const size   = 24 + Math.random() * 12;
   const center = W / 2;
   const spread = W * CFG.centerSpreadRatio;
   const x = Math.max(size, Math.min(W - size, center + (Math.random() - 0.5) * 2 * spread));

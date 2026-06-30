@@ -198,24 +198,32 @@ function connect() {
 
   ws.onopen = () => {
     clearTimeout(reconnectTimer);
+    console.log('[Rose Overlay] Connected to Tikfinity');
   };
 
-  ws.onmessage = (evt) => {
-    let msg;
-    try { msg = JSON.parse(evt.data); } catch { return; }
+ws.onmessage = (evt) => {
+  let msg;
+  try { msg = JSON.parse(evt.data); } catch { return; }
 
-    if (msg.event !== 'gift') return;
+  if (msg.event === 'gift') {
+    console.log('[Rose Overlay] Gift event:', JSON.stringify(msg.data, null, 2));
+  }
 
-    const d        = msg.data || {};
-    const giftName = d.giftName || d.name || '';
-    const count    = parseInt(d.repeatCount || d.count || 1, 10);
-    const isStreak = d.repeatEnd === false;
+  if (msg.event !== 'gift') return;
 
-    if (isStreak) return;
-    if (!isRose(giftName)) return;
+  const d        = msg.data || {};
+  const giftName = d.giftName || d.name || '';
+  const count    = parseInt(d.repeatCount || d.count || 1, 10);
+  const isStreak = d.repeatEnd === false;
 
-    spawnRose(count);
-  };
+  console.log(`[Rose Overlay] Gift: "${giftName}" x${count} streak=${isStreak}`);
+
+  if (isStreak) return;
+  if (!isRose(giftName)) return;
+
+  console.log(`[Rose Overlay] ROSE DETECTED — spawning ${count}`);
+  spawnRose(count);
+};
 
   ws.onerror  = () => {};
   ws.onclose  = () => scheduleReconnect();

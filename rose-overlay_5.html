@@ -14,8 +14,8 @@
 <script>
 const CFG = {
   wsUrl:          'ws://localhost:21213/',
-  maxItems:       50,
-  despawnThreshold: 25,   // start despawning oldest once resting count reaches this
+  maxItems:       80,
+  despawnThreshold: 20,   // start despawning oldest once resting count reaches this
   despawnEveryMs: 5000,   // one despawn every 5s once threshold reached
   fallSpeedMin:   1.2,
   fallSpeedMax:   2.8,
@@ -28,7 +28,7 @@ const CFG = {
   particleLife:   28,
   COLS:           12,
   centerSpreadRatio: 0.5, // 0 = dead center, 0.5 = fully random across width
-  maxComboSpawn:  50,
+  maxComboSpawn:  80,
 };
 
 const canvas = document.getElementById('c');
@@ -109,7 +109,7 @@ function _spawnOne(giftId) {
     if (idx !== -1) { items.splice(idx, 1); rebuildStack(); }
     else items.shift();
   }
-  const size   = 24 + Math.random() * 12;
+  const size   = 12 + Math.random() * 12;
   const center = W / 2;
   const spread = W * CFG.centerSpreadRatio;
   const x = Math.max(size, Math.min(W - size, center + (Math.random() - 0.5) * 2 * spread));

@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Star Mode Overlay</title>
+<!--
+  "MODO ESTRELLA" para TikTok LIVE Studio.
+  Se activa cuando levantas la guitarra de golpe (la mano del mástil sube rápido por encima del hombro).
+
+  PARÁMETROS (?a=1&b=2):
+    mode=all|detector|overlay   igual que heart-overlay (all = cámara + efecto en la misma página)
+    relay=ws://localhost:8765   relay para modos detector/overlay
+    debug=1                     muestra cámara, esqueleto y medidor de subida (para calibrar)
+    mirror=1                    voltear horizontalmente
+    cam=0                       índice de cámara
+    dur=6                       segundos que dura el modo estrella
+    rise=0.9                    cuánto debe subir la mano (en anchos de hombro). Menor = más fácil de activar
+    window=450                  en cuántos ms debe ocurrir la subida. Mayor = acepta subidas más lentas
+    above=-0.1                  qué tan arriba del hombro debe terminar la mano (0 = a la altura del hombro)
+    hand=any|left|right         qué mano cuenta (left/right según la imagen de la cámara sin espejo)
+    text=¡MODO ESTRELLA!        texto del cartel; text= (vacío) lo oculta
+    color=cyan|gold|purple      paleta
+
+  Prueba sin cámara: clic en la pantalla o tecla "S".
+-->
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  canvas, video { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; }
+  #cam { object-fit: cover; opacity: 0; }
+  #status {
+    position: fixed; left: 10px; top: 10px; padding: 6px 10px; border-radius: 6px; z-index: 5;
+    font: 13px/1.35 ui-monospace, Consolas, monospace; color: #fff; background: rgba(0,0,0,.65);
+    display: none; white-space: pre;
+  }
+  body.debug #cam { opacity: .55; }
+  body.debug #status { display: block; }
+</style>
+</head>
+<body>
+<video id="cam" playsinline muted></video>
+<canvas id="dbg"></canvas>
+<canvas id="fx"></canvas>
+<div id="status">iniciando…</div>
+
+<script type="module">
+// ───────────────────────── Config ─────────────────────────
+const P = new URLSearchParams(location.search);
+const num = (k, d) => (P.has(k) && P.get(k) !== '' && !isNaN(+P.get(k))) ? +P.get(k) : d;
+const CFG = {
+  mode:   P.get('mode') || 'all',
+  relay:  P.get('relay') || 'ws://localhost:8765',
+  debug:  P.get('debug') === '1',
+  mirror: P.get('mirror') === '1',
+  cam:    num('cam', 0),
+  dur:    num('dur', 6) * 1000,
+  rise:   num('rise', 0.9),
+  windowMs: num('window', 450),
+  above:  num('above', -0.1),
+  hand:   P.get('hand') || 'any',
+  text:   P.has('text') ? P.get('text') : '¡MODO ESTRELLA!',
+  cooldownMs: 1500,
+};
+const PALETTES = {
+  cyan:   { main: '#2ee6ff', glow: '#00b3ff', stars: ['#7df9ff', '#ffffff', '#ffe066', '#4dd2ff'] },
+  gold:   { main: '#ffd23f', glow: '#ff9f1c', stars: ['#fff1a8', '#ffffff', '#ffd23f', '#ffb347'] },
+  purple: { main: '#c77dff', glow: '#7b2cbf', stars: ['#e0aaff', '#ffffff', '#c77dff', '#7df9ff'] },
+};
+const PAL = PALETTES[P.get('color')] || PALETTES.cyan;
+
+if (CFG.debug) document.body.classList.add('debug');
+const statusEl = document.getElementById('status');
+const setStatus = (t) => { statusEl.textContent = t; };
+
+// ───────────────────────── Canvas ─────────────────────────
+const fx = document.getElementById('fx'), ctx = fx.getContext('2d');
+const dbg = document.getElementById('dbg'), dctx = dbg.getContext('2d');
+let W = 0, H = 0;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  W = innerWidth; H = innerHeight;
+  for (const c of [fx, dbg]) { c.width = W * dpr; c.height = H * dpr; c.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0); }
+}
+addEventListener('resize', resize); resize();
+
+const video = document.getElementById('cam');
+function toScreen(nx, ny) {
+  const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+  const s = Math.max(W / vw, H / vh), dw = vw * s, dh = vh * s;
+  if (CFG.mirror) nx = 1 - nx;
+  return [(W - dw) / 2 + nx * dw, (H - dh) / 2 + ny * dh];
+}
+
+// ───────────────────────── Sprites (estrellas con brillo pre-renderizado) ─────────────────────────
+function starPath(c, r, inner = 0.45, points = 5) {
+  c.beginPath();
+  for (let i = 0; i < points * 2; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI) / points, rr = i % 2 ? r * inner : r;
+    c.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+  }
+  c.closePath();
+}
+const SPRITE = 64;
+const sprites = PAL.stars.map((col) => {
+  const oc = document.createElement('canvas'); oc.width = oc.height = SPRITE * 2;
+  const o = oc.getContext('2d'); o.translate(SPRITE, SPRITE);
+  o.shadowColor = col; o.shadowBlur = SPRITE * 0.45; o.fillStyle = col;
+  starPath(o, SPRITE * 0.42); o.fill(); o.shadowBlur = 0;
+  o.fillStyle = 'rgba(255,255,255,.85)'; starPath(o, SPRITE * 0.18); o.fill();
+  return oc;
+});
+
+// ───────────────────────── Efecto Modo Estrella ─────────────────────────
+const star = { active: false, start: 0, end: 0, ox: 0, oy: 0, lastBolt: 0, nextBolt: 0, spawnAcc: 0 };
+const parts = [], rings = [], bolts = [];
+
+function triggerStar(x = W / 2, y = H * 0.4) {
+  const now = performance.now();
+  if (star.active) { star.end = now + CFG.dur; }           // re-activado: extiende
+  else { star.active = true; star.start = now; star.end = now + CFG.dur; }
+  star.ox = x; star.oy = y; star.flash = now;
+  rings.push({ x, y, t: 0, ttl: 0.75, w: 14 }, { x, y, t: -0.12, ttl: 0.85, w: 6 });
+  for (let i = 0; i < 45; i++) {
+    const a = Math.random() * Math.PI * 2, sp = 250 + Math.random() * 650;
+    parts.push(newStar(x, y, Math.cos(a) * sp, Math.sin(a) * sp, 14 + Math.random() * 22, 0.9 + Math.random() * 0.6, true));
+  }
+  bolts.push(makeEdgeBolt(), makeEdgeBolt());
+}
+
+function newStar(x, y, vx, vy, size, ttl, drag = false) {
+  return { x, y, vx, vy, size, ttl, t: 0, rot: Math.random() * 6.28, vr: (Math.random() - .5) * 6,
+           spr: sprites[(Math.random() * sprites.length) | 0], drag };
+}
+
+// Rayo a lo largo de un borde lateral (no tapa la cara del centro)
+function makeEdgeBolt() {
+  const left = Math.random() < 0.5;
+  const x0 = left ? W * (0.02 + Math.random() * 0.1) : W * (0.88 + Math.random() * 0.1);
+  const y0 = Math.random() * H * 0.3, y1 = H * (0.6 + Math.random() * 0.4);
+  let pts = [[x0, y0], [x0 + (Math.random() - .5) * W * 0.08, y1]];
+  for (let k = 0; k < 6; k++) {                     // desplazamiento de punto medio
+    const np = [pts[0]], amp = W * 0.06 / (k + 1);
+    for (let i = 1; i < pts.length; i++) {
+      const [ax, ay] = pts[i - 1], [bx, by] = pts[i];
+      np.push([(ax + bx) / 2 + (Math.random() - .5) * amp, (ay + by) / 2], pts[i]);
+    }
+    pts = np;
+  }
+  return { pts, t: 0, ttl: 0.22 };
+}
+
+function envelope(now) {
+  if (!star.active) return 0;
+  const a = (now - star.start) / 180, b = (star.end - now) / 900;
+  return Math.max(0, Math.min(1, a, b));
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  ctx.clearRect(0, 0, W, H);
+  if (star.active && now > star.end) star.active = false;
+  const k = envelope(now);
+  const t = (now - star.start) / 1000;
+
+  // 1) Resplandor en los bordes (pulsante)
+  if (k > 0) {
+    const pulse = 0.75 + 0.25 * Math.sin(t * 9);
+    const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.32, W / 2, H / 2, Math.hypot(W, H) * 0.55);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(0.6, hexA(PAL.glow, 0.18 * k * pulse));
+    g.addColorStop(1, hexA(PAL.main, 0.65 * k * pulse));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  }
+
+  // 2) Destello inicial
+  if (star.flash) {
+    const f = 1 - (now - star.flash) / 260;
+    if (f > 0) { ctx.fillStyle = `rgba(255,255,255,${0.45 * f})`; ctx.fillRect(0, 0, W, H); }
+  }
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  // 3) Ondas expansivas
+  for (let i = rings.length - 1; i >= 0; i--) {
+    const r = rings[i]; r.t += dt;
+    if (r.t >= r.ttl) { rings.splice(i, 1); continue; }
+    if (r.t < 0) continue;
+    const p = r.t / r.ttl, rad = easeOut(p) * Math.hypot(W, H) * 0.6;
+    ctx.strokeStyle = hexA(PAL.main, (1 - p) * 0.9); ctx.lineWidth = r.w * (1 - p) + 1;
+    ctx.shadowColor = PAL.main; ctx.shadowBlur = 20;
+    ctx.beginPath(); ctx.arc(r.x, r.y, rad, 0, Math.PI * 2); ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  // 4) Estrellas que suben desde abajo mientras dura el modo
+  if (k > 0) {
+    star.spawnAcc += dt * 32 * k;
+    while (star.spawnAcc >= 1) {
+      star.spawnAcc--;
+      const edge = Math.random() < 0.7;  // mayormente por los lados, para no tapar al guitarrista
+      const x = edge ? (Math.random() < .5 ? Math.random() * W * 0.22 : W - Math.random() * W * 0.22) : Math.random() * W;
+      parts.push(newStar(x, H + 20, (Math.random() - .5) * 40, -(220 + Math.random() * 320), 8 + Math.random() * 16, 1.4 + Math.random() * 1.2));
+    }
+  }
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const s = parts[i]; s.t += dt;
+    if (s.t >= s.ttl) { parts.splice(i, 1); continue; }
+    if (s.drag) { s.vx *= 0.93; s.vy = s.vy * 0.93 + 60 * dt; }
+    s.x += s.vx * dt; s.y += s.vy * dt; s.rot += s.vr * dt;
+    const p = s.t / s.ttl, a = p < 0.1 ? p / 0.1 : 1 - Math.max(0, (p - 0.6) / 0.4);
+    const tw = 0.75 + 0.25 * Math.sin(s.t * 18 + s.rot * 3);
+    const sz = s.size * 2 * tw;
+    ctx.globalAlpha = Math.max(0, a);
+    ctx.save(); ctx.translate(s.x, s.y); ctx.rotate(s.rot);
+    ctx.drawImage(s.spr, -sz, -sz, sz * 2, sz * 2);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+
+  // 5) Rayos en los costados
+  if (k > 0.3 && now > star.nextBolt) { bolts.push(makeEdgeBolt()); star.nextBolt = now + 280 + Math.random() * 450; }
+  for (let i = bolts.length - 1; i >= 0; i--) {
+    const b = bolts[i]; b.t += dt;
+    if (b.t >= b.ttl) { bolts.splice(i, 1); continue; }
+    const a = (1 - b.t / b.ttl) * (Math.random() < 0.3 ? 0.4 : 1);
+    for (const [w, col, blur] of [[7, PAL.glow, 25], [2.5, '#ffffff', 8]]) {
+      ctx.strokeStyle = hexA(col, a); ctx.lineWidth = w; ctx.shadowColor = PAL.main; ctx.shadowBlur = blur;
+      ctx.lineJoin = 'round'; ctx.beginPath();
+      b.pts.forEach(([x, y], j) => j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+    }
+    ctx.shadowBlur = 0;
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  // 6) Cartel
+  if (k > 0 && CFG.text) drawBanner(now, k);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+const bannerCv = document.createElement('canvas'), bctx = bannerCv.getContext('2d');
+function drawBanner(now, k) {
+  const t = (now - star.start) / 1000;
+  const pop = t < 0.35 ? easeOutBack(t / 0.35) : 1 + 0.03 * Math.sin(t * 6);
+  const fs = Math.max(28, Math.min(W * 0.085, 120));
+  const font = `900 italic ${fs}px "Arial Black", Impact, system-ui, sans-serif`;
+  bctx.font = font;
+  const tw = bctx.measureText(CFG.text).width;
+  const bw = Math.ceil(tw + fs * 2), bh = Math.ceil(fs * 2.2);
+  if (bannerCv.width !== bw || bannerCv.height !== bh) { bannerCv.width = bw; bannerCv.height = bh; }
+  const b = bctx; b.clearRect(0, 0, bw, bh);
+  b.save(); b.translate(bw / 2, bh / 2);
+  b.font = font; b.textAlign = 'center'; b.textBaseline = 'middle';
+  b.lineWidth = fs * 0.14; b.strokeStyle = '#05162e'; b.lineJoin = 'round';
+  b.strokeText(CFG.text, 0, 0);
+  const g = b.createLinearGradient(0, -fs / 2, 0, fs / 2);
+  g.addColorStop(0, '#ffffff'); g.addColorStop(0.5, PAL.main); g.addColorStop(1, PAL.glow);
+  b.shadowColor = PAL.main; b.shadowBlur = 30; b.fillStyle = g;
+  b.fillText(CFG.text, 0, 0);
+  // brillo que recorre solo las letras
+  b.shadowBlur = 0; b.globalCompositeOperation = 'source-atop';
+  const sx = ((t * 0.8) % 1.6 - 0.3) * tw - tw / 2;
+  const sh = b.createLinearGradient(sx - fs, 0, sx + fs, 0);
+  sh.addColorStop(0, 'rgba(255,255,255,0)'); sh.addColorStop(.5, 'rgba(255,255,255,.75)'); sh.addColorStop(1, 'rgba(255,255,255,0)');
+  b.fillStyle = sh; b.fillRect(-bw / 2, -bh / 2, bw, bh);
+  b.restore();
+  ctx.save();
+  ctx.translate(W / 2, H * 0.13); ctx.scale(pop, pop); ctx.rotate(-0.04);
+  ctx.globalAlpha = k;
+  ctx.drawImage(bannerCv, -bw / 2, -bh / 2);
+  ctx.restore();
+}
+
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${Math.max(0, Math.min(1, a))})`;
+}
+function easeOut(x) { return 1 - Math.pow(1 - x, 3); }
+function easeOutBack(x) { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); }
+
+// Pruebas manuales
+addEventListener('pointerdown', (e) => triggerStar(e.clientX, e.clientY));
+addEventListener('keydown', (e) => { if (e.key === 's' || e.key === 'S') triggerStar(W / 2, H * 0.4); });
+
+// ───────────────────────── Detector "guitarra arriba" ─────────────────────────
+/* Pose MediaPipe: 11/12 hombros · 13/14 codos · 15/16 muñecas.
+   Se activa cuando una muñeca:
+     - sube más de `rise` anchos de hombro dentro de `windowMs`, y
+     - termina por encima (o cerca) de la línea de los hombros.
+   La mano que rasguea se mueve rápido pero se queda abajo, así que no lo activa. */
+function makeRaiseDetector(cfg) {
+  const hist = { 15: [], 16: [] }, ema = {};
+  let lastFire = -1e9;
+  const info = { 15: { rise: 0, above: 0 }, 16: { rise: 0, above: 0 } };
+  function update(L, now) {
+    if (!L) { hist[15].length = hist[16].length = 0; return null; }
+    const ls = L[11], rs = L[12];
+    const shouldersOk = (ls.visibility ?? 1) > 0.5 && (rs.visibility ?? 1) > 0.5;
+    const scale = shouldersOk ? Math.max(0.05, Math.hypot(ls.x - rs.x, ls.y - rs.y)) : 0.25;
+    const shoulderY = shouldersOk ? (ls.y + rs.y) / 2 : 0.45;
+    let fired = null;
+    for (const w of [15, 16]) {
+      if (cfg.hand === 'left' && w !== 16) continue;   // 16 = muñeca que aparece a la izquierda de la imagen sin espejo
+      if (cfg.hand === 'right' && w !== 15) continue;
+      const p = L[w], h = hist[w];
+      if ((p.visibility ?? 1) < 0.3) { h.length = 0; delete ema[w]; continue; }
+      ema[w] = ema[w] == null ? p.y : ema[w] * 0.35 + p.y * 0.65;  // suavizado leve
+      const y = ema[w];
+      h.push({ t: now, y });
+      while (h.length && now - h[0].t > cfg.windowMs) h.shift();
+      const maxY = Math.max(...h.map(e => e.y));
+      const rise = (maxY - y) / scale;
+      const above = (shoulderY - y) / scale;
+      info[w] = { rise, above };
+      if (!fired && rise >= cfg.rise && above >= cfg.above && now - lastFire > cfg.cooldownMs) {
+        fired = { type: 'star', nx: p.x, ny: p.y, wrist: w };
+        lastFire = now; h.length = 0;
+      }
+    }
+    return fired;
+  }
+  return { update, info, get lastFire() { return lastFire; } };
+}
+const detector = makeRaiseDetector(CFG);
+window.__star = { makeRaiseDetector, triggerStar, CFG, state: star };
+
+function handleEvent(ev) {
+  if (ev.type !== 'star') return;
+  const [x, y] = toScreen(ev.nx, ev.ny);
+  triggerStar(x, y);
+}
+
+// ───────────────────────── Debug ─────────────────────────
+const trail = { 15: [], 16: [] };
+function drawDebug(L, fps) {
+  dctx.clearRect(0, 0, W, H);
+  if (!CFG.debug) return;
+  const lines = [`modo: ${CFG.mode}${CFG.mirror ? ' (espejo)' : ''}  fps: ${fps}  relay: ${relayState}`,
+                 `umbral → subida ≥ ${CFG.rise}  arriba ≥ ${CFG.above}  en ${CFG.windowMs}ms`];
+  if (L) {
+    const seg = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24]];
+    dctx.lineWidth = 3; dctx.strokeStyle = 'rgba(255,255,255,.8)';
+    for (const [a, b] of seg) {
+      const [x1, y1] = toScreen(L[a].x, L[a].y), [x2, y2] = toScreen(L[b].x, L[b].y);
+      dctx.beginPath(); dctx.moveTo(x1, y1); dctx.lineTo(x2, y2); dctx.stroke();
+    }
+    // línea de hombros
+    const sy = (L[11].y + L[12].y) / 2, [, syS] = toScreen(0.5, sy);
+    dctx.setLineDash([8, 8]); dctx.strokeStyle = 'rgba(255,220,0,.8)';
+    dctx.beginPath(); dctx.moveTo(0, syS); dctx.lineTo(W, syS); dctx.stroke(); dctx.setLineDash([]);
+    for (const w of [15, 16]) {
+      const [x, y] = toScreen(L[w].x, L[w].y);
+      trail[w].push([x, y]); if (trail[w].length > 15) trail[w].shift();
+      const inf = detector.info[w], hot = inf.rise >= CFG.rise && inf.above >= CFG.above;
+      dctx.strokeStyle = hot ? '#00ff88' : '#ff4dd2'; dctx.lineWidth = 4;
+      dctx.beginPath(); trail[w].forEach(([a, b], i) => i ? dctx.lineTo(a, b) : dctx.moveTo(a, b)); dctx.stroke();
+      dctx.fillStyle = dctx.strokeStyle; dctx.beginPath(); dctx.arc(x, y, 9, 0, 7); dctx.fill();
+      const bar = '█'.repeat(Math.max(0, Math.min(20, Math.round(inf.rise / CFG.rise * 10)))).padEnd(20, '·');
+      lines.push(`muñeca ${w === 15 ? 'A' : 'B'}: subida ${inf.rise.toFixed(2).padStart(5)} ${bar}  arriba ${inf.above.toFixed(2)}`);
+    }
+  } else lines.push('no se ve el cuerpo (encuadra hombros y manos)');
+  if (detector.lastFire > 0) lines.push(`último disparo hace ${((performance.now() - detector.lastFire) / 1000).toFixed(1)}s`);
+  setStatus(lines.join('\n'));
+}
+
+// ───────────────────────── Relay ─────────────────────────
+let relay = null, relayState = CFG.mode === 'all' ? 'no usado' : 'conectando…';
+function connectRelay() {
+  if (CFG.mode === 'all') return;
+  try { relay = new WebSocket(CFG.relay); } catch { return setTimeout(connectRelay, 2000); }
+  relay.onopen = () => { relayState = 'conectado'; };
+  relay.onclose = () => { relayState = 'desconectado'; setTimeout(connectRelay, 2000); };
+  relay.onmessage = (m) => { if (CFG.mode === 'overlay') { try { handleEvent(JSON.parse(m.data)); } catch {} } };
+}
+connectRelay();
+
+// ───────────────────────── Cámara + Pose ─────────────────────────
+async function start() {
+  if (CFG.mode === 'overlay') { setStatus('overlay: esperando modo estrella'); return; }
+  try {
+    setStatus('cargando modelo de pose…');
+    const base = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+    const { FilesetResolver, PoseLandmarker } = await import(`${base}/vision_bundle.mjs`);
+    const fileset = await FilesetResolver.forVisionTasks(`${base}/wasm`);
+    const make = (delegate) => PoseLandmarker.createFromOptions(fileset, {
+      baseOptions: {
+        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+        delegate
+      },
+      runningMode: 'VIDEO', numPoses: 1,
+      minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5
+    });
+    let pose; try { pose = await make('GPU'); } catch { pose = await make('CPU'); }
+
+    setStatus('abriendo cámara…');
+    const tmp = await navigator.mediaDevices.getUserMedia({ video: true });
+    const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+    tmp.getTracks().forEach(t => t.stop());
+    if (CFG.debug) console.log('Cámaras:', cams.map((c, i) => `${i}: ${c.label}`));
+    const id = cams[CFG.cam]?.deviceId;
+    video.srcObject = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: id ? { exact: id } : undefined, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+    });
+    await video.play();
+    if (CFG.mirror) video.style.transform = 'scaleX(-1)';
+
+    let lastVT = -1, frames = 0, fps = 0, fpsT = performance.now();
+    const loop = () => {
+      const now = performance.now();
+      if (video.currentTime !== lastVT && video.readyState >= 2) {
+        lastVT = video.currentTime;
+        const L = pose.detectForVideo(video, now).landmarks?.[0] || null;
+        const ev = detector.update(L, now);
+        if (ev) {
+          if (CFG.mode === 'all') handleEvent(ev);
+          else if (relay?.readyState === 1) relay.send(JSON.stringify(ev));
+        }
+        frames++; if (now - fpsT > 1000) { fps = frames; frames = 0; fpsT = now; }
+        drawDebug(L, fps);
+      }
+      requestAnimationFrame(loop);
+    };
+    loop();
+  } catch (e) {
+    console.error(e);
+    setStatus('⚠ ' + e.message + '\n(Clic o "S" para probar el efecto)');
+    document.body.classList.add('debug');
+  }
+}
+start();
+</script>
+</body>
+</html>

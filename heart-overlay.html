@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Finger Heart Overlay</title>
+<!--
+  Overlay "corazón coreano" (finger heart) para TikTok LIVE Studio.
+
+  MODOS (parámetro ?mode=):
+    all       (default) Esta misma página abre la cámara, detecta el gesto y dibuja los corazones.
+    detector  Abre la cámara y detecta; envía los eventos al relay (no dibuja corazones). Úsalo en Chrome.
+    overlay   No usa cámara; solo dibuja los corazones que llegan del relay. Úsalo en Live Studio.
+
+  OTROS PARÁMETROS:
+    relay=ws://localhost:8765   WebSocket del relay (relay.js) para modos detector/overlay
+    mirror=1                    Voltear horizontalmente (si tu cámara en Live Studio está en espejo)
+    debug=1                     Muestra la cámara, los puntos de la mano y el estado
+    cam=0                       Índice de la cámara si tienes varias
+    tikfinity=1                 También lanza corazones con regalos/likes de TikFinity (ws://localhost:21213)
+    hold=4                      Cuadros seguidos que debe mantenerse el gesto antes de disparar
+    sens=1                      Sensibilidad (1.2 = más permisivo, 0.8 = más estricto)
+
+  Prueba sin cámara: haz clic en cualquier parte o presiona "H".
+-->
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  #fx { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; }
+  #cam { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: cover; opacity: 0; pointer-events: none; }
+  #dbg { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; }
+  #status {
+    position: fixed; left: 10px; top: 10px; padding: 6px 10px; border-radius: 6px;
+    font: 13px/1.3 system-ui, sans-serif; color: #fff; background: rgba(0,0,0,.6); display: none; white-space: pre;
+  }
+  body.debug #cam { opacity: .55; }
+  body.debug #status { display: block; }
+</style>
+</head>
+<body>
+<video id="cam" playsinline muted></video>
+<canvas id="dbg"></canvas>
+<canvas id="fx"></canvas>
+<div id="status">iniciando…</div>
+
+<script type="module">
+// ───────────────────────── Config ─────────────────────────
+const P = new URLSearchParams(location.search);
+const MODE      = P.get('mode') || 'all';
+const RELAY     = P.get('relay') || 'ws://localhost:8765';
+const MIRROR    = P.get('mirror') === '1';
+const DEBUG     = P.get('debug') === '1';
+const CAM_INDEX = parseInt(P.get('cam') || '0', 10);
+const TIKFINITY = P.get('tikfinity') === '1';
+const HOLD      = parseInt(P.get('hold') || '4', 10);
+const SENS      = parseFloat(P.get('sens') || '1');
+const COOLDOWN_MS = 900;     // tiempo mínimo entre "estallidos"
+const STREAM_MS   = 280;     // mientras mantienes el gesto, un corazón cada X ms
+
+if (DEBUG) document.body.classList.add('debug');
+const statusEl = document.getElementById('status');
+const setStatus = (t) => { statusEl.textContent = t; };
+
+// ───────────────────────── Canvas de corazones ─────────────────────────
+const fx = document.getElementById('fx');
+const ctx = fx.getContext('2d');
+const dbg = document.getElementById('dbg');
+const dctx = dbg.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = window.devicePixelRatio || 1;
+  W = innerWidth; H = innerHeight;
+  for (const c of [fx, dbg]) { c.width = W * DPR; c.height = H * DPR; }
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  dctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+addEventListener('resize', resize); resize();
+
+const PALETTE = [
+  ['#ff4d6d', '#c9184a'], ['#ff758f', '#ff4d6d'], ['#ff8fab', '#fb6f92'],
+  ['#ff5e78', '#d90429'], ['#ffb3c6', '#ff4d6d']
+];
+const particles = [];
+
+function heartPath(c, s) {
+  // corazón centrado en (0,0) de tamaño ~s
+  c.beginPath();
+  c.moveTo(0, s * 0.3);
+  c.bezierCurveTo(-s * 0.05, s * 0.25, -s * 0.5, s * 0.05, -s * 0.5, -s * 0.2);
+  c.bezierCurveTo(-s * 0.5, -s * 0.45, -s * 0.25, -s * 0.55, 0, -s * 0.33);
+  c.bezierCurveTo(s * 0.25, -s * 0.55, s * 0.5, -s * 0.45, s * 0.5, -s * 0.2);
+  c.bezierCurveTo(s * 0.5, s * 0.05, s * 0.05, s * 0.25, 0, s * 0.3);
+  c.closePath();
+}
+
+function spawnHeart(x, y, opts = {}) {
+  const big = !!opts.big;
+  const [c1, c2] = PALETTE[(Math.random() * PALETTE.length) | 0];
+  particles.push({
+    kind: 'heart', x, y,
+    vx: (Math.random() - 0.5) * (big ? 40 : 70),
+    vy: -(big ? 120 : 160 + Math.random() * 120),
+    size: (big ? 150 : 46 + Math.random() * 34) * (opts.scale || 1),
+    rot: (Math.random() - 0.5) * 0.5, vr: (Math.random() - 0.5) * 1.2,
+    wob: Math.random() * Math.PI * 2,
+    life: 0, ttl: big ? 2.2 : 1.6 + Math.random() * 0.7,
+    c1, c2
+  });
+  // chispas
+  const n = big ? 22 : 8;
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, sp = (big ? 220 : 140) * (0.4 + Math.random());
+    particles.push({
+      kind: 'spark', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 40,
+      size: 2 + Math.random() * 3, life: 0, ttl: 0.5 + Math.random() * 0.5,
+      c1: Math.random() < 0.5 ? '#fff' : c1
+    });
+  }
+}
+
+function burst(x, y, big = false) {
+  if (big) { spawnHeart(x, y, { big: true }); for (let i = 0; i < 6; i++) setTimeout(() => spawnHeart(x + (Math.random() - .5) * 80, y, { scale: 0.8 }), i * 70); }
+  else { spawnHeart(x, y); setTimeout(() => spawnHeart(x, y, { scale: 0.7 }), 90); }
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  ctx.clearRect(0, 0, W, H);
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life += dt;
+    if (p.life >= p.ttl) { particles.splice(i, 1); continue; }
+    const t = p.life / p.ttl;
+    if (p.kind === 'heart') {
+      p.wob += dt * 4;
+      p.x += (p.vx + Math.sin(p.wob) * 30) * dt;
+      p.y += p.vy * dt;
+      p.vy *= 0.995;
+      p.rot += p.vr * dt;
+      // pop: crece rápido con rebote y luego se desvanece
+      const pop = t < 0.18 ? easeOutBack(t / 0.18) : 1 + (t - 0.18) * 0.15;
+      const alpha = t < 0.7 ? 1 : 1 - (t - 0.7) / 0.3;
+      const s = p.size * pop;
+      ctx.save();
+      ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+      ctx.globalAlpha = Math.max(0, alpha);
+      ctx.shadowColor = p.c1; ctx.shadowBlur = s * 0.35;
+      const g = ctx.createLinearGradient(0, -s * 0.5, 0, s * 0.3);
+      g.addColorStop(0, p.c1); g.addColorStop(1, p.c2);
+      ctx.fillStyle = g; heartPath(ctx, s); ctx.fill();
+      ctx.shadowBlur = 0;
+      // brillo
+      ctx.globalAlpha *= 0.55; ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.ellipse(-s * 0.24, -s * 0.24, s * 0.1, s * 0.06, -0.6, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    } else {
+      p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.96; p.vy = p.vy * 0.96 + 30 * dt;
+      ctx.globalAlpha = 1 - t; ctx.fillStyle = p.c1;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.size * (1 - t * 0.5), 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+  requestAnimationFrame(frame);
+}
+function easeOutBack(x) { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); }
+requestAnimationFrame(frame);
+
+// Pruebas manuales
+addEventListener('pointerdown', (e) => burst(e.clientX, e.clientY, e.shiftKey));
+addEventListener('keydown', (e) => {
+  if (e.key === 'h' || e.key === 'H') burst(W / 2, H * 0.6, e.shiftKey);
+});
+
+// ───────────────────────── Coordenadas cámara → pantalla ─────────────────────────
+// La cámara se dibuja con object-fit: cover; replicamos ese recorte para que el corazón
+// salga exactamente donde están los dedos.
+const video = document.getElementById('cam');
+function toScreen(nx, ny) {
+  const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+  const scale = Math.max(W / vw, H / vh);
+  const dw = vw * scale, dh = vh * scale;
+  const ox = (W - dw) / 2, oy = (H - dh) / 2;
+  if (MIRROR) nx = 1 - nx;
+  return [ox + nx * dw, oy + ny * dh];
+}
+
+// ───────────────────────── Detección del gesto ─────────────────────────
+const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+/* Landmarks MediaPipe: 0 muñeca · 1-4 pulgar · 5-8 índice · 9-12 medio · 13-16 anular · 17-20 meñique
+   Corazón coreano = punta del pulgar cruzada con el índice (cerca de su 2ª falange)
+   + medio, anular y meñique doblados. Así no se confunde con el "OK" (dedos estirados). */
+function isFingerHeart(L) {
+  const size = d(L[0], L[9]);                 // tamaño de la mano
+  if (size < 0.04) return false;              // mano demasiado lejos
+  const touch = Math.min(
+    d(L[4], L[7]), d(L[4], L[6]), d(L[4], L[8]),
+    d(L[3], L[7]), d(L[3], L[6])
+  ) / size;
+  const curled = (tip, pip) => d(L[tip], L[0]) < d(L[pip], L[0]) * 1.12 * SENS;
+  const others = [curled(12, 10), curled(16, 14), curled(20, 18)].filter(Boolean).length;
+  // el índice no debe estar completamente estirado hacia arriba lejos del pulgar
+  return touch < 0.38 * SENS && others >= 2;
+}
+
+/* Corazón grande con las dos manos: puntas de índices juntas y puntas de pulgares juntas. */
+function isTwoHandHeart(A, B) {
+  const size = (d(A[0], A[9]) + d(B[0], B[9])) / 2;
+  return d(A[8], B[8]) / size < 0.45 * SENS && d(A[4], B[4]) / size < 0.45 * SENS;
+}
+
+const state = { single: [0, 0], two: 0, lastFire: 0, lastStream: 0 };
+
+function onLandmarks(hands, now) {
+  let event = null;
+  if (hands.length === 2 && isTwoHandHeart(hands[0], hands[1])) {
+    state.two++;
+    if (state.two >= HOLD && now - state.lastFire > COOLDOWN_MS * 1.5) {
+      const A = hands[0], B = hands[1];
+      const cx = (A[8].x + B[8].x + A[4].x + B[4].x) / 4;
+      const cy = (A[8].y + B[8].y + A[4].y + B[4].y) / 4;
+      event = { type: 'heart', big: true, nx: cx, ny: cy };
+      state.lastFire = now;
+    }
+  } else state.two = 0;
+
+  hands.forEach((L, i) => {
+    if (i > 1) return;
+    if (isFingerHeart(L)) {
+      state.single[i]++;
+      const held = state.single[i] >= HOLD;
+      const nx = (L[4].x + L[7].x) / 2, ny = (L[4].y + L[7].y) / 2 - 0.02;
+      if (held && !event) {
+        if (now - state.lastFire > COOLDOWN_MS) {
+          event = { type: 'heart', big: false, nx, ny }; state.lastFire = now; state.lastStream = now;
+        } else if (now - state.lastStream > STREAM_MS) {
+          event = { type: 'heart', big: false, small: true, nx, ny }; state.lastStream = now;
+        }
+      }
+    } else state.single[i] = 0;
+  });
+  for (let i = hands.length; i < 2; i++) state.single[i] = 0;
+  return event;
+}
+
+function handleHeartEvent(ev) {
+  const [x, y] = toScreen(ev.nx, ev.ny);
+  if (ev.small) spawnHeart(x, y, { scale: 0.7 });
+  else burst(x, y, ev.big);
+}
+
+function drawDebug(hands, fps) {
+  dctx.clearRect(0, 0, W, H);
+  if (!DEBUG) return;
+  hands.forEach((L, i) => {
+    const ok = isFingerHeart(L);
+    dctx.fillStyle = ok ? '#00ff88' : '#ffd400';
+    for (const p of L) { const [x, y] = toScreen(p.x, p.y); dctx.beginPath(); dctx.arc(x, y, 4, 0, 7); dctx.fill(); }
+  });
+  setStatus(`modo: ${MODE}${MIRROR ? ' (espejo)' : ''}\nmanos: ${hands.length}  fps: ${fps}\n` +
+    `gesto: ${hands.map(isFingerHeart).map(b => b ? '❤' : '·').join(' ') || '-'}\nrelay: ${relayState}`);
+}
+
+// ───────────────────────── Relay (detector ⇄ overlay) ─────────────────────────
+let relay = null, relayState = MODE === 'all' ? 'no usado' : 'conectando…';
+function connectRelay() {
+  if (MODE === 'all') return;
+  try { relay = new WebSocket(RELAY); } catch { relayState = 'error'; return setTimeout(connectRelay, 2000); }
+  relay.onopen = () => { relayState = 'conectado'; if (MODE === 'overlay') setStatus('overlay: esperando corazones'); };
+  relay.onclose = () => { relayState = 'desconectado'; setTimeout(connectRelay, 2000); };
+  relay.onerror = () => { relayState = 'error'; };
+  relay.onmessage = (m) => {
+    if (MODE !== 'overlay') return;
+    try { const ev = JSON.parse(m.data); if (ev.type === 'heart') handleHeartEvent(ev); } catch {}
+  };
+}
+connectRelay();
+
+// ───────────────────────── TikFinity (opcional) ─────────────────────────
+function connectTikfinity() {
+  const ws = new WebSocket('ws://localhost:21213/');
+  ws.onmessage = (m) => {
+    let msg; try { msg = JSON.parse(m.data); } catch { return; }
+    const ev = msg.event, data = msg.data || {};
+    if (ev === 'gift') {
+      // misma lógica que el overlay de regalos: esperar a que termine la racha
+      if (data.repeatEnd === false) return;
+      const n = Math.min(12, parseInt(data.repeatCount || data.gift?.repeat_count || 1, 10));
+      for (let i = 0; i < n; i++) setTimeout(() => burst(W * (0.2 + Math.random() * 0.6), H * 0.85), i * 120);
+    } else if (ev === 'like') {
+      spawnHeart(W * (0.8 + Math.random() * 0.15), H * 0.92, { scale: 0.6 });
+    }
+  };
+  ws.onclose = () => setTimeout(connectTikfinity, 3000);
+}
+if (TIKFINITY) connectTikfinity();
+
+// ───────────────────────── Cámara + MediaPipe ─────────────────────────
+async function startCamera() {
+  if (MODE === 'overlay') { setStatus('overlay: esperando corazones'); return; }
+  try {
+    setStatus('cargando modelo de manos…');
+    const { FilesetResolver, HandLandmarker } =
+      await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs');
+    const fileset = await FilesetResolver.forVisionTasks('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm');
+    const make = (delegate) => HandLandmarker.createFromOptions(fileset, {
+      baseOptions: {
+        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task',
+        delegate
+      },
+      runningMode: 'VIDEO', numHands: 2,
+      minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5
+    });
+    let landmarker;
+    try { landmarker = await make('GPU'); } catch { landmarker = await make('CPU'); }
+
+    setStatus('abriendo cámara…');
+    let deviceId;
+    try {
+      const tmp = await navigator.mediaDevices.getUserMedia({ video: true });
+      const cams = (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === 'videoinput');
+      tmp.getTracks().forEach(t => t.stop());
+      deviceId = cams[CAM_INDEX]?.deviceId;
+      if (DEBUG) console.log('Cámaras:', cams.map((c, i) => `${i}: ${c.label}`));
+    } catch (e) { throw new Error('Sin permiso de cámara: ' + e.message); }
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: deviceId ? { exact: deviceId } : undefined, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+    });
+    video.srcObject = stream; await video.play();
+    if (MIRROR) video.style.transform = 'scaleX(-1)';
+
+    let lastVT = -1, frames = 0, fps = 0, fpsT = performance.now();
+    const loop = () => {
+      const now = performance.now();
+      if (video.currentTime !== lastVT && video.readyState >= 2) {
+        lastVT = video.currentTime;
+        const res = landmarker.detectForVideo(video, now);
+        const hands = res.landmarks || [];
+        const ev = onLandmarks(hands, now);
+        if (ev) {
+          if (MODE === 'all') handleHeartEvent(ev);
+          else if (relay?.readyState === 1) relay.send(JSON.stringify(ev));
+        }
+        frames++;
+        if (now - fpsT > 1000) { fps = frames; frames = 0; fpsT = now; }
+        drawDebug(hands, fps);
+      }
+      requestAnimationFrame(loop);
+    };
+    loop();
+  } catch (e) {
+    console.error(e);
+    setStatus('⚠ ' + e.message + '\n(Clic o "H" para probar la animación)');
+    document.body.classList.add('debug');
+  }
+}
+startCamera();
+</script>
+</body>
+</html>

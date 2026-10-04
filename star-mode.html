@@ -39,7 +39,7 @@
 </head>
 <body>
 <video id="cam" playsinline muted></video>
-<canvas id="dbg"></canvas>
+<canvas id="debugLayer"></canvas>
 <canvas id="fx"></canvas>
 <div id="status">iniciando…</div>
 
@@ -74,7 +74,7 @@ const setStatus = (t) => { statusEl.textContent = t; };
 
 // ───────────────────────── Canvas ─────────────────────────
 const fx = document.getElementById('fx'), ctx = fx.getContext('2d');
-const dbg = document.getElementById('dbg'), dctx = dbg.getContext('2d');
+const dbg = document.getElementById("debugLayer"), dctx = dbg.getContext('2d');
 let W = 0, H = 0;
 function resize() {
   const dpr = window.devicePixelRatio || 1;

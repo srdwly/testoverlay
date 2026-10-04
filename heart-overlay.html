@@ -27,7 +27,7 @@
   html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
   #fx { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; }
   #cam { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: cover; opacity: 0; pointer-events: none; }
-  #dbg { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; }
+  #debugLayer { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; }
   #status {
     position: fixed; left: 10px; top: 10px; padding: 6px 10px; border-radius: 6px;
     font: 13px/1.3 system-ui, sans-serif; color: #fff; background: rgba(0,0,0,.6); display: none; white-space: pre;
@@ -38,7 +38,7 @@
 </head>
 <body>
 <video id="cam" playsinline muted></video>
-<canvas id="dbg"></canvas>
+<canvas id="debugLayer"></canvas>
 <canvas id="fx"></canvas>
 <div id="status">iniciando…</div>
 
@@ -63,7 +63,7 @@ const setStatus = (t) => { statusEl.textContent = t; };
 // ───────────────────────── Canvas de corazones ─────────────────────────
 const fx = document.getElementById('fx');
 const ctx = fx.getContext('2d');
-const dbg = document.getElementById('dbg');
+const dbg = document.getElementById("debugLayer");
 const dctx = dbg.getContext('2d');
 let W = 0, H = 0, DPR = 1;
 function resize() {

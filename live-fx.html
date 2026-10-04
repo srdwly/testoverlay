@@ -86,7 +86,7 @@ if (!P.has('rotate')) P.set('rotate', '90');
 const HAND = CFG.hand;
 const SENS = num('sens', 1);
 const TWOHAND = P.get('twohand') === '1';
-const HEART_HOLD_MS = num('hearthold', 300);
+const HEART_HOLD_MS = num('hearthold', 1000);
 const COOLDOWN_MS = 900;
 const STREAM_MS = 280;
 const DEBUG = CFG.debug;
@@ -706,6 +706,57 @@ function connectTikfinity() {
 }
 if (CFG.tikfinity) connectTikfinity();
 
+// ───────────────────────── Abrir la cámara sin tocar la webcam física ─────────────────────────
+/* Antes se abría primero la cámara "por defecto" solo para pedir permiso; si OBS tenía la webcam,
+   eso daba "Device in use" y además congelaba la fuente en OBS. Ahora:
+   1) si el navegador ya conoce los nombres de las cámaras, abre DIRECTO la elegida (sin sondeo);
+   2) si recuerda la cámara que funcionó la última vez, la abre directo;
+   3) solo si no sabe nada, pide permiso una vez (y si falla, vuelve a buscar por nombre). */
+async function openCamera() {
+  const C = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+  const gum = (id) => navigator.mediaDevices.getUserMedia({ video: id ? { ...C, deviceId: { exact: id } } : C });
+  const list = async () => (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === 'videoinput');
+  const pick = (cams) => CFG.camname ? cams.find(c => (c.label || '').toLowerCase().includes(CFG.camname)) : cams[CFG.cam];
+  const KEY = 'livefx-cam-' + (CFG.camname || CFG.cam);
+  const remember = (stream) => {
+    const tr = stream.getVideoTracks()[0];
+    camLabel = tr?.label || '?';
+    try { localStorage.setItem(KEY, tr.getSettings().deviceId || ''); } catch {}
+    if (CFG.camname && !camLabel.toLowerCase().includes(CFG.camname)) {
+      stream.getTracks().forEach(t => t.stop());
+      throw new Error(`Se abrió "${camLabel}" en vez de una cámara con "${CFG.camname}".`);
+    }
+    return stream;
+  };
+
+  let cams = await list();
+  camList = cams.map((c, i) => `${i}: ${c.label || '(sin nombre)'}`);
+
+  // 1) nombres visibles → abrir directo
+  if (cams.some(c => c.label)) {
+    const chosen = pick(cams);
+    if (!chosen) throw new Error(`No encontré la cámara "${CFG.camname || CFG.cam}".`);
+    return remember(await gum(chosen.deviceId));
+  }
+  // 2) cámara recordada
+  let saved = null; try { saved = localStorage.getItem(KEY); } catch {}
+  if (saved) { try { return remember(await gum(saved)); } catch (e) { console.warn('cámara recordada falló', e); } }
+  // 3) primera vez: pedir permiso
+  try {
+    const s = await gum(null);
+    const label = s.getVideoTracks()[0]?.label || '';
+    if (!CFG.camname || label.toLowerCase().includes(CFG.camname)) return remember(s);
+    s.getTracks().forEach(t => t.stop());
+  } catch (e) {
+    if (e.name === 'NotAllowedError') throw e;   // permiso negado: no hay nada más que hacer
+  }
+  cams = await list();
+  camList = cams.map((c, i) => `${i}: ${c.label || '(sin nombre)'}`);
+  const chosen = pick(cams);
+  if (!chosen) throw new Error(`No encontré la cámara "${CFG.camname || CFG.cam}".`);
+  return remember(await gum(chosen.deviceId));
+}
+
 // ───────────────────────── Cámara + modelos ─────────────────────────
 async function start() {
   if (CFG.mode === 'overlay') { setStatus('overlay: esperando efectos del relay'); return; }
@@ -727,19 +778,7 @@ async function start() {
     })) : null;
 
     setStatus('abriendo cámara…');
-    const tmp = await navigator.mediaDevices.getUserMedia({ video: true });
-    const cams = (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === 'videoinput');
-    tmp.getTracks().forEach(t => t.stop());
-    if (CFG.debug) console.log('Cámaras:', cams.map((c, i) => `${i}: ${c.label}`));
-    camList = cams.map((c, i) => `${i}: ${c.label || '(sin nombre)'}`);
-    const byName = CFG.camname ? cams.find(c => c.label.toLowerCase().includes(CFG.camname)) : null;
-    if (CFG.camname && !byName) throw new Error(`No encontré una cámara con "${CFG.camname}". Cámaras:\n` + camList.join('\n'));
-    const chosen = byName || cams[CFG.cam];
-    camLabel = chosen?.label || '?';
-    const id = chosen?.deviceId;
-    video.srcObject = await navigator.mediaDevices.getUserMedia({
-      video: { deviceId: id ? { exact: id } : undefined, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
-    });
+    video.srcObject = await openCamera();
     await video.play();
     if (CFG.mirror) camView.style.transform = 'scaleX(-1)';
     camView.style.objectFit = FIT;

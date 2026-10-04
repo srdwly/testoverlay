@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live FX Overlay</title>
+<!--
+  LIVE FX para TikTok LIVE Studio: corazón coreano ❤ + modo estrella 🎵 en un solo overlay.
+    ❤  Corazón coreano con la mano de rasgueo, sostenido ~1 s → corazones desde los dedos
+    🎵 Mano de rasgueo por encima del hombro → modo estrella con notas musicales
+
+  Ya trae por defecto tus ajustes: rotate=90, hand=left, fit=contain, corazón sostenido 1 s, sin cartel.
+  En Live Studio basta con:  live-fx.html      ·  Para calibrar:  live-fx.html?debug=1
+
+  PARÁMETROS (todos opcionales):
+    debug=1                     cámara, esqueleto, puntos de la mano y estado
+    rotate=90                   rotación de la cámara: 0, 90, 180, 270
+    hand=left                   mano de rasgueo: left/right (lado de la imagen) · any
+    fit=contain                 contain = imagen completa · cover = llenar recortando
+    mirror=1                    voltear horizontalmente
+    cam=0                       índice de cámara
+    heart=0 / star=0            desactivar un efecto
+    -- corazón --
+    hearthold=1000              ms que hay que sostener el gesto (1000 ≈ tu hold=30)
+    sens=1                      >1 más permisivo · <1 más estricto
+    twohand=1                   también corazón grande con las dos manos
+    -- modo estrella --
+    above=0.15                  cuánto por encima del hombro debe pasar la mano
+    starhold=3                  cuadros seguidos arriba para activar
+    dur=6                       segundos que dura
+    text=                       cartel (vacío = sin cartel), ej. text=¡A ROCKEAR!
+    color=cyan|gold|purple      color del modo estrella
+    -- otros --
+    mode=all|detector|overlay   + relay=ws://localhost:8765  (si Live Studio no deja usar la cámara)
+    tikfinity=1                 corazones también con regalos/likes de TikFinity
+
+  Pruebas sin cámara: H = corazones · S = modo estrella · clic = corazones
+-->
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; }
+  #cam { opacity: 0; }
+  #status {
+    position: fixed; left: 10px; top: 10px; padding: 6px 10px; border-radius: 6px; z-index: 5;
+    font: 12px/1.35 ui-monospace, Consolas, monospace; color: #fff; background: rgba(0,0,0,.65);
+    display: none; white-space: pre;
+  }
+  body.debug #cam { opacity: .55; }
+  body.debug #status { display: block; }
+</style>
+</head>
+<body>
+<video id="vid" playsinline muted style="display:none"></video>
+<canvas id="cam"></canvas>
+<canvas id="debugLayer"></canvas>
+<canvas id="fxStar"></canvas>
+<canvas id="fxHeart"></canvas>
+<div id="status">iniciando…</div>
+
+<script type="module">
+// ───────────────────────── Config (con tus valores por defecto) ─────────────────────────
+const P = new URLSearchParams(location.search);
+const num = (k, d) => (P.has(k) && P.get(k) !== '' && !isNaN(+P.get(k))) ? +P.get(k) : d;
+const CFG = {
+  mode:   P.get('mode') || 'all',
+  relay:  P.get('relay') || 'ws://localhost:8765',
+  debug:  P.get('debug') === '1',
+  mirror: P.get('mirror') === '1',
+  cam:    num('cam', 0),
+  fit:    P.get('fit') === 'cover' ? 'cover' : 'contain',
+  hand:   P.get('hand') || 'left',
+  heartOn: P.get('heart') !== '0',
+  starOn:  P.get('star') !== '0',
+  // modo estrella
+  dur:    num('dur', 6) * 1000,
+  above:  num('above', 0.15),
+  hold:   num('starhold', 3),
+  text:   P.has('text') ? P.get('text') : '',
+  cooldownMs: 1500,
+  tikfinity: P.get('tikfinity') === '1',
+};
+if (!P.has('rotate')) P.set('rotate', '90');
+// corazón
+const HAND = CFG.hand;
+const SENS = num('sens', 1);
+const TWOHAND = P.get('twohand') === '1';
+const HEART_HOLD_MS = num('hearthold', 1000);
+const COOLDOWN_MS = 900;
+const STREAM_MS = 280;
+const DEBUG = CFG.debug;
+const FIT = CFG.fit;
+const MIRROR = CFG.mirror;
+
+const PALETTES = {
+  cyan:   { main: '#2ee6ff', glow: '#00b3ff', stars: ['#7df9ff', '#ffffff', '#ffe066', '#4dd2ff'] },
+  gold:   { main: '#ffd23f', glow: '#ff9f1c', stars: ['#fff1a8', '#ffffff', '#ffd23f', '#ffb347'] },
+  purple: { main: '#c77dff', glow: '#7b2cbf', stars: ['#e0aaff', '#ffffff', '#c77dff', '#7df9ff'] },
+};
+const PAL = PALETTES[P.get('color')] || PALETTES.cyan;
+
+if (CFG.debug) document.body.classList.add('debug');
+const statusEl = document.getElementById('status');
+const setStatus = (t) => { statusEl.textContent = t; };
+
+// ───────────────────────── Canvas ─────────────────────────
+const fxHeart = document.getElementById('fxHeart'), fxStar = document.getElementById('fxStar');
+const dbg = document.getElementById('debugLayer'), dctx = dbg.getContext('2d');
+let W = 0, H = 0;
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  W = innerWidth; H = innerHeight;
+  for (const c of [fxHeart, fxStar, dbg]) { c.width = W * dpr; c.height = H * dpr; c.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0); }
+}
+addEventListener('resize', resize); resize();
+
+// ───────────────────────── Cámara: rotación y coordenadas ─────────────────────────
+const video = document.getElementById('vid');
+const camView = document.getElementById('cam');
+// Rotación de la cámara (si está montada de lado): 0, 90, 180 o 270 grados en sentido horario
+const ROT = ((parseInt(P.get('rotate') || '0', 10) % 360) + 360) % 360;
+const frameCv = document.createElement('canvas'), fctx = frameCv.getContext('2d');
+function frameSize() {
+  const vw0 = video.videoWidth || 1280, vh0 = video.videoHeight || 720;
+  return (ROT === 90 || ROT === 270) ? [vh0, vw0] : [vw0, vh0];
+}
+function grabFrame() {            // devuelve el cuadro ya enderezado (lo que ve el detector)
+  if (!ROT) return video;
+  const [fw, fh] = frameSize();
+  if (frameCv.width !== fw || frameCv.height !== fh) { frameCv.width = fw; frameCv.height = fh; }
+  fctx.setTransform(1, 0, 0, 1, 0, 0);
+  fctx.translate(fw / 2, fh / 2); fctx.rotate(ROT * Math.PI / 180);
+  fctx.drawImage(video, -video.videoWidth / 2, -video.videoHeight / 2);
+  return frameCv;
+}
+function showFrame(src) {         // vista previa solo en modo debug
+  if (!document.body.classList.contains('debug')) return;
+  const [fw, fh] = frameSize();
+  if (camView.width !== fw || camView.height !== fh) { camView.width = fw; camView.height = fh; }
+  camView.getContext('2d').drawImage(src, 0, 0, fw, fh);
+}
+function toScreen(nx, ny) {
+  const [vw, vh] = frameSize();
+  const s = (FIT === 'contain' ? Math.min : Math.max)(W / vw, H / vh), dw = vw * s, dh = vh * s;
+  if (MIRROR) nx = 1 - nx;
+  return [(W - dw) / 2 + nx * dw, (H - dh) / 2 + ny * dh];
+}
+
+// ───────────────────────── Efecto: corazones ─────────────────────────
+const HeartFX = (() => {
+  const ctx = fxHeart.getContext('2d');
+const PALETTE = [
+  ['#ff4d6d', '#c9184a'], ['#ff758f', '#ff4d6d'], ['#ff8fab', '#fb6f92'],
+  ['#ff5e78', '#d90429'], ['#ffb3c6', '#ff4d6d']
+];
+const particles = [];
+
+function heartPath(c, s) {
+  // corazón centrado en (0,0) de tamaño ~s
+  c.beginPath();
+  c.moveTo(0, s * 0.3);
+  c.bezierCurveTo(-s * 0.05, s * 0.25, -s * 0.5, s * 0.05, -s * 0.5, -s * 0.2);
+  c.bezierCurveTo(-s * 0.5, -s * 0.45, -s * 0.25, -s * 0.55, 0, -s * 0.33);
+  c.bezierCurveTo(s * 0.25, -s * 0.55, s * 0.5, -s * 0.45, s * 0.5, -s * 0.2);
+  c.bezierCurveTo(s * 0.5, s * 0.05, s * 0.05, s * 0.25, 0, s * 0.3);
+  c.closePath();
+}
+
+function spawnHeart(x, y, opts = {}) {
+  const big = !!opts.big;
+  const [c1, c2] = PALETTE[(Math.random() * PALETTE.length) | 0];
+  particles.push({
+    kind: 'heart', x, y,
+    vx: (Math.random() - 0.5) * (big ? 40 : 70),
+    vy: -(big ? 120 : 160 + Math.random() * 120),
+    size: (big ? 150 : 46 + Math.random() * 34) * (opts.scale || 1),
+    rot: (Math.random() - 0.5) * 0.5, vr: (Math.random() - 0.5) * 1.2,
+    wob: Math.random() * Math.PI * 2,
+    life: 0, ttl: big ? 2.2 : 1.6 + Math.random() * 0.7,
+    c1, c2
+  });
+  // chispas
+  const n = big ? 22 : 8;
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, sp = (big ? 220 : 140) * (0.4 + Math.random());
+    particles.push({
+      kind: 'spark', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 40,
+      size: 2 + Math.random() * 3, life: 0, ttl: 0.5 + Math.random() * 0.5,
+      c1: Math.random() < 0.5 ? '#fff' : c1
+    });
+  }
+}
+
+function burst(x, y, big = false) {
+  if (big) { spawnHeart(x, y, { big: true }); for (let i = 0; i < 6; i++) setTimeout(() => spawnHeart(x + (Math.random() - .5) * 80, y, { scale: 0.8 }), i * 70); }
+  else { spawnHeart(x, y); setTimeout(() => spawnHeart(x, y, { scale: 0.7 }), 90); }
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  ctx.clearRect(0, 0, W, H);
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.life += dt;
+    if (p.life >= p.ttl) { particles.splice(i, 1); continue; }
+    const t = p.life / p.ttl;
+    if (p.kind === 'heart') {
+      p.wob += dt * 4;
+      p.x += (p.vx + Math.sin(p.wob) * 30) * dt;
+      p.y += p.vy * dt;
+      p.vy *= 0.995;
+      p.rot += p.vr * dt;
+      // pop: crece rápido con rebote y luego se desvanece
+      const pop = t < 0.18 ? easeOutBack(t / 0.18) : 1 + (t - 0.18) * 0.15;
+      const alpha = t < 0.7 ? 1 : 1 - (t - 0.7) / 0.3;
+      const s = p.size * pop;
+      ctx.save();
+      ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+      ctx.globalAlpha = Math.max(0, alpha);
+      ctx.shadowColor = p.c1; ctx.shadowBlur = s * 0.35;
+      const g = ctx.createLinearGradient(0, -s * 0.5, 0, s * 0.3);
+      g.addColorStop(0, p.c1); g.addColorStop(1, p.c2);
+      ctx.fillStyle = g; heartPath(ctx, s); ctx.fill();
+      ctx.shadowBlur = 0;
+      // brillo
+      ctx.globalAlpha *= 0.55; ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.ellipse(-s * 0.24, -s * 0.24, s * 0.1, s * 0.06, -0.6, 0, Math.PI * 2); ctx.fill();
+      ctx.restore();
+    } else {
+      p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.96; p.vy = p.vy * 0.96 + 30 * dt;
+      ctx.globalAlpha = 1 - t; ctx.fillStyle = p.c1;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.size * (1 - t * 0.5), 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+  }
+  requestAnimationFrame(frame);
+}
+function easeOutBack(x) { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); }
+requestAnimationFrame(frame);
+
+  return { burst, spawnHeart };
+})();
+
+// ───────────────────────── Efecto: modo estrella ─────────────────────────
+const StarFX = (() => {
+  const ctx = fxStar.getContext('2d');
+// ───────────────────────── Sprites (estrellas con brillo pre-renderizado) ─────────────────────────
+function starPath(c, r, inner = 0.45, points = 5) {
+  c.beginPath();
+  for (let i = 0; i < points * 2; i++) {
+    const a = -Math.PI / 2 + (i * Math.PI) / points, rr = i % 2 ? r * inner : r;
+    c.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+  }
+  c.closePath();
+}
+const SPRITE = 64;
+// Dibuja una nota musical centrada en (0,0) con altura ~r*2. type: 0 negra · 1 corchea · 2 dos corcheas unidas
+function notePath(o, r, type) {
+  const head = (cx, cy) => { o.beginPath(); o.ellipse(cx, cy, r * 0.32, r * 0.23, -0.45, 0, Math.PI * 2); o.fill(); };
+  const lw = r * 0.1;
+  if (type === 2) {
+    const x1 = -r * 0.42, x2 = r * 0.5, y1 = r * 0.62, y2 = r * 0.5, top1 = -r * 0.75, top2 = -r * 0.87;
+    head(x1, y1); head(x2, y2);
+    o.fillRect(x1 + r * 0.27, top1, lw, y1 - top1 - r * 0.05);
+    o.fillRect(x2 + r * 0.27, top2, lw, y2 - top2 - r * 0.05);
+    o.beginPath(); o.moveTo(x1 + r * 0.27, top1); o.lineTo(x2 + r * 0.27 + lw, top2);
+    o.lineTo(x2 + r * 0.27 + lw, top2 + r * 0.22); o.lineTo(x1 + r * 0.27, top1 + r * 0.22); o.closePath(); o.fill();
+  } else {
+    const hx = -r * 0.15, hy = r * 0.6, sx = hx + r * 0.27, top = -r * 0.85;
+    head(hx, hy);
+    o.fillRect(sx, top, lw, hy - top - r * 0.05);
+    if (type === 1) {
+      o.beginPath(); o.moveTo(sx + lw, top);
+      o.bezierCurveTo(sx + r * 0.25, top + r * 0.3, sx + r * 0.7, top + r * 0.35, sx + r * 0.45, top + r * 0.95);
+      o.bezierCurveTo(sx + r * 0.55, top + r * 0.5, sx + r * 0.3, top + r * 0.42, sx + lw, top + r * 0.35);
+      o.closePath(); o.fill();
+    }
+  }
+}
+const sprites = [];
+for (const col of PAL.stars) for (const type of [0, 1, 1, 2]) {
+  const oc = document.createElement('canvas'); oc.width = oc.height = SPRITE * 2;
+  const o = oc.getContext('2d'); o.translate(SPRITE, SPRITE);
+  o.shadowColor = col; o.shadowBlur = SPRITE * 0.35; o.fillStyle = col;
+  notePath(o, SPRITE * 0.62, type);
+  o.shadowBlur = 0; notePath(o, SPRITE * 0.62, type);
+  sprites.push(oc);
+}
+
+// ───────────────────────── Efecto Modo Estrella ─────────────────────────
+const star = { active: false, start: 0, end: 0, ox: 0, oy: 0, lastBolt: 0, nextBolt: 0, spawnAcc: 0 };
+const parts = [], rings = [], bolts = [];
+
+function triggerStar(x = W / 2, y = H * 0.4) {
+  const now = performance.now();
+  if (star.active) { star.end = now + CFG.dur; }           // re-activado: extiende
+  else { star.active = true; star.start = now; star.end = now + CFG.dur; }
+  star.ox = x; star.oy = y; star.flash = now;
+  rings.push({ x, y, t: 0, ttl: 0.75, w: 14 }, { x, y, t: -0.12, ttl: 0.85, w: 6 });
+  for (let i = 0; i < 45; i++) {
+    const a = Math.random() * Math.PI * 2, sp = 250 + Math.random() * 650;
+    parts.push(newStar(x, y, Math.cos(a) * sp, Math.sin(a) * sp, 14 + Math.random() * 22, 0.9 + Math.random() * 0.6, true));
+  }
+  bolts.push(makeEdgeBolt(), makeEdgeBolt());
+}
+
+function newStar(x, y, vx, vy, size, ttl, drag = false) {
+  return { x, y, vx, vy, size, ttl, t: 0, rot: (Math.random() - .5) * 0.6, vr: (Math.random() - .5) * 0.5,
+           spr: sprites[(Math.random() * sprites.length) | 0], drag };
+}
+
+// Rayo a lo largo de un borde lateral (no tapa la cara del centro)
+function makeEdgeBolt() {
+  const left = Math.random() < 0.5;
+  const x0 = left ? W * (0.02 + Math.random() * 0.1) : W * (0.88 + Math.random() * 0.1);
+  const y0 = Math.random() * H * 0.3, y1 = H * (0.6 + Math.random() * 0.4);
+  let pts = [[x0, y0], [x0 + (Math.random() - .5) * W * 0.08, y1]];
+  for (let k = 0; k < 6; k++) {                     // desplazamiento de punto medio
+    const np = [pts[0]], amp = W * 0.06 / (k + 1);
+    for (let i = 1; i < pts.length; i++) {
+      const [ax, ay] = pts[i - 1], [bx, by] = pts[i];
+      np.push([(ax + bx) / 2 + (Math.random() - .5) * amp, (ay + by) / 2], pts[i]);
+    }
+    pts = np;
+  }
+  return { pts, t: 0, ttl: 0.22 };
+}
+
+function envelope(now) {
+  if (!star.active) return 0;
+  const a = (now - star.start) / 180, b = (star.end - now) / 900;
+  return Math.max(0, Math.min(1, a, b));
+}
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  ctx.clearRect(0, 0, W, H);
+  if (star.active && now > star.end) star.active = false;
+  const k = envelope(now);
+  const t = (now - star.start) / 1000;
+
+  // 1) Resplandor en los bordes (pulsante)
+  if (k > 0) {
+    const pulse = 0.75 + 0.25 * Math.sin(t * 9);
+    const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.32, W / 2, H / 2, Math.hypot(W, H) * 0.55);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(0.6, hexA(PAL.glow, 0.18 * k * pulse));
+    g.addColorStop(1, hexA(PAL.main, 0.65 * k * pulse));
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  }
+
+  // 2) Destello inicial
+  if (star.flash) {
+    const f = 1 - (now - star.flash) / 260;
+    if (f > 0) { ctx.fillStyle = `rgba(255,255,255,${0.45 * f})`; ctx.fillRect(0, 0, W, H); }
+  }
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  // 3) Ondas expansivas
+  for (let i = rings.length - 1; i >= 0; i--) {
+    const r = rings[i]; r.t += dt;
+    if (r.t >= r.ttl) { rings.splice(i, 1); continue; }
+    if (r.t < 0) continue;
+    const p = r.t / r.ttl, rad = easeOut(p) * Math.hypot(W, H) * 0.6;
+    ctx.strokeStyle = hexA(PAL.main, (1 - p) * 0.9); ctx.lineWidth = r.w * (1 - p) + 1;
+    ctx.shadowColor = PAL.main; ctx.shadowBlur = 20;
+    ctx.beginPath(); ctx.arc(r.x, r.y, rad, 0, Math.PI * 2); ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  // 4) Estrellas que suben desde abajo mientras dura el modo
+  if (k > 0) {
+    star.spawnAcc += dt * 32 * k;
+    while (star.spawnAcc >= 1) {
+      star.spawnAcc--;
+      const edge = Math.random() < 0.7;  // mayormente por los lados, para no tapar al guitarrista
+      const x = edge ? (Math.random() < .5 ? Math.random() * W * 0.22 : W - Math.random() * W * 0.22) : Math.random() * W;
+      parts.push(newStar(x, H + 20, (Math.random() - .5) * 40, -(220 + Math.random() * 320), 8 + Math.random() * 16, 1.4 + Math.random() * 1.2));
+    }
+  }
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const s = parts[i]; s.t += dt;
+    if (s.t >= s.ttl) { parts.splice(i, 1); continue; }
+    if (s.drag) { s.vx *= 0.93; s.vy = s.vy * 0.93 + 60 * dt; }
+    s.x += s.vx * dt; s.y += s.vy * dt; s.rot += s.vr * dt;
+    const p = s.t / s.ttl, a = p < 0.1 ? p / 0.1 : 1 - Math.max(0, (p - 0.6) / 0.4);
+    const tw = 0.75 + 0.25 * Math.sin(s.t * 18 + s.rot * 3);
+    const sz = s.size * 2 * tw;
+    ctx.globalAlpha = Math.max(0, a);
+    ctx.save(); ctx.translate(s.x, s.y); ctx.rotate(s.rot);
+    ctx.drawImage(s.spr, -sz, -sz, sz * 2, sz * 2);
+    ctx.restore();
+  }
+  ctx.globalAlpha = 1;
+
+  // 5) Rayos en los costados
+  if (k > 0.3 && now > star.nextBolt) { bolts.push(makeEdgeBolt()); star.nextBolt = now + 280 + Math.random() * 450; }
+  for (let i = bolts.length - 1; i >= 0; i--) {
+    const b = bolts[i]; b.t += dt;
+    if (b.t >= b.ttl) { bolts.splice(i, 1); continue; }
+    const a = (1 - b.t / b.ttl) * (Math.random() < 0.3 ? 0.4 : 1);
+    for (const [w, col, blur] of [[7, PAL.glow, 25], [2.5, '#ffffff', 8]]) {
+      ctx.strokeStyle = hexA(col, a); ctx.lineWidth = w; ctx.shadowColor = PAL.main; ctx.shadowBlur = blur;
+      ctx.lineJoin = 'round'; ctx.beginPath();
+      b.pts.forEach(([x, y], j) => j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+    }
+    ctx.shadowBlur = 0;
+  }
+  ctx.globalCompositeOperation = 'source-over';
+
+  // 6) Cartel
+  if (k > 0 && CFG.text) drawBanner(now, k);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+const bannerCv = document.createElement('canvas'), bctx = bannerCv.getContext('2d');
+function drawBanner(now, k) {
+  const t = (now - star.start) / 1000;
+  const pop = t < 0.35 ? easeOutBack(t / 0.35) : 1 + 0.03 * Math.sin(t * 6);
+  const fs = Math.max(28, Math.min(W * 0.085, 120));
+  const font = `900 italic ${fs}px "Arial Black", Impact, system-ui, sans-serif`;
+  bctx.font = font;
+  const tw = bctx.measureText(CFG.text).width;
+  const bw = Math.ceil(tw + fs * 2), bh = Math.ceil(fs * 2.2);
+  if (bannerCv.width !== bw || bannerCv.height !== bh) { bannerCv.width = bw; bannerCv.height = bh; }
+  const b = bctx; b.clearRect(0, 0, bw, bh);
+  b.save(); b.translate(bw / 2, bh / 2);
+  b.font = font; b.textAlign = 'center'; b.textBaseline = 'middle';
+  b.lineWidth = fs * 0.14; b.strokeStyle = '#05162e'; b.lineJoin = 'round';
+  b.strokeText(CFG.text, 0, 0);
+  const g = b.createLinearGradient(0, -fs / 2, 0, fs / 2);
+  g.addColorStop(0, '#ffffff'); g.addColorStop(0.5, PAL.main); g.addColorStop(1, PAL.glow);
+  b.shadowColor = PAL.main; b.shadowBlur = 30; b.fillStyle = g;
+  b.fillText(CFG.text, 0, 0);
+  // brillo que recorre solo las letras
+  b.shadowBlur = 0; b.globalCompositeOperation = 'source-atop';
+  const sx = ((t * 0.8) % 1.6 - 0.3) * tw - tw / 2;
+  const sh = b.createLinearGradient(sx - fs, 0, sx + fs, 0);
+  sh.addColorStop(0, 'rgba(255,255,255,0)'); sh.addColorStop(.5, 'rgba(255,255,255,.75)'); sh.addColorStop(1, 'rgba(255,255,255,0)');
+  b.fillStyle = sh; b.fillRect(-bw / 2, -bh / 2, bw, bh);
+  b.restore();
+  ctx.save();
+  ctx.translate(W / 2, H * 0.13); ctx.scale(pop, pop); ctx.rotate(-0.04);
+  ctx.globalAlpha = k;
+  ctx.drawImage(bannerCv, -bw / 2, -bh / 2);
+  ctx.restore();
+}
+
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${Math.max(0, Math.min(1, a))})`;
+}
+function easeOut(x) { return 1 - Math.pow(1 - x, 3); }
+function easeOutBack(x) { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); }
+
+  return { triggerStar, state: star };
+})();
+
+// Pruebas manuales
+addEventListener('pointerdown', (e) => HeartFX.burst(e.clientX, e.clientY));
+addEventListener('keydown', (e) => {
+  if (e.key === 'h' || e.key === 'H') HeartFX.burst(W / 2, H * 0.6);
+  if (e.key === 's' || e.key === 'S') StarFX.triggerStar(W / 2, H * 0.4);
+});
+
+// ───────────────────────── Detector: corazón coreano ─────────────────────────
+const d = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+
+/* Landmarks MediaPipe: 0 muñeca · 1-4 pulgar · 5-8 índice · 9-12 medio · 13-16 anular · 17-20 meñique
+   Corazón coreano (versión estricta, para que un puño NO cuente):
+     1. medio, anular y meñique bien doblados
+     2. el índice NO está metido en la palma (en un puño sí lo está)
+     3. la punta del pulgar asoma más allá de la 2ª articulación del índice (cruce de dedos)
+     4. punta del pulgar y punta del índice cerca una de otra, cruzándose
+   Además hay que mantenerlo `hold` cuadros seguidos. */
+function heartChecks(L) {
+  const size = d(L[0], L[9]);
+  if (size < 0.04) return { ok: false, far: true };
+  const curled = (tip, pip) => d(L[tip], L[0]) < d(L[pip], L[0]) * 1.0 * SENS;
+  const others = [curled(12, 10), curled(16, 14), curled(20, 18)].filter(Boolean).length === 3;
+  const indexOut = d(L[8], L[0]) > d(L[6], L[0]) * (1.08 / SENS);
+  const thumbOut = d(L[4], L[0]) > d(L[6], L[0]) * (1.0 / SENS);
+  const cross = Math.min(d(L[4], L[7]), d(L[4], L[8]), d(L[3], L[7])) / size < 0.32 * SENS
+             && d(L[4], L[8]) / size < 0.5 * SENS;
+  return { ok: others && indexOut && thumbOut && cross, others, indexOut, thumbOut, cross };
+}
+const isFingerHeart = (L) => heartChecks(L).ok;
+
+/* Corazón grande con las dos manos (desactivado por defecto; activar con twohand=1). */
+function isTwoHandHeart(A, B) {
+  const size = (d(A[0], A[9]) + d(B[0], B[9])) / 2;
+  return d(A[8], B[8]) / size < 0.45 * SENS && d(A[4], B[4]) / size < 0.45 * SENS;
+}
+
+/* Elegir solo la mano de rasgueo.
+   hand=left  → la mano que aparece a la IZQUIERDA de la imagen (la misma convención que star-mode)
+   hand=right → la de la derecha · hand=any → cualquiera
+   Con dos manos se usa la posición; con una sola, la etiqueta de MediaPipe (que asume imagen en espejo,
+   por eso la mano que se ve a la izquierda en una cámara normal viene etiquetada "Left"). */
+function pickStrumHand(landmarks, handedness) {
+  if (HAND === 'any') return landmarks.map((L, i) => i);
+  if (landmarks.length >= 2) {
+    const order = landmarks.map((L, i) => i).sort((a, b) => landmarks[a][0].x - landmarks[b][0].x);
+    return [HAND === 'left' ? order[0] : order[order.length - 1]];
+  }
+  if (landmarks.length === 1) {
+    const label = handedness?.[0]?.[0]?.categoryName;
+    if (!label) return [0];
+    return label === (HAND === 'left' ? 'Left' : 'Right') ? [0] : [];
+  }
+  return [];
+}
+
+const state = { held: 0, two: 0, lastFire: 0, lastStream: 0 };
+
+function onLandmarks(hands, strumIdx, now) {
+  let event = null;
+  if (TWOHAND && hands.length === 2 && isTwoHandHeart(hands[0], hands[1])) {
+    state.two++;
+    if (state.two >= 6 && now - state.lastFire > COOLDOWN_MS * 1.5) {
+      const A = hands[0], B = hands[1];
+      const cx = (A[8].x + B[8].x + A[4].x + B[4].x) / 4;
+      const cy = (A[8].y + B[8].y + A[4].y + B[4].y) / 4;
+      event = { type: 'heart', big: true, nx: cx, ny: cy };
+      state.lastFire = now;
+    }
+  } else state.two = 0;
+
+  const L = strumIdx.length ? hands[strumIdx[0]] : null;
+  if (L && isFingerHeart(L)) {
+    if (!state.heldSince) state.heldSince = now;
+    state.held = now - state.heldSince;
+    const nx = (L[4].x + L[7].x) / 2, ny = (L[4].y + L[7].y) / 2 - 0.02;
+    if (state.held >= HEART_HOLD_MS && !event) {
+      if (now - state.lastFire > COOLDOWN_MS) {
+        event = { type: 'heart', big: false, nx, ny }; state.lastFire = now; state.lastStream = now;
+      } else if (now - state.lastStream > STREAM_MS) {
+        event = { type: 'heart', big: false, small: true, nx, ny }; state.lastStream = now;
+      }
+    }
+  } else { state.held = 0; state.heldSince = 0; }
+  return event;
+}
+
+
+// ───────────────────────── Detector: modo estrella ─────────────────────────
+function makeRaiseDetector(cfg) {
+  const ema = {}, prev = {}, overCount = { 15: 0, 16: 0 }, armed = { 15: false, 16: false };
+  const act = { 15: 0, 16: 0 };
+  let lastFire = -1e9, lastT = null, strumHand = null;
+  const info = { 15: { above: 0, role: '', armed: false }, 16: { above: 0, role: '', armed: false } };
+  function update(L, now) {
+    const dt = lastT == null ? 33 : Math.min(200, now - lastT); lastT = now;
+    if (!L) { delete prev[15]; delete prev[16]; overCount[15] = overCount[16] = 0; return null; }
+    const ls = L[11], rs = L[12];
+    const shouldersOk = (ls.visibility ?? 1) > 0.5 && (rs.visibility ?? 1) > 0.5;
+    const scale = shouldersOk ? Math.max(0.05, Math.hypot(ls.x - rs.x, ls.y - rs.y)) : 0.25;
+    const shoulderY = shouldersOk ? (ls.y + rs.y) / 2 : 0.45;
+
+    const ys = {};
+    for (const w of [15, 16]) {
+      const p = L[w];
+      if ((p.visibility ?? 1) < 0.3) { delete ema[w]; delete prev[w]; overCount[w] = 0; continue; }
+      ema[w] = ema[w] == null ? p.y : ema[w] * 0.35 + p.y * 0.65;
+      ys[w] = ema[w];
+      if (prev[w] != null) {
+        const speed = Math.abs(ys[w] - prev[w]) / scale / (dt / 1000);
+        act[w] += (Math.min(speed, 8) - act[w]) * Math.min(1, dt / 3000);
+      }
+      prev[w] = ys[w];
+    }
+
+    // ¿qué mano rasguea?
+    if (cfg.hand === 'left') strumHand = 16;           // 16 = muñeca a la izquierda de la imagen (sin espejo)
+    else if (cfg.hand === 'right') strumHand = 15;
+    else if (cfg.hand === 'auto' && act[15] + act[16] > 0.3) {
+      if (act[15] > act[16] * 1.6) strumHand = 15; else if (act[16] > act[15] * 1.6) strumHand = 16;
+    }
+
+    let fired = null;
+    for (const w of [15, 16]) {
+      info[w].role = strumHand == null ? '' : (w === strumHand ? 'rasgueo' : 'mástil');
+      if (ys[w] == null) continue;
+      const above = (shoulderY - ys[w]) / scale;
+      info[w].above = above;
+      if (above < cfg.above - 0.3) armed[w] = true;    // la mano bajó: listo para el próximo gesto
+      info[w].armed = armed[w];
+      const counts = cfg.hand === 'any' || strumHand == null || w === strumHand;
+      if (!counts) { overCount[w] = 0; continue; }
+      overCount[w] = above >= cfg.above ? overCount[w] + 1 : 0;
+      if (!fired && armed[w] && overCount[w] >= cfg.hold && now - lastFire > cfg.cooldownMs) {
+        fired = { type: 'star', nx: L[w].x, ny: L[w].y, wrist: w };
+        lastFire = now; armed[w] = false;
+      }
+    }
+    return fired;
+  }
+  return { update, info, act, get lastFire() { return lastFire; }, get strumHand() { return strumHand; } };
+}
+const detector = makeRaiseDetector(CFG);
+window.__fx = { makeRaiseDetector, heartChecks, pickStrumHand, HeartFX, StarFX, CFG };
+
+function handleEvent(ev) {
+  const [x, y] = toScreen(ev.nx, ev.ny);
+  if (ev.type === 'heart') { if (ev.small) HeartFX.spawnHeart(x, y, { scale: 0.7 }); else HeartFX.burst(x, y, ev.big); }
+  else if (ev.type === 'star') StarFX.triggerStar(x, y);
+}
+function emit(ev) {
+  if (!ev) return;
+  if (CFG.mode === 'all') handleEvent(ev);
+  else if (relay?.readyState === 1) relay.send(JSON.stringify(ev));
+}
+
+// ───────────────────────── Debug ─────────────────────────
+const trail = { 15: [], 16: [] };
+const dbgState = { hands: [], strumIdx: [], pose: null, fps: 0 };
+function drawDebug() {
+  dctx.clearRect(0, 0, W, H);
+  if (!CFG.debug) return;
+  const { hands, strumIdx, pose: L, fps } = dbgState;
+  const lines = [`modo: ${CFG.mode}${CFG.mirror ? ' (espejo)' : ''}  rot: ${ROT}°  mano: ${HAND}  fps: ${fps}  relay: ${relayState}`];
+
+  // — modo estrella —
+  if (CFG.starOn) {
+    lines.push('', `🎵 MODO ESTRELLA  (mano de rasgueo ≥ ${CFG.above} sobre el hombro)`);
+    if (L) {
+      const seg = [[11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24]];
+      dctx.lineWidth = 3; dctx.strokeStyle = 'rgba(255,255,255,.7)';
+      for (const [a, b] of seg) {
+        const [x1, y1] = toScreen(L[a].x, L[a].y), [x2, y2] = toScreen(L[b].x, L[b].y);
+        dctx.beginPath(); dctx.moveTo(x1, y1); dctx.lineTo(x2, y2); dctx.stroke();
+      }
+      const sy = (L[11].y + L[12].y) / 2, [, syS] = toScreen(0.5, sy);
+      const sc = Math.hypot(L[11].x - L[12].x, L[11].y - L[12].y), [, thS] = toScreen(0.5, sy - CFG.above * sc);
+      dctx.setLineDash([8, 8]);
+      dctx.strokeStyle = 'rgba(255,255,255,.4)'; dctx.beginPath(); dctx.moveTo(0, syS); dctx.lineTo(W, syS); dctx.stroke();
+      dctx.strokeStyle = 'rgba(255,220,0,.9)'; dctx.beginPath(); dctx.moveTo(0, thS); dctx.lineTo(W, thS); dctx.stroke();
+      dctx.setLineDash([]);
+      for (const w of [15, 16]) {
+        const [x, y] = toScreen(L[w].x, L[w].y);
+        trail[w].push([x, y]); if (trail[w].length > 15) trail[w].shift();
+        const inf = detector.info[w], hot = inf.above >= CFG.above && (detector.strumHand == null || w === detector.strumHand || CFG.hand === 'any');
+        dctx.strokeStyle = hot ? '#00ff88' : '#ff4dd2'; dctx.lineWidth = 4;
+        dctx.beginPath(); trail[w].forEach(([a, b], i) => i ? dctx.lineTo(a, b) : dctx.moveTo(a, b)); dctx.stroke();
+        dctx.fillStyle = dctx.strokeStyle; dctx.beginPath(); dctx.arc(x, y, 9, 0, 7); dctx.fill();
+        lines.push(`  muñeca ${w === 15 ? 'A' : 'B'} ${(inf.role || '?').padEnd(7)}: altura ${inf.above.toFixed(2).padStart(5)}${inf.armed ? '' : '  (baja la mano)'}`);
+      }
+    } else lines.push('  no se ve el cuerpo (encuadra hombros y manos)');
+  }
+
+  // — corazón —
+  if (CFG.heartOn) {
+    lines.push('', `❤ CORAZÓN  (sostener ${HEART_HOLD_MS} ms)`);
+    let checks = null;
+    hands.forEach((Lh, i) => {
+      const isStrum = strumIdx.includes(i);
+      const c = isStrum ? heartChecks(Lh) : null;
+      if (isStrum) checks = c;
+      dctx.fillStyle = !isStrum ? 'rgba(160,160,160,.6)' : (c.ok ? '#00ff88' : '#ffd400');
+      for (const p of Lh) { const [x, y] = toScreen(p.x, p.y); dctx.beginPath(); dctx.arc(x, y, isStrum ? 5 : 3, 0, 7); dctx.fill(); }
+    });
+    const mk = (b) => b ? '✔' : '✘';
+    lines.push(checks ? (checks.far ? '  mano muy lejos'
+      : `  doblados ${mk(checks.others)}  índice ${mk(checks.indexOut)}  pulgar ${mk(checks.thumbOut)}  cruce ${mk(checks.cross)}`)
+      : '  no se ve la mano de rasgueo');
+    const pct = Math.min(1, state.held / HEART_HOLD_MS);
+    lines.push(`  sostener: ${'█'.repeat(Math.round(pct * 20)).padEnd(20, '·')} ${Math.round(pct * 100)}%`);
+  }
+  setStatus(lines.join('\n'));
+}
+
+// ───────────────────────── Relay ─────────────────────────
+let relay = null, relayState = CFG.mode === 'all' ? 'no usado' : 'conectando…';
+function connectRelay() {
+  if (CFG.mode === 'all') return;
+  try { relay = new WebSocket(CFG.relay); } catch { return setTimeout(connectRelay, 2000); }
+  relay.onopen = () => { relayState = 'conectado'; };
+  relay.onclose = () => { relayState = 'desconectado'; setTimeout(connectRelay, 2000); };
+  relay.onmessage = (m) => { if (CFG.mode === 'overlay') { try { handleEvent(JSON.parse(m.data)); } catch {} } };
+}
+connectRelay();
+
+// ───────────────────────── TikFinity (opcional) ─────────────────────────
+function connectTikfinity() {
+  const ws = new WebSocket('ws://localhost:21213/');
+  ws.onmessage = (m) => {
+    let msg; try { msg = JSON.parse(m.data); } catch { return; }
+    const data = msg.data || {};
+    if (msg.event === 'gift') {
+      if (data.repeatEnd === false) return;
+      const n = Math.min(12, parseInt(data.repeatCount || data.gift?.repeat_count || 1, 10));
+      for (let i = 0; i < n; i++) setTimeout(() => HeartFX.burst(W * (0.2 + Math.random() * 0.6), H * 0.85), i * 120);
+    } else if (msg.event === 'like') {
+      HeartFX.spawnHeart(W * (0.8 + Math.random() * 0.15), H * 0.92, { scale: 0.6 });
+    }
+  };
+  ws.onclose = () => setTimeout(connectTikfinity, 3000);
+}
+if (CFG.tikfinity) connectTikfinity();
+
+// ───────────────────────── Cámara + modelos ─────────────────────────
+async function start() {
+  if (CFG.mode === 'overlay') { setStatus('overlay: esperando efectos del relay'); return; }
+  try {
+    setStatus('cargando modelos…');
+    const base = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+    const { FilesetResolver, HandLandmarker, PoseLandmarker } = await import(`${base}/vision_bundle.mjs`);
+    const fileset = await FilesetResolver.forVisionTasks(`${base}/wasm`);
+    const withFallback = async (make) => { try { return await make('GPU'); } catch { return await make('CPU'); } };
+    const handModel = CFG.heartOn ? await withFallback((delegate) => HandLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate },
+      runningMode: 'VIDEO', numHands: 2,
+      minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5
+    })) : null;
+    const poseModel = CFG.starOn ? await withFallback((delegate) => PoseLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task', delegate },
+      runningMode: 'VIDEO', numPoses: 1,
+      minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5
+    })) : null;
+
+    setStatus('abriendo cámara…');
+    const tmp = await navigator.mediaDevices.getUserMedia({ video: true });
+    const cams = (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === 'videoinput');
+    tmp.getTracks().forEach(t => t.stop());
+    if (CFG.debug) console.log('Cámaras:', cams.map((c, i) => `${i}: ${c.label}`));
+    const id = cams[CFG.cam]?.deviceId;
+    video.srcObject = await navigator.mediaDevices.getUserMedia({
+      video: { deviceId: id ? { exact: id } : undefined, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+    });
+    await video.play();
+    if (CFG.mirror) camView.style.transform = 'scaleX(-1)';
+    camView.style.objectFit = FIT;
+
+    // Para no cargar la PC, los dos modelos se turnan: un cuadro mano, el siguiente cuerpo.
+    let lastVT = -1, frames = 0, fpsT = performance.now(), turn = 0;
+    const loop = () => {
+      const now = performance.now();
+      if (video.currentTime !== lastVT && video.readyState >= 2) {
+        lastVT = video.currentTime;
+        const frameSrc = grabFrame(); showFrame(frameSrc);
+        const doHand = handModel && (!poseModel || turn % 2 === 0);
+        const doPose = poseModel && (!handModel || turn % 2 === 1);
+        turn++;
+        if (doHand) {
+          const res = handModel.detectForVideo(frameSrc, now);
+          dbgState.hands = res.landmarks || [];
+          dbgState.strumIdx = pickStrumHand(dbgState.hands, res.handedness || res.handednesses);
+          emit(onLandmarks(dbgState.hands, dbgState.strumIdx, now));
+        }
+        if (doPose) {
+          dbgState.pose = poseModel.detectForVideo(frameSrc, now).landmarks?.[0] || null;
+          emit(detector.update(dbgState.pose, now));
+        }
+        frames++; if (now - fpsT > 1000) { dbgState.fps = frames; frames = 0; fpsT = now; }
+        drawDebug();
+      }
+      requestAnimationFrame(loop);
+    };
+    loop();
+  } catch (e) {
+    console.error(e);
+    setStatus('⚠ ' + e.message + '\n(H = corazones · S = modo estrella)');
+    document.body.classList.add('debug');
+  }
+}
+start();
+</script>
+</body>
+</html>

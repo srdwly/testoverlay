@@ -19,6 +19,7 @@
     fit=contain                 contain = imagen completa · cover = llenar recortando
     mirror=1                    voltear horizontalmente
     cam=0                       índice de cámara
+    camname=OBS                 elegir cámara por nombre (ej. OBS Virtual Camera)
     heart=0 / star=0            desactivar un efecto
     -- corazón --
     hearthold=1000              ms que hay que sostener el gesto (1000 ≈ tu hold=30)
@@ -67,6 +68,7 @@ const CFG = {
   debug:  P.get('debug') === '1',
   mirror: P.get('mirror') === '1',
   cam:    num('cam', 0),
+  camname: (P.get('camname') || '').toLowerCase(),
   fit:    P.get('fit') === 'cover' ? 'cover' : 'contain',
   hand:   P.get('hand') || 'left',
   heartOn: P.get('heart') !== '0',
@@ -84,7 +86,7 @@ if (!P.has('rotate')) P.set('rotate', '90');
 const HAND = CFG.hand;
 const SENS = num('sens', 1);
 const TWOHAND = P.get('twohand') === '1';
-const HEART_HOLD_MS = num('hearthold', 500);
+const HEART_HOLD_MS = num('hearthold', 1000);
 const COOLDOWN_MS = 900;
 const STREAM_MS = 280;
 const DEBUG = CFG.debug;
@@ -616,13 +618,15 @@ function emit(ev) {
 }
 
 // ───────────────────────── Debug ─────────────────────────
+let camList = [], camLabel = '';
 const trail = { 15: [], 16: [] };
 const dbgState = { hands: [], strumIdx: [], pose: null, fps: 0 };
 function drawDebug() {
   dctx.clearRect(0, 0, W, H);
   if (!CFG.debug) return;
   const { hands, strumIdx, pose: L, fps } = dbgState;
-  const lines = [`modo: ${CFG.mode}${CFG.mirror ? ' (espejo)' : ''}  rot: ${ROT}°  mano: ${HAND}  fps: ${fps}  relay: ${relayState}`];
+  const lines = [`modo: ${CFG.mode}${CFG.mirror ? ' (espejo)' : ''}  rot: ${ROT}°  mano: ${HAND}  fps: ${fps}  relay: ${relayState}`,
+                 `cámara: ${camLabel}`];
 
   // — modo estrella —
   if (CFG.starOn) {
@@ -727,7 +731,12 @@ async function start() {
     const cams = (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === 'videoinput');
     tmp.getTracks().forEach(t => t.stop());
     if (CFG.debug) console.log('Cámaras:', cams.map((c, i) => `${i}: ${c.label}`));
-    const id = cams[CFG.cam]?.deviceId;
+    camList = cams.map((c, i) => `${i}: ${c.label || '(sin nombre)'}`);
+    const byName = CFG.camname ? cams.find(c => c.label.toLowerCase().includes(CFG.camname)) : null;
+    if (CFG.camname && !byName) throw new Error(`No encontré una cámara con "${CFG.camname}". Cámaras:\n` + camList.join('\n'));
+    const chosen = byName || cams[CFG.cam];
+    camLabel = chosen?.label || '?';
+    const id = chosen?.deviceId;
     video.srcObject = await navigator.mediaDevices.getUserMedia({
       video: { deviceId: id ? { exact: id } : undefined, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
     });
@@ -763,7 +772,7 @@ async function start() {
     loop();
   } catch (e) {
     console.error(e);
-    setStatus('⚠ ' + e.message + '\n(H = corazones · S = modo estrella)');
+    setStatus('⚠ ' + e.message + (camList.length ? '\n\nCámaras:\n' + camList.join('\n') : '') + '\n(H = corazones · S = modo estrella)');
     document.body.classList.add('debug');
   }
 }

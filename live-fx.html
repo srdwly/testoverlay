@@ -32,7 +32,9 @@
     text=                       cartel (vacío = sin cartel), ej. text=¡A ROCKEAR!
     color=cyan|gold|purple      color del modo estrella
     -- otros --
-    mode=all|detector|overlay   + relay=ws://localhost:8765  (si Live Studio no deja usar la cámara)
+    mode=all|detector|overlay   + relay=ws://localhost:8765  (detección en Chrome, dibujo en Live Studio)
+    detsize=320                 tamaño del cuadro que se analiza (más chico = más rápido; 256-480)
+    hq=1                        dibujar a resolución completa de pantalla (más pesado)
     tikfinity=1                 corazones también con regalos/likes de TikFinity
 
   Pruebas sin cámara: H = corazones · S = modo estrella · clic = corazones
@@ -80,13 +82,15 @@ const CFG = {
   text:   P.has('text') ? P.get('text') : '',
   cooldownMs: 1500,
   tikfinity: P.get('tikfinity') === '1',
+  hq:     P.get('hq') === '1',                 // dibujar a resolución completa (más pesado)
+  detSize: num('detsize', 320),                // tamaño (px, lado mayor) del cuadro que analiza el detector
 };
 if (!P.has('rotate')) P.set('rotate', '90');
 // corazón
 const HAND = CFG.hand;
-const SENS = num('sens', 1.1);
+const SENS = num('sens', 1);
 const TWOHAND = P.get('twohand') === '1';
-const HEART_HOLD_MS = num('hearthold', 300);
+const HEART_HOLD_MS = num('hearthold', 1000);
 const COOLDOWN_MS = 900;
 const STREAM_MS = 280;
 const DEBUG = CFG.debug;
@@ -109,7 +113,7 @@ const fxHeart = document.getElementById('fxHeart'), fxStar = document.getElement
 const dbg = document.getElementById('debugLayer'), dctx = dbg.getContext('2d');
 let W = 0, H = 0;
 function resize() {
-  const dpr = window.devicePixelRatio || 1;
+  const dpr = CFG.hq ? (window.devicePixelRatio || 1) : 1;
   W = innerWidth; H = innerHeight;
   for (const c of [fxHeart, fxStar, dbg]) { c.width = W * dpr; c.height = H * dpr; c.getContext('2d').setTransform(dpr, 0, 0, dpr, 0, 0); }
 }
@@ -125,18 +129,20 @@ function frameSize() {
   const vw0 = video.videoWidth || 1280, vh0 = video.videoHeight || 720;
   return (ROT === 90 || ROT === 270) ? [vh0, vw0] : [vw0, vh0];
 }
-function grabFrame() {            // devuelve el cuadro ya enderezado (lo que ve el detector)
-  if (!ROT) return video;
-  const [fw, fh] = frameSize();
+function grabFrame() {            // cuadro enderezado y REDUCIDO: el detector no necesita 1280 px y así va mucho más rápido
+  const [fw0, fh0] = frameSize();
+  const sc = Math.min(1, CFG.detSize / Math.max(fw0, fh0));
+  const fw = Math.round(fw0 * sc), fh = Math.round(fh0 * sc);
   if (frameCv.width !== fw || frameCv.height !== fh) { frameCv.width = fw; frameCv.height = fh; }
   fctx.setTransform(1, 0, 0, 1, 0, 0);
   fctx.translate(fw / 2, fh / 2); fctx.rotate(ROT * Math.PI / 180);
-  fctx.drawImage(video, -video.videoWidth / 2, -video.videoHeight / 2);
+  const vw = ROT === 90 || ROT === 270 ? fh : fw, vh = ROT === 90 || ROT === 270 ? fw : fh;
+  fctx.drawImage(video, -vw / 2, -vh / 2, vw, vh);
   return frameCv;
 }
 function showFrame(src) {         // vista previa solo en modo debug
   if (!document.body.classList.contains('debug')) return;
-  const [fw, fh] = frameSize();
+  const fw = src.width, fh = src.height;
   if (camView.width !== fw || camView.height !== fh) { camView.width = fw; camView.height = fh; }
   camView.getContext('2d').drawImage(src, 0, 0, fw, fh);
 }
@@ -173,10 +179,25 @@ function heartPath(c, s) {
   c.closePath();
 }
 
+// sprites: cada color de corazón se dibuja UNA vez con su brillo; luego solo se copia (muy barato)
+const HS = 128;
+const heartSprites = PALETTE.map(([c1, c2]) => {
+  const oc = document.createElement('canvas'); oc.width = oc.height = HS * 2;
+  const o = oc.getContext('2d'); o.translate(HS, HS);
+  const s = HS * 1.2;
+  o.shadowColor = c1; o.shadowBlur = s * 0.3;
+  const g = o.createLinearGradient(0, -s * 0.5, 0, s * 0.3);
+  g.addColorStop(0, c1); g.addColorStop(1, c2);
+  o.fillStyle = g; heartPath(o, s); o.fill();
+  o.shadowBlur = 0; o.globalAlpha = 0.55; o.fillStyle = '#fff';
+  o.beginPath(); o.ellipse(-s * 0.24, -s * 0.24, s * 0.1, s * 0.06, -0.6, 0, Math.PI * 2); o.fill();
+  return oc;
+});
+
 function spawnHeart(x, y, opts = {}) {
   const big = !!opts.big;
-  const [c1, c2] = PALETTE[(Math.random() * PALETTE.length) | 0];
-  particles.push({
+  const pi = (Math.random() * PALETTE.length) | 0, [c1, c2] = PALETTE[pi];
+  particles.push({ spr: heartSprites[pi],
     kind: 'heart', x, y,
     vx: (Math.random() - 0.5) * (big ? 40 : 70),
     vy: -(big ? 120 : 160 + Math.random() * 120),
@@ -187,7 +208,7 @@ function spawnHeart(x, y, opts = {}) {
     c1, c2
   });
   // chispas
-  const n = big ? 22 : 8;
+  const n = big ? 14 : 6;
   for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2, sp = (big ? 220 : 140) * (0.4 + Math.random());
     particles.push({
@@ -203,9 +224,14 @@ function burst(x, y, big = false) {
   else { spawnHeart(x, y); setTimeout(() => spawnHeart(x, y, { scale: 0.7 }), 90); }
 }
 
-let last = performance.now();
+let last = performance.now(), dirty = false;
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (!particles.length) {                       // nada que dibujar: no gastar
+    if (dirty) { ctx.clearRect(0, 0, W, H); dirty = false; }
+    return requestAnimationFrame(frame);
+  }
+  dirty = true;
   ctx.clearRect(0, 0, W, H);
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i];
@@ -221,23 +247,16 @@ function frame(now) {
       // pop: crece rápido con rebote y luego se desvanece
       const pop = t < 0.18 ? easeOutBack(t / 0.18) : 1 + (t - 0.18) * 0.15;
       const alpha = t < 0.7 ? 1 : 1 - (t - 0.7) / 0.3;
-      const s = p.size * pop;
+      const s = p.size * pop, w = s * (2 * HS) / (HS * 1.2);   // tamaño del sprite para un corazón de tamaño s
       ctx.save();
       ctx.translate(p.x, p.y); ctx.rotate(p.rot);
       ctx.globalAlpha = Math.max(0, alpha);
-      ctx.shadowColor = p.c1; ctx.shadowBlur = s * 0.35;
-      const g = ctx.createLinearGradient(0, -s * 0.5, 0, s * 0.3);
-      g.addColorStop(0, p.c1); g.addColorStop(1, p.c2);
-      ctx.fillStyle = g; heartPath(ctx, s); ctx.fill();
-      ctx.shadowBlur = 0;
-      // brillo
-      ctx.globalAlpha *= 0.55; ctx.fillStyle = '#fff';
-      ctx.beginPath(); ctx.ellipse(-s * 0.24, -s * 0.24, s * 0.1, s * 0.06, -0.6, 0, Math.PI * 2); ctx.fill();
+      ctx.drawImage(p.spr, -w / 2, -w / 2, w, w);
       ctx.restore();
     } else {
       p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.96; p.vy = p.vy * 0.96 + 30 * dt;
       ctx.globalAlpha = 1 - t; ctx.fillStyle = p.c1;
-      ctx.beginPath(); ctx.arc(p.x, p.y, p.size * (1 - t * 0.5), 0, Math.PI * 2); ctx.fill();
+      const r = p.size * (1 - t * 0.5); ctx.fillRect(p.x - r, p.y - r, r * 2, r * 2);
       ctx.globalAlpha = 1;
     }
   }
@@ -309,7 +328,7 @@ function triggerStar(x = W / 2, y = H * 0.4) {
   else { star.active = true; star.start = now; star.end = now + CFG.dur; }
   star.ox = x; star.oy = y; star.flash = now;
   rings.push({ x, y, t: 0, ttl: 0.75, w: 14 }, { x, y, t: -0.12, ttl: 0.85, w: 6 });
-  for (let i = 0; i < 45; i++) {
+  for (let i = 0; i < 30; i++) {
     const a = Math.random() * Math.PI * 2, sp = 250 + Math.random() * 650;
     parts.push(newStar(x, y, Math.cos(a) * sp, Math.sin(a) * sp, 14 + Math.random() * 22, 0.9 + Math.random() * 0.6, true));
   }
@@ -344,9 +363,25 @@ function envelope(now) {
   return Math.max(0, Math.min(1, a, b));
 }
 
-let last = performance.now();
+let last = performance.now(), dirty = false, glowCache = null;
+function edgeGlow() {                            // degradado de bordes: se crea una vez por tamaño
+  if (glowCache && glowCache.w === W && glowCache.h === H) return glowCache.cv;
+  const cv = document.createElement('canvas'); cv.width = Math.max(1, Math.round(W)); cv.height = Math.max(1, Math.round(H));
+  const o = cv.getContext('2d');
+  const g = o.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.32, W / 2, H / 2, Math.hypot(W, H) * 0.55);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(0.6, hexA(PAL.glow, 0.18)); g.addColorStop(1, hexA(PAL.main, 0.65));
+  o.fillStyle = g; o.fillRect(0, 0, W, H);
+  glowCache = { w: W, h: H, cv };
+  return cv;
+}
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (star.active && now > star.end) star.active = false;
+  if (!star.active && !parts.length && !rings.length && !bolts.length) {   // en reposo: no dibujar nada
+    if (dirty) { ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); ctx.restore(); dirty = false; }
+    return requestAnimationFrame(frame);
+  }
+  dirty = true;
   ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); ctx.restore();
   syncRect();
   ctx.save(); ctx.translate(OX, OY); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();   // solo dentro de la cámara
@@ -357,11 +392,7 @@ function frame(now) {
   // 1) Resplandor en los bordes (pulsante)
   if (k > 0) {
     const pulse = 0.75 + 0.25 * Math.sin(t * 9);
-    const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.32, W / 2, H / 2, Math.hypot(W, H) * 0.55);
-    g.addColorStop(0, 'rgba(0,0,0,0)');
-    g.addColorStop(0.6, hexA(PAL.glow, 0.18 * k * pulse));
-    g.addColorStop(1, hexA(PAL.main, 0.65 * k * pulse));
-    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.globalAlpha = k * pulse; ctx.drawImage(edgeGlow(), 0, 0, W, H); ctx.globalAlpha = 1;
   }
 
   // 2) Destello inicial
@@ -378,15 +409,14 @@ function frame(now) {
     if (r.t >= r.ttl) { rings.splice(i, 1); continue; }
     if (r.t < 0) continue;
     const p = r.t / r.ttl, rad = easeOut(p) * Math.hypot(W, H) * 0.6;
-    ctx.strokeStyle = hexA(PAL.main, (1 - p) * 0.9); ctx.lineWidth = r.w * (1 - p) + 1;
-    ctx.shadowColor = PAL.main; ctx.shadowBlur = 20;
-    ctx.beginPath(); ctx.arc(r.x, r.y, rad, 0, Math.PI * 2); ctx.stroke();
-    ctx.shadowBlur = 0;
+    ctx.beginPath(); ctx.arc(r.x, r.y, rad, 0, Math.PI * 2);
+    ctx.strokeStyle = hexA(PAL.glow, (1 - p) * 0.35); ctx.lineWidth = r.w * (1 - p) * 3 + 4; ctx.stroke();
+    ctx.strokeStyle = hexA(PAL.main, (1 - p) * 0.9); ctx.lineWidth = r.w * (1 - p) + 1; ctx.stroke();
   }
 
   // 4) Estrellas que suben desde abajo mientras dura el modo
   if (k > 0) {
-    star.spawnAcc += dt * 32 * k;
+    star.spawnAcc += dt * 22 * k;
     while (star.spawnAcc >= 1) {
       star.spawnAcc--;
       const edge = Math.random() < 0.7;  // mayormente por los lados, para no tapar al guitarrista
@@ -415,12 +445,11 @@ function frame(now) {
     const b = bolts[i]; b.t += dt;
     if (b.t >= b.ttl) { bolts.splice(i, 1); continue; }
     const a = (1 - b.t / b.ttl) * (Math.random() < 0.3 ? 0.4 : 1);
-    for (const [w, col, blur] of [[7, PAL.glow, 25], [2.5, '#ffffff', 8]]) {
-      ctx.strokeStyle = hexA(col, a); ctx.lineWidth = w; ctx.shadowColor = PAL.main; ctx.shadowBlur = blur;
-      ctx.lineJoin = 'round'; ctx.beginPath();
-      b.pts.forEach(([x, y], j) => j ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke();
+    ctx.lineJoin = 'round'; ctx.beginPath();
+    b.pts.forEach(([x, y], j) => j ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+    for (const [w, col, al] of [[16, PAL.glow, 0.22], [7, PAL.glow, 0.8], [2.5, '#ffffff', 1]]) {
+      ctx.strokeStyle = hexA(col, a * al); ctx.lineWidth = w; ctx.stroke();
     }
-    ctx.shadowBlur = 0;
   }
   ctx.globalCompositeOperation = 'source-over';
 
@@ -441,7 +470,9 @@ function drawBanner(now, k) {
   bctx.font = font;
   const tw = bctx.measureText(CFG.text).width;
   const bw = Math.ceil(tw + fs * 2), bh = Math.ceil(fs * 2.2);
-  if (bannerCv.width !== bw || bannerCv.height !== bh) { bannerCv.width = bw; bannerCv.height = bh; }
+  if (bannerCv.width !== bw || bannerCv.height !== bh) { bannerCv.width = bw; bannerCv.height = bh; bannerCv.done = false; }
+  if (bannerCv.done) { drawBannerImg(pop, k, bw, bh); return; }   // el cartel se dibuja una sola vez
+  bannerCv.done = true;
   const b = bctx; b.clearRect(0, 0, bw, bh);
   b.save(); b.translate(bw / 2, bh / 2);
   b.font = font; b.textAlign = 'center'; b.textBaseline = 'middle';
@@ -451,13 +482,10 @@ function drawBanner(now, k) {
   g.addColorStop(0, '#ffffff'); g.addColorStop(0.5, PAL.main); g.addColorStop(1, PAL.glow);
   b.shadowColor = PAL.main; b.shadowBlur = 30; b.fillStyle = g;
   b.fillText(CFG.text, 0, 0);
-  // brillo que recorre solo las letras
-  b.shadowBlur = 0; b.globalCompositeOperation = 'source-atop';
-  const sx = ((t * 0.8) % 1.6 - 0.3) * tw - tw / 2;
-  const sh = b.createLinearGradient(sx - fs, 0, sx + fs, 0);
-  sh.addColorStop(0, 'rgba(255,255,255,0)'); sh.addColorStop(.5, 'rgba(255,255,255,.75)'); sh.addColorStop(1, 'rgba(255,255,255,0)');
-  b.fillStyle = sh; b.fillRect(-bw / 2, -bh / 2, bw, bh);
   b.restore();
+  drawBannerImg(pop, k, bw, bh);
+}
+function drawBannerImg(pop, k, bw, bh) {
   ctx.save();
   ctx.translate(W / 2, H * 0.13); ctx.scale(pop, pop); ctx.rotate(-0.04);
   ctx.globalAlpha = k;
@@ -634,12 +662,14 @@ function emit(ev) {
 let camList = [], camLabel = '';
 const trail = { 15: [], 16: [] };
 const dbgState = { hands: [], strumIdx: [], pose: null, fps: 0 };
+const perf = { delegate: '?', hand: 0, pose: 0 };
 function drawDebug() {
   dctx.clearRect(0, 0, W, H);
   if (!CFG.debug) return;
   const { hands, strumIdx, pose: L, fps } = dbgState;
   const lines = [`modo: ${CFG.mode}${CFG.mirror ? ' (espejo)' : ''}  rot: ${ROT}°  mano: ${HAND}  fps: ${fps}  relay: ${relayState}`,
-                 `cámara: ${camLabel}`];
+                 `cámara: ${camLabel}`,
+                 `motor: ${perf.delegate}  ·  cuerpo ${perf.pose.toFixed(0)} ms  ·  mano ${perf.hand.toFixed(0)} ms  ·  análisis ${CFG.detSize}px`];
 
   // — modo estrella —
   if (CFG.starOn) {
@@ -778,7 +808,10 @@ async function start() {
     const base = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
     const { FilesetResolver, HandLandmarker, PoseLandmarker } = await import(`${base}/vision_bundle.mjs`);
     const fileset = await FilesetResolver.forVisionTasks(`${base}/wasm`);
-    const withFallback = async (make) => { try { return await make('GPU'); } catch { return await make('CPU'); } };
+    const withFallback = async (make) => {
+      try { const m = await make('GPU'); perf.delegate = 'GPU'; return m; }
+      catch (e) { console.warn('GPU no disponible, usando CPU', e); perf.delegate = 'CPU (lento)'; return await make('CPU'); }
+    };
     const handModel = CFG.heartOn ? await withFallback((delegate) => HandLandmarker.createFromOptions(fileset, {
       baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate },
       runningMode: 'VIDEO', numHands: 2,
@@ -796,32 +829,44 @@ async function start() {
     if (CFG.mirror) camView.style.transform = 'scaleX(-1)';
     camView.style.objectFit = FIT;
 
-    // Para no cargar la PC, los dos modelos se turnan: un cuadro mano, el siguiente cuerpo.
+    // Los modelos se turnan para no cargar la PC. El cuerpo (modo estrella) tiene prioridad porque
+    // el gesto es rápido: 2 de cada 3 cuadros van al cuerpo y 1 a la mano (el corazón se sostiene).
     let lastVT = -1, frames = 0, fpsT = performance.now(), turn = 0;
-    const loop = () => {
+    const ema = (old, v) => old ? old * 0.9 + v * 0.1 : v;
+    const process = () => {
       const now = performance.now();
       if (video.currentTime !== lastVT && video.readyState >= 2) {
         lastVT = video.currentTime;
         const frameSrc = grabFrame(); showFrame(frameSrc);
-        const doHand = handModel && (!poseModel || turn % 2 === 0);
-        const doPose = poseModel && (!handModel || turn % 2 === 1);
+        const doHand = handModel && (!poseModel || turn % 3 === 0);
+        const doPose = poseModel && (!handModel || turn % 3 !== 0);
         turn++;
         if (doHand) {
+          const t0 = performance.now();
           const res = handModel.detectForVideo(frameSrc, now);
+          perf.hand = ema(perf.hand, performance.now() - t0);
           dbgState.hands = res.landmarks || [];
           dbgState.strumIdx = pickStrumHand(dbgState.hands, res.handedness || res.handednesses);
           emit(onLandmarks(dbgState.hands, dbgState.strumIdx, now));
         }
         if (doPose) {
+          const t0 = performance.now();
           dbgState.pose = poseModel.detectForVideo(frameSrc, now).landmarks?.[0] || null;
+          perf.pose = ema(perf.pose, performance.now() - t0);
           emit(detector.update(dbgState.pose, now));
         }
         frames++; if (now - fpsT > 1000) { dbgState.fps = frames; frames = 0; fpsT = now; }
         drawDebug();
       }
-      requestAnimationFrame(loop);
     };
-    loop();
+    // requestVideoFrameCallback: procesa exactamente cada cuadro nuevo de la cámara
+    if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+      const onFrame = () => { process(); video.requestVideoFrameCallback(onFrame); };
+      video.requestVideoFrameCallback(onFrame);
+    } else {
+      const loop = () => { process(); requestAnimationFrame(loop); };
+      loop();
+    }
   } catch (e) {
     console.error(e);
     setStatus('⚠ ' + e.message + (camList.length ? '\n\nCámaras:\n' + camList.join('\n') : '') + '\n(H = corazones · S = modo estrella)');

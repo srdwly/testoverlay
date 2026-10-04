@@ -140,6 +140,12 @@ function showFrame(src) {         // vista previa solo en modo debug
   if (camView.width !== fw || camView.height !== fh) { camView.width = fw; camView.height = fh; }
   camView.getContext('2d').drawImage(src, 0, 0, fw, fh);
 }
+// Rectángulo (en pantalla) donde se ve la imagen de la cámara
+function camRect() {
+  const [vw, vh] = frameSize();
+  const s = (FIT === 'contain' ? Math.min : Math.max)(W / vw, H / vh), w = vw * s, h = vh * s;
+  return { x: (W - w) / 2, y: (H - h) / 2, w, h };
+}
 function toScreen(nx, ny) {
   const [vw, vh] = frameSize();
   const s = (FIT === 'contain' ? Math.min : Math.max)(W / vw, H / vh), dw = vw * s, dh = vh * s;
@@ -246,6 +252,10 @@ requestAnimationFrame(frame);
 // ───────────────────────── Efecto: modo estrella ─────────────────────────
 const StarFX = (() => {
   const ctx = fxStar.getContext('2d');
+  // El modo estrella se dibuja solo dentro del área de la cámara (ya rotada), no en todo el overlay.
+  let W = 0, H = 0, OX = 0, OY = 0;
+  function syncRect() { const r = camRect(); W = r.w; H = r.h; OX = r.x; OY = r.y; }
+  syncRect();
 // ───────────────────────── Sprites (estrellas con brillo pre-renderizado) ─────────────────────────
 function starPath(c, r, inner = 0.45, points = 5) {
   c.beginPath();
@@ -337,7 +347,9 @@ function envelope(now) {
 let last = performance.now();
 function frame(now) {
   const dt = Math.min(0.05, (now - last) / 1000); last = now;
-  ctx.clearRect(0, 0, W, H);
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height); ctx.restore();
+  syncRect();
+  ctx.save(); ctx.translate(OX, OY); ctx.beginPath(); ctx.rect(0, 0, W, H); ctx.clip();   // solo dentro de la cámara
   if (star.active && now > star.end) star.active = false;
   const k = envelope(now);
   const t = (now - star.start) / 1000;
@@ -415,6 +427,7 @@ function frame(now) {
   // 6) Cartel
   if (k > 0 && CFG.text) drawBanner(now, k);
 
+  ctx.restore();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -459,7 +472,7 @@ function hexA(hex, a) {
 function easeOut(x) { return 1 - Math.pow(1 - x, 3); }
 function easeOutBack(x) { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); }
 
-  return { triggerStar, state: star };
+  return { triggerStar: (x, y) => { syncRect(); triggerStar(x - OX, y - OY); }, state: star };
 })();
 
 // Pruebas manuales

@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Setlist</title>
+
+<!-- ============================================================
+     EDIT YOUR SETLIST HERE
+     - A line without a dash  = band name (big)
+     - A line starting with - = song (small)
+     - Blank lines are ignored (spacing is automatic)
+     ============================================================ -->
+<script id="setlist" type="text/plain">
+RONISCH
+- Isabel
+- Marielita
+- Princesa
+- Digas lo que digas
+- Sueños
+- Soledad
+- Julieta
+- Tratando de vivir
+- Universitario
+- Ibeliz
+- Una muchacha
+- Paso por la calle
+- A mis 16
+- Te puedes marchar
+- Dime dime
+- Tormenta
+- Regresa
+- Despidiendo la felicidad
+- Promesa
+
+IBERIA
+- Sola
+- El Perdedor
+- El Soñador
+- Primer amor
+
+ENLACE
+- Ven
+- Leny
+- Regresa
+- Solo se
+
+MARFIL
+- Juana
+- Ya me voy
+- Resignación
+
+ZAFIR
+- Yo te buscaré
+
+LUZ Y SOMBRA
+- Basta
+- Rompe cadenas
+
+COCO GUILLEN
+- Adoro muchas cosas de ti
+
+ALFILES
+- Gracias amor
+- Roxana
+- Por qué te marchaste
+- Ven ven
+
+LOS SOMBIS
+- Quiero tenerte junto a mi
+
+ECLIPSE
+- Lejos de mi hogar
+
+ENIGMA
+- Amor de estudiante
+- Triste Solitario
+
+ROFIL
+- Vago de la calle
+- Maribel
+
+AMADEUS
+- Celosa
+
+GASTON ZAMBRANA
+- Enfermo de amor
+
+Extra:
+
+LOS OVNIS
+- Minero
+
+LIBERACIÓN
+- Ese loco soy yo
+- Cuéntame
+</script>
+
+<script>
+  /* ============================================================
+     SETTINGS (can also be overridden in the URL, e.g.
+     setlist.html?speed=25&bg=1 )
+     ============================================================ */
+  const SETTINGS = {
+    speed: 16,          // scroll speed (pixels per second at 230px wide)
+    color: "#ffffff",   // text color
+    outline: true,      // thin dark outline so text reads over any video
+    fadeEdges: true,    // soft fade at top & bottom
+    bg: false,          // true = dark preview background (keep false for LIVE)
+  };
+</script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,SOFT,WONK@9..144,900,100,0&display=swap" rel="stylesheet">
+
+<style>
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: transparent;
+  }
+  body.preview { background: #2a2a2a; }
+
+  .viewport {
+    position: fixed; inset: 0; overflow: hidden;
+  }
+  .viewport.fade {
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 8%, #000 92%, transparent 100%);
+            mask-image: linear-gradient(to bottom, transparent 0, #000 8%, #000 92%, transparent 100%);
+  }
+
+  .track { will-change: transform; }
+
+  .list {
+    /* Cooper Black if installed on the PC (comes with MS Office),
+       otherwise a very similar free web font */
+    font-family: "Cooper Black", "CooperBlackStd", "Fraunces", Georgia, serif;
+    font-weight: 900;
+    font-variation-settings: "SOFT" 100, "WONK" 0, "opsz" 72;
+    color: var(--color);
+    padding: 0 3.5vw 0 3.5vw;
+    line-height: 1.12;
+  }
+  .outline .list {
+    text-shadow:
+      0 0 2px rgba(0,0,0,.85),
+      1px 1px 0 rgba(0,0,0,.6);
+  }
+
+  .band {
+    font-size: 10.4vw;          /* 24px at 230px wide */
+    margin-top: 0.9em;
+    letter-spacing: .01em;
+  }
+  .song {
+    font-size: 7.8vw;           /* 18px at 230px wide */
+    padding-left: 0.8em;
+    text-indent: -0.8em;        /* wrapped lines align under the text, not the dash */
+  }
+</style>
+</head>
+<body>
+  <div class="viewport" id="vp">
+    <div class="track" id="track"></div>
+  </div>
+
+<script>
+(function () {
+  // URL overrides: ?speed=20&bg=1&outline=0&fade=0&color=ffcc00
+  const q = new URLSearchParams(location.search);
+  if (q.has("speed"))   SETTINGS.speed = parseFloat(q.get("speed"));
+  if (q.has("bg"))      SETTINGS.bg = q.get("bg") === "1";
+  if (q.has("outline")) SETTINGS.outline = q.get("outline") !== "0";
+  if (q.has("fade"))    SETTINGS.fadeEdges = q.get("fade") !== "0";
+  if (q.has("color"))   SETTINGS.color = "#" + q.get("color").replace("#", "");
+
+  document.documentElement.style.setProperty("--color", SETTINGS.color);
+  document.body.classList.toggle("preview", SETTINGS.bg);
+  document.body.classList.toggle("outline", SETTINGS.outline);
+  document.getElementById("vp").classList.toggle("fade", SETTINGS.fadeEdges);
+
+  // Parse the plain-text list
+  const lines = document.getElementById("setlist").textContent
+    .split("\n").map(l => l.trim()).filter(Boolean);
+
+  function buildList() {
+    const list = document.createElement("div");
+    list.className = "list";
+    for (const line of lines) {
+      const el = document.createElement("div");
+      if (/^[-–•]/.test(line)) {
+        el.className = "song";
+        el.textContent = "- " + line.replace(/^[-–•]\s*/, "");
+      } else {
+        el.className = "band";
+        el.textContent = line;
+      }
+      list.appendChild(el);
+    }
+    return list;
+  }
+
+  // Two copies back to back = seamless endless loop
+  const track = document.getElementById("track");
+  track.appendChild(buildList());
+  track.appendChild(buildList());
+
+  // Performance: measure ONCE, then hand the motion to the GPU compositor.
+  // No JavaScript runs while it scrolls, and the text is never re-drawn —
+  // the browser just slides an already-painted layer.
+  let anim = null;
+  function start() {
+    const loopH = track.children[1].offsetTop;          // height of one copy
+    const scale = window.innerWidth / 230;               // same feel at any size
+    const duration = loopH / (SETTINGS.speed * scale) * 1000;
+    const progress = anim ? (anim.currentTime % anim.effect.getTiming().duration) / anim.effect.getTiming().duration : 0;
+    if (anim) anim.cancel();
+    anim = track.animate(
+      [{ transform: "translate3d(0,0,0)" }, { transform: `translate3d(0,${-loopH}px,0)` }],
+      { duration, iterations: Infinity, easing: "linear" }
+    );
+    anim.currentTime = progress * duration;              // keep position on resize
+  }
+
+  let resizeTimer;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(start, 200);
+  });
+  (document.fonts ? document.fonts.ready : Promise.resolve()).then(start);
+})();
+</script>
+</body>
+</html>

@@ -23,6 +23,7 @@ const CFG = {
 
   howToEverySec: 90,                  // la tarjeta "Cómo pedir" aparece cada 90 s…
   howToShowSec: 10,                   // …y se queda 10 s
+  howToTop: 360,                      // posición vertical de la tarjeta (más bajo = más arriba)
   scrollSpeed: 7,                     // velocidad del scroll de repertorios (px/s) — más bajo = más lento
   marqueeSpeed: 22,                   // velocidad de los textos largos que se desplazan de lado (px/s)
   listMarqueeSpeed: 10,               // igual, pero para los nombres largos en los repertorios (más lento)
@@ -36,9 +37,9 @@ const CFG = {
            real la primera vez que alguien envía ese regalo. También puedes pegar
            una URL o subir el PNG a tu repo y poner p. ej. 'img/galaxia.png'. */
 const GIFTS = [
-  { key: 'hat',    label: 'Sombrero', coins: 99,   reward: 'Salta la fila (ritmo actual, de la lista)', card: 'Ritmo actual, de la lista', img: '', names: ['Hat and Mustache', 'Sombrero y bigote', 'Sombrero'] },
-  { key: 'gun',    label: 'Pistola',  coins: 500,  reward: 'Salta la fila (cualquier lista)', card: 'De cualquier lista',   img: '', names: ['Money Gun', 'Pistola de dinero'] },
-  { key: 'galaxy', label: 'Galaxia',  coins: 1000, reward: 'Aprendo tu canción en vivo',     card: 'Aprendo tu canción',  img: '', names: ['Galaxy', 'Galaxia'] },
+  { key: 'hat',    label: 'Sombrero', coins: 99,   reward: 'Salta la fila (ritmo actual, de la lista)', card: 'Ritmo actual, de la lista', img: 'img/sombrero.png', names: ['Hat and Mustache', 'Sombrero y bigote', 'Sombrero'] },
+  { key: 'gun',    label: 'Pistola',  coins: 500,  reward: 'Salta la fila (cualquier lista)', card: 'De cualquier lista',   img: 'img/pistola.png', names: ['Money Gun', 'Pistola de dinero'] },
+  { key: 'galaxy', label: 'Galaxia',  coins: 1000, reward: 'Aprendo tu canción en vivo',     card: 'Aprendo tu canción',  img: 'img/galaxia.png', names: ['Galaxy', 'Galaxia'] },
 ];
 
 /* REPERTORIOS — igual que la lista original:
@@ -130,7 +131,6 @@ NÉCTAR
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
-  body.demo { background: #333 linear-gradient(160deg, #4a4a4a, #1d1d1d); }
 
   :root {
     --amber: #f2b544;
@@ -252,7 +252,7 @@ NÉCTAR
 
   /* ── Tarjeta "Cómo pedir" ──────────────────────────────── */
   #howto {
-    position: absolute; left: 114px; top: 414px; width: 213px;
+    position: absolute; left: 114px; top: 360px; width: 213px;
     background: rgba(16,13,30,0.90);
     border: 2px solid var(--amber); border-radius: 12px;
     padding: 8px 10px 9px;
@@ -263,8 +263,13 @@ NÉCTAR
   @keyframes cardIn  { from { opacity: 0; transform: translateY(26px) scale(.92); } to { opacity: 1; transform: none; } }
   @keyframes cardOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(14px) scale(.97); } }
   #howto .ttl { text-align: center; font-weight: 900; font-size: 15px; color: var(--amber); letter-spacing: .04em; margin-bottom: 2px; }
-  #howto.show .ttl { animation: glow 1.4s ease-in-out .5s 2; }
-  @keyframes glow { 50% { text-shadow: 0 0 10px rgba(242,181,68,.9); transform: scale(1.06); } }
+  #howto .ttl { position: relative; }
+  #howto .glow { position: absolute; left: 22%; right: 22%; top: 2px; height: 22px; pointer-events: none;
+                 background: radial-gradient(ellipse at center, rgba(242,181,68,.55), transparent 70%); opacity: 0; }
+  #howto.show .ttl  { animation: pulse 1.4s ease-in-out .5s 2; }
+  #howto.show .glow { animation: glowOp 1.4s ease-in-out .5s 2; }
+  @keyframes pulse  { 50% { transform: scale(1.06); } }
+  @keyframes glowOp { 50% { opacity: 1; } }
   #howto.show::after { /* brillo que cruza la tarjeta una vez */
     content: ""; position: absolute; inset: 0; border-radius: 10px; pointer-events: none;
     background: linear-gradient(105deg, transparent 35%, rgba(255,230,170,.22) 50%, transparent 65%);
@@ -335,6 +340,12 @@ const SAVE_KEY = 'cola-overlay-v2';
 let S = { active: STYLES[0].key, votes: {}, cooldown: {}, likes: {}, coins: {}, gifts: [], giftImgs: {} };
 if (!DEMO) try { const saved = JSON.parse(localStorage.getItem(SAVE_KEY)); if (saved && styleBy(saved.active)) S = Object.assign(S, saved); } catch (e) {}
 let saveTimer = null;
+function prune() {   // limpia datos viejos para que no crezcan en lives largos
+  const t = now();
+  for (const k in S.cooldown) if (t - S.cooldown[k] > CFG.voteCooldownSec * 1000) delete S.cooldown[k];
+  for (const k in lastComment) if (t - lastComment[k].ts > CFG.giftCommentWindowSec * 1000) delete lastComment[k];
+}
+setInterval(prune, 60000);
 function saveNow() { saveTimer = null; if (DEMO) return; try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) {} }
 function save() { if (!saveTimer) saveTimer = setTimeout(saveNow, 600); }
 addEventListener('pagehide', saveNow);
@@ -357,11 +368,12 @@ const FALLBACK_ICON = {
   gun:    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect x="6" y="14" width="22" height="9" rx="3" fill="#e0a43a"/><rect x="10" y="22" width="7" height="11" rx="2" fill="#c98a2b"/><rect x="27" y="8" width="9" height="6" rx="1" fill="#5fbf6a" transform="rotate(20 31 11)"/><rect x="29" y="17" width="9" height="6" rx="1" fill="#5fbf6a" transform="rotate(-10 33 20)"/></svg>',
   galaxy: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><circle cx="20" cy="20" r="16" fill="#3a2a7a"/><ellipse cx="20" cy="20" rx="15" ry="6" fill="none" stroke="#c9a7ff" stroke-width="2" transform="rotate(-25 20 20)"/><circle cx="20" cy="20" r="4" fill="#ffe8a8"/><circle cx="11" cy="13" r="1.3" fill="#fff"/><circle cx="29" cy="28" r="1.1" fill="#fff"/></svg>',
 };
-const giftImg = g => (S.giftImgs && S.giftImgs[g.key]) || g.img || '';
+const giftImg = g => g.img || (S.giftImgs && S.giftImgs[g.key]) || '';   // tu imagen manda; si no hay, la aprendida
 function giftIconHTML(g, cls) {
   const src = giftImg(g);
-  if (src) return `<img class="${cls}" src="${esc(src)}" alt="">`;
-  return `<img class="${cls}" src="data:image/svg+xml;utf8,${encodeURIComponent(FALLBACK_ICON[g.key] || FALLBACK_ICON.hat)}" alt="">`;
+  const fb = `data:image/svg+xml;utf8,${encodeURIComponent(FALLBACK_ICON[g.key] || FALLBACK_ICON.hat)}`;
+  if (src) return `<img class="${cls}" src="${esc(src)}" alt="" onerror="this.onerror=null;this.src='${fb}'">`;   // si no carga, usa el ícono de respaldo
+  return `<img class="${cls}" src="${fb}" alt="">`;
 }
 
 // Si el texto no cabe, se desplaza de lado en bucle (con pausa al inicio)
@@ -429,7 +441,7 @@ const galaxyList = () => S.gifts.filter(g => g.gift === 'galaxy');    // Galaxia
 function giftRowColor(g) {
   if (g.style && styleBy(g.style)) return styleBy(g.style).color;      // color del ritmo de la canción
   if (g.gift === 'hat') return styleBy(S.active).color;                // sombrero = ritmo actual
-  return getComputedStyle(document.documentElement).getPropertyValue('--amber').trim() || '#f2b544';
+  return '#f2b544';                                                   // color monedas
 }
 function renderQueue(bumpNum) {
   const st = styleBy(S.active);
@@ -478,6 +490,9 @@ function renderGifts() {
   runMarquees($('#greqs'));
 }
 function renderRequests() { renderQueue(); renderGifts(); }
+// Muchos votos seguidos = un solo redibujado (máx. 4 por segundo)
+let qTimer = null, qBump = null;
+function scheduleQueue(num) { qBump = num; if (!qTimer) qTimer = setTimeout(() => { qTimer = null; renderQueue(qBump); }, 250); }
 
 /* ── TOQUES / MONEDAS ───────────────────────────────────── */
 function top2(obj) { return Object.values(obj).sort((a, b) => b.n - a.n).slice(0, 2); }
@@ -498,7 +513,7 @@ function buildHowTo() {
   const cd = CFG.voteCooldownSec >= 60 ? `${Math.round(CFG.voteCooldownSec / 60)} min` : `${CFG.voteCooldownSec} s`;
   let d = 0; const D = () => `style="animation-delay:${0.45 + (d++) * 0.09}s"`;
   $('#howto').innerHTML = `
-    <div class="ttl">CÓMO PEDIR</div>
+    <div class="glow"></div><div class="ttl">CÓMO PEDIR</div>
     <div class="step" ${D()}>1. Gratis: vota del repertorio</div>
     <div class="line" ${D()}>Comenta <span class="hl">"${esc(ex)}"</span></div>
     <div class="line" ${D()}>Las más votadas pasan a EN FILA</div>
@@ -511,10 +526,14 @@ function buildHowTo() {
 let howHide;
 function showHowTo() {
   const el = $('#howto');
+  el.style.top = CFG.howToTop + 'px';
   buildHowTo();
   el.classList.remove('hide', 'show'); void el.offsetWidth; el.classList.add('show');
   clearTimeout(howHide);
-  howHide = setTimeout(() => { el.classList.remove('show'); el.classList.add('hide'); }, CFG.howToShowSec * 1000);
+  howHide = setTimeout(() => {
+    el.classList.remove('show'); el.classList.add('hide');
+    setTimeout(() => el.querySelectorAll('.mq > span').forEach(x => x.getAnimations().forEach(a => a.cancel())), 500);  // nada corre mientras está oculta
+  }, CFG.howToShowSec * 1000);
 }
 setTimeout(showHowTo, 4000);
 setInterval(showHowTo, CFG.howToEverySec * 1000);
@@ -548,7 +567,7 @@ function onChat(uid, name, text) {
   if (CFG.oneVotePerSong && v.voters.includes(uid)) return;     // ya votó esta canción
   v.count++; v.voters.push(uid);
   S.cooldown[uid] = now();
-  renderQueue(ref.num); save();
+  scheduleQueue(ref.num); save();
 }
 
 function command(c) {
@@ -595,8 +614,7 @@ function learnGiftImage(giftName, imageUrl) {
 }
 
 function onGift(uid, name, giftName, coinsEach, count) {
-  const u = S.coins[uid] || (S.coins[uid] = { name, n: 0 });
-  u.name = name; u.n += coinsEach * count; statsSoon();
+  if (CFG.showStats) { const u = S.coins[uid] || (S.coins[uid] = { name, n: 0 }); u.name = name; u.n += coinsEach * count; statsSoon(); }
 
   const g = matchGift(giftName, coinsEach);
   if (g) {
@@ -616,6 +634,7 @@ function onGift(uid, name, giftName, coinsEach, count) {
 }
 
 function onLike(uid, name, n) {
+  if (!CFG.showStats) return;                                         // ranking oculto: no gastar nada en likes
   const u = S.likes[uid] || (S.likes[uid] = { name, n: 0 });
   u.name = name; u.n += n; statsSoon(); save();
 }
@@ -627,6 +646,7 @@ function connect() {
   try { ws = new WebSocket(CFG.wsUrl); } catch (e) { return scheduleReconnect(); }
   ws.onopen = () => { clearTimeout(reconnectTimer); setConn('TikFinity ✓'); console.log('[Cola] Conectado a TikFinity'); };
   ws.onmessage = evt => {
+    if (!CFG.showStats && evt.data.indexOf('"event":"like"') !== -1) return;   // taps: ni se leen
     let msg; try { msg = JSON.parse(evt.data); } catch { return; }
     const d = msg.data || {};
     const uid = d.uniqueId || d.userId || '';

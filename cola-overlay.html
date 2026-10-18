@@ -206,11 +206,11 @@ NÉCTAR
 
   /* ── Columna izquierda ─────────────────────────────────── */
   #left {
-    position: absolute; left: 4px; top: 300px; width: 106px;   /* EN FILA fija en y 300 */
+    position: absolute; left: 335px; top: 354px; width: 96px;   /* EN FILA debajo de los repertorios (que terminan en y 348) */
     display: flex; flex-direction: column; gap: 5px;
   }
   #left > * { position: relative; flex-shrink: 0; }
-  #left > #greqs { position: absolute; left: 0; right: 0; bottom: calc(100% + 5px); }   /* Galaxia: crece hacia arriba */
+  #left > #greqs { order: 2; }   /* Galaxia: debajo de EN FILA */
 
   #queue { border-color: var(--c); padding: 4px 0 5px; }
   #queue .hd { display: flex; justify-content: space-between; align-items: baseline; padding: 0 7px 3px; gap: 4px; font-weight: 800; font-size: 12px; white-space: nowrap; }
@@ -233,7 +233,8 @@ NÉCTAR
 
   .greq { background: var(--amber-bg); border: 1.5px solid var(--amber); border-radius: 8px; padding: 2px 7px 3px; line-height: 1.18;
           animation: popIn .45s cubic-bezier(.2,1.4,.4,1); }
-  .greq .k { font-size: 11px; font-weight: 800; color: var(--amber); display: flex; justify-content: space-between; align-items: center; gap: 4px; text-transform: uppercase; }
+  .greq .k { font-size: 11px; font-weight: 800; color: var(--amber); display: flex; justify-content: space-between; align-items: center; gap: 4px; text-transform: uppercase; white-space: nowrap; }
+  .greq .k span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .greq .k img { width: 15px; height: 15px; object-fit: contain; vertical-align: -3px; margin-right: 3px; }
   .greq .k span:last-child { text-transform: none; }
   .greq .k span:last-child { font-weight: 600; color: #f7dfae; }

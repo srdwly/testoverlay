@@ -267,6 +267,8 @@ LIBERACIÓN
   .qrow.gq { background: rgba(242,181,68,0.30); }   /* fondo color monedas; la línea izquierda = color del ritmo */
   .qrow.gq .qi { width: 14px; height: 14px; object-fit: contain; flex: 0 0 auto; margin-left: -2px; }
   .qrow.gq .t .mq { font-weight: 700; }
+  .qrow .t .by { font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .02em; }
+  .qrow.gq .t .by { color: #f7dfae; }
   .qrow.gq .t .wait { font-weight: 500; font-style: italic; color: #f7dfae; }
   @keyframes bump { 0% { background: color-mix(in srgb, var(--c) 55%, transparent); } 100% { background: transparent; } }
   .qempty { padding: 2px 8px 3px; font-size: 11px; color: var(--muted); }
@@ -331,12 +333,17 @@ LIBERACIÓN
   /* Indicador de conexión (solo se ve en modo demo/pruebas) */
   #conn { position: absolute; right: 6px; top: 6px; font-size: 11px; padding: 2px 6px; border-radius: 6px;
           background: rgba(0,0,0,.6); display: none; }
-  body.demo #conn { display: block; }
+  body.demo #conn, body.debug #conn { display: block; }
+  #dbg { display: none; position: absolute; left: 4px; top: 620px; width: 427px; max-height: 290px; overflow: hidden;
+         background: rgba(0,0,0,.82); border-radius: 8px; padding: 5px 7px; font: 11px/1.35 Consolas, monospace; color: #cfe; }
+  body.debug #dbg { display: block; }
+  #dbg .ok { color: #7f7; } #dbg .no { color: #fb7; } #dbg .ev { color: #8bd; }
 </style>
 </head>
 <body>
 <div id="stage">
   <div id="conn">…</div>
+  <div id="dbg"></div>
   <div id="gifts"></div>
   <div id="reps"></div>
   <div id="left">
@@ -356,15 +363,23 @@ const fmt = n => n >= 10000 ? (n/1000).toFixed(0) + 'k' : n >= 1000 ? (n/1000).t
 const now = () => Date.now();
 const params = new URLSearchParams(location.search);
 const DEMO = params.get('demo') === '1';
+const DEBUG = params.get('debug') === '1';          // cola-overlay.html?debug=1 muestra qué llega del chat
+if (DEBUG) document.body.classList.add('debug');
+function dbg(text, cls = '') {
+  if (!DEBUG) return;
+  const box = document.getElementById('dbg'), line = document.createElement('div');
+  line.className = cls; line.textContent = new Date().toLocaleTimeString() + '  ' + text;
+  box.prepend(line); while (box.children.length > 18) box.lastChild.remove();
+}
 if (DEMO) { document.body.classList.add('demo'); CFG.owners.push('demo_host'); }
 const OWNERS = CFG.owners.map(o => o.toLowerCase().replace(/^@/, ''));
 
 /* ── Datos ──────────────────────────────────────────────── */
 STYLES.forEach(s => {
-  s.items = []; s.list = [];           // items = bandas + canciones (para mostrar); list = solo canciones (para votar)
+  s.items = []; s.list = []; s.bands = []; let band = '';   // items = bandas + canciones (para mostrar); list = solo canciones (para votar); bands = intérprete de cada canción
   s.songs.split('\n').map(x => x.trim()).filter(Boolean).forEach(line => {
-    if (/^[-–•]/.test(line)) { const t = line.replace(/^[-–•]\s*/, ''); s.list.push(t); s.items.push({ num: s.list.length, t }); }
-    else if (!/:$/.test(line)) s.items.push({ band: line });
+    if (/^[-–•]/.test(line)) { const t = line.replace(/^[-–•]\s*/, ''); s.list.push(t); s.bands.push(band); s.items.push({ num: s.list.length, t }); }
+    else if (!/:$/.test(line)) { band = line; s.items.push({ band: line }); }
   });
 });
 const styleBy = k => STYLES.find(s => s.key === k);
@@ -374,7 +389,7 @@ function parseRef(text) {
   if (!m) return null;
   const st = styleBy(m[1].toLowerCase()), num = parseInt(m[2], 10);
   if (!st || num < 1 || num > st.list.length) return null;
-  return { style: st.key, num, title: st.list[num - 1] };
+  return { style: st.key, num, title: st.list[num - 1], band: st.bands[num - 1] || '' };
 }
 
 /* ── Estado (se guarda por si se recarga el overlay en pleno live) ── */
@@ -436,6 +451,8 @@ function marquee(el) {
   ], { duration: pause + move, iterations: Infinity, easing: 'linear' });
 }
 const mqHTML = (text, cls = '') => `<div class="mq ${cls}"><span><i>${esc(text)}</i></span></div>`;
+// canción + intérprete (el intérprete más pequeño y tenue)
+const mqSong = (title, band) => `<div class="mq"><span><i>${esc(title)}${band ? ` <small class="by">${esc(band)}</small>` : ''}</i></span></div>`;
 function runMarquees(root) { root.querySelectorAll('.mq').forEach(marquee); }
 
 function renderChips() {
@@ -505,11 +522,11 @@ function renderQueue(bumpNum) {
   }
   const giftRows = gifts.map(g => {
     const gift = GIFTS.find(x => x.key === g.gift);
-    const txt = g.text ? mqHTML(g.text) : `<div class="wait ell">@${esc(g.name)} ¿qué canción?</div>`;
+    const txt = g.text ? mqSong(g.text, g.band) : `<div class="wait ell">@${esc(g.name)} ¿qué canción?</div>`;
     return `<div class="qrow gq" data-k="g${g.ts}" style="--c:${giftRowColor(g)}">${giftIconHTML(gift, 'qi')}<span class="t">${txt}</span></div>`;
   });
   const voteRows = votes.map((x, i) =>
-    `<div class="qrow" data-k="v${x.num}"><span class="n">${i + 1}</span><span class="t ell">${esc(st.list[x.num - 1])}</span><span class="v">${x.count}</span></div>`);
+    `<div class="qrow" data-k="v${x.num}"><span class="n">${i + 1}</span><span class="t">${mqSong(st.list[x.num - 1], st.bands[x.num - 1])}</span><span class="v">${x.count}</span></div>`);
   box.innerHTML = giftRows.concat(voteRows).join('');
   runMarquees(box);
 
@@ -586,8 +603,13 @@ function onChat(uid, name, text) {
   const t = text.trim();
   const low = t.toLowerCase();
 
-  // Comandos (solo tu cuenta)
-  if (low.startsWith('!') && OWNERS.includes(uid.toLowerCase())) return command(low);
+  dbg(`💬 @${uid}: ${t}`, 'ev');
+  // Comandos (solo tu cuenta): "siguiente", "ritmo cumbia"… (también sirven con "!")
+  const cmdText = toCommand(low);
+  if (cmdText) {
+    if (OWNERS.includes(uid.toLowerCase())) { dbg(`✔ comando ${cmdText}`, 'ok'); return command(cmdText); }
+    if (low.startsWith('!')) { dbg(`✘ comando ignorado: @${uid} no está en owners (${OWNERS.join(', ')})`, 'no'); return; }
+  }
 
   // ¿Tiene un pedido de regalo esperando su canción?
   const pending = S.gifts.find(g => g.uid === uid && !g.text && now() - g.ts < CFG.giftCommentAfterSec * 1000);
@@ -595,21 +617,34 @@ function onChat(uid, name, text) {
     const ref = parseRef(t);
     pending.text = ref ? ref.title : t.slice(0, 60);
     pending.style = ref ? ref.style : '';
+    pending.band = ref ? ref.band : '';
     renderRequests(); save();
+    dbg(`✔ canción para su regalo: ${pending.text}`, 'ok');
     return;
   }
   lastComment[uid] = { text: t, ts: now() };
 
   // Voto
   const ref = parseRef(t);
-  if (!ref || ref.style !== S.active) return;                  // otro estilo: ignorado
+  if (!ref) return dbg('· no es voto (formato: "disco 12")', 'no');
+  if (ref.style !== S.active) return dbg(`✘ voto de ${ref.style}, pero el ritmo activo es ${S.active}`, 'no');   // otro estilo: ignorado
   const cd = S.cooldown[uid];
-  if (cd && now() - cd < CFG.voteCooldownSec * 1000) return;    // en cooldown
+  if (cd && now() - cd < CFG.voteCooldownSec * 1000) return dbg(`✘ en espera: puede votar en ${Math.ceil((CFG.voteCooldownSec * 1000 - (now() - cd)) / 1000)} s`, 'no');
   const v = S.votes[ref.num] || (S.votes[ref.num] = { count: 0, first: now(), voters: [] });
-  if (CFG.oneVotePerSong && v.voters.includes(uid)) return;     // ya votó esta canción
+  if (CFG.oneVotePerSong && v.voters.includes(uid)) return dbg(`✘ ya votó "${ref.title}" (se libera con "siguiente")`, 'no');
   v.count++; v.voters.push(uid);
+  dbg(`✔ voto: ${ref.num} ${ref.title} (${v.count})`, 'ok');
   S.cooldown[uid] = now();
   scheduleQueue(ref.num); save();
+}
+
+// Convierte lo que escribes en un comando interno, o null si no es comando
+function toCommand(low) {
+  const m = low.replace(/^!/, '').trim().split(/\s+/);
+  if (m[0] === 'siguiente' && m.length <= 2) return '!d' + (m[1] ? ' ' + m[1] : '');   // siguiente / siguiente 12
+  if (m[0] === 'ritmo' && m.length === 2 && styleBy(m[1])) return '!ritmo ' + m[1];      // ritmo cumbia
+  if (low.startsWith('!')) return low;                                                   // !d, !g, !info, !reset…
+  return null;
 }
 
 function command(c) {
@@ -661,15 +696,16 @@ function onGift(uid, name, giftName, coinsEach, count) {
   const g = matchGift(giftName, coinsEach);
   if (g) {
     const prev = lastComment[uid];
-    let text = '', style = '';
+    let text = '', style = '', band = '';
     if (prev && now() - prev.ts < CFG.giftCommentWindowSec * 1000) {
       const ref = parseRef(prev.text);
       text = ref ? ref.title : prev.text.slice(0, 60);
       style = ref ? ref.style : '';
+      band = ref ? ref.band : '';
       delete lastComment[uid];
     }
     let ts = now(); while (S.gifts.some(x => x.ts === ts)) ts++;   // id único
-    S.gifts.push({ uid, name, gift: g.key, text, style, ts });
+    S.gifts.push({ uid, name, gift: g.key, text, style, band, ts });
     renderRequests();
   }
   save();
@@ -686,13 +722,14 @@ let ws, reconnectTimer;
 function setConn(t) { $('#conn').textContent = t; }
 function connect() {
   try { ws = new WebSocket(CFG.wsUrl); } catch (e) { return scheduleReconnect(); }
-  ws.onopen = () => { clearTimeout(reconnectTimer); setConn('TikFinity ✓'); console.log('[Cola] Conectado a TikFinity'); };
+  ws.onopen = () => { clearTimeout(reconnectTimer); setConn('TikFinity ✓'); dbg('Conectado a TikFinity ' + CFG.wsUrl, 'ok'); console.log('[Cola] Conectado a TikFinity'); };
   ws.onmessage = evt => {
     if (!CFG.showStats && evt.data.indexOf('"event":"like"') !== -1) return;   // taps: ni se leen
     let msg; try { msg = JSON.parse(evt.data); } catch { return; }
     const d = msg.data || {};
     const uid = d.uniqueId || d.userId || '';
     const name = d.nickname || d.uniqueId || 'anónimo';
+    if (msg.event !== 'chat' && msg.event !== 'gift') dbg(`evento: ${msg.event}`, 'ev');
     if (msg.event === 'chat') onChat(uid, name, d.comment || '');
     else if (msg.event === 'like') onLike(uid, name, parseInt(d.likeCount || 1, 10));
     else if (msg.event === 'gift') {
@@ -702,11 +739,12 @@ function connect() {
       const coins = parseInt(d.diamondCount ?? d.gift?.diamond_count ?? 0, 10);
       const count = parseInt(d.repeatCount || d.gift?.repeat_count || 1, 10);
       console.log(`[Cola] Regalo "${giftName}" ${coins} monedas x${count} de @${uid}`);
+      dbg(`🎁 @${uid}: "${giftName}" ${coins} monedas x${count}`, "ev");
       onGift(uid, name, giftName, coins, count);
     }
   };
   ws.onerror = () => {};
-  ws.onclose = () => { setConn('TikFinity ✗'); scheduleReconnect(); };
+  ws.onclose = () => { setConn('TikFinity ✗'); dbg('Sin conexión con TikFinity (' + CFG.wsUrl + '), reintentando en 5 s…', 'no'); scheduleReconnect(); };
 }
 function scheduleReconnect() { clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connect, 5000); }
 

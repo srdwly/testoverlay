@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cola de canciones</title>
+
+<script>
+/* ════════════════════════════════════════════════════════════════
+   CONFIGURACIÓN — edita aquí
+   ════════════════════════════════════════════════════════════════ */
+const CFG = {
+  wsUrl: 'ws://localhost:21213/',     // TikFinity (igual que tu overlay de rosas)
+  owners: ['TU_USUARIO'],             // tu @usuario de TikTok SIN la @ (puede haber varios)
+
+  voteCooldownSec: 120,               // 1 voto cada 2 minutos por usuario
+  oneVotePerSong: true,               // 1 voto por persona y canción hasta que suene (!d)
+  queueSize: 6,                       // filas visibles en EN FILA (primero los pedidos con regalo, luego los votos)
+  maxGiftRows: 3,                     // máx. pedidos con regalo visibles en la fila (así siempre se ven votos)
+  maxGalaxy: 2,                       // pedidos de Galaxia visibles (caja aparte, arriba de la fila)
+  giftCommentWindowSec: 90,           // usa el comentario que el usuario escribió hasta 90 s ANTES del regalo…
+  giftCommentAfterSec: 180,           // …o el primero que escriba hasta 3 min DESPUÉS
+
+  howToEverySec: 90,                  // la tarjeta "Cómo pedir" aparece cada 90 s…
+  howToShowSec: 10,                   // …y se queda 10 s
+  scrollSpeed: 7,                     // velocidad del scroll de repertorios (px/s) — más bajo = más lento
+  marqueeSpeed: 22,                   // velocidad de los textos largos que se desplazan de lado (px/s)
+  listMarqueeSpeed: 10,               // igual, pero para los nombres largos en los repertorios (más lento)
+  showStats: false,                   // ranking TOQUES / MONEDAS (oculto: se usa el de TikFinity)
+  matchGiftByCoins: true,             // si el nombre del regalo no coincide, lo reconoce por su precio
+};
+
+/* Regalos que piden canción.
+   names = nombres que manda TikFinity (la consola muestra cada regalo que llega).
+   img   = imagen del regalo. Déjalo vacío ('') y el overlay guarda sola la imagen
+           real la primera vez que alguien envía ese regalo. También puedes pegar
+           una URL o subir el PNG a tu repo y poner p. ej. 'img/galaxia.png'. */
+const GIFTS = [
+  { key: 'hat',    label: 'Sombrero', coins: 99,   reward: 'Salta la fila (ritmo actual, de la lista)', card: 'Ritmo actual, de la lista', img: '', names: ['Hat and Mustache', 'Sombrero y bigote', 'Sombrero'] },
+  { key: 'gun',    label: 'Pistola',  coins: 500,  reward: 'Salta la fila (cualquier lista)', card: 'De cualquier lista',   img: '', names: ['Money Gun', 'Pistola de dinero'] },
+  { key: 'galaxy', label: 'Galaxia',  coins: 1000, reward: 'Aprendo tu canción en vivo',     card: 'Aprendo tu canción',  img: '', names: ['Galaxy', 'Galaxia'] },
+];
+
+/* REPERTORIOS — igual que la lista original:
+     línea sin guion  = nombre de banda (título)
+     línea con "- "   = canción (lleva número)
+   Los números siguen el orden de las canciones en todo el estilo, así que
+   agrega canciones NUEVAS AL FINAL para no cambiar los números.
+   Para agregar ROCK, copia un bloque y cambia key/label/colores. */
+const STYLES = [
+  { key: 'disco', label: 'DISCO', color: '#a594ff', panel: 'rgba(38,30,88,0.80)', songs: `
+RONISCH
+- Isabel
+- Marielita
+- Princesa
+- Digas lo que digas
+- Sueños
+- Soledad
+- Julieta
+- Tratando de vivir
+- Universitario
+- Ibeliz
+- Una muchacha
+- Paso por la calle
+- A mis 16
+- Te puedes marchar
+- Dime dime
+- Tormenta
+- Regresa
+- Despidiendo la felicidad
+IBERIA
+- Sola
+- El Perdedor
+- El Soñador
+- Primer amor
+ENLACE
+- Ven
+- Leny
+- Regresa
+- Solo se
+MARFIL
+- Juana
+- Ya me voy
+- Resignación
+ZAFIR
+- Yo te buscaré
+LUZ Y SOMBRA
+- Basta
+- Rompe cadenas
+COCO GUILLEN
+- Adoro muchas cosas de ti
+ALFILES
+- Gracias amor
+- Roxana
+- Por qué te marchaste
+LOS SOMBIS
+- Quiero tenerte junto a mi
+ECLIPSE
+- Lejos de mi hogar
+ENIGMA
+- Amor de estudiante
+- Triste Solitario
+ROFIL
+- Vago de la calle
+- Maribel
+AMADEUS
+- Celosa
+GASTON ZAMBRANA
+- Enfermo de amor
+LOS OVNIS
+- Minero
+LIBERACIÓN
+- Ese loco soy yo
+- Cuéntame
+` },
+  { key: 'cumbia', label: 'CUMBIA', color: '#45d6a0', panel: 'rgba(10,58,44,0.80)', songs: `
+NÉCTAR
+- Botellita de ron
+- Cerveza, ron y néctar
+- Ojitos hechiceros
+- El arbolito
+- Suéltame
+- Pecadora
+- El baile de la cumbia
+- Muchachita
+` },
+];
+</script>
+
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  body.demo { background: #333 linear-gradient(160deg, #4a4a4a, #1d1d1d); }
+
+  :root {
+    --amber: #f2b544;
+    --amber-bg: rgba(60,38,8,0.82);
+    --dark: rgba(14,12,26,0.80);
+    --text: #f4f2fb;
+    --muted: #b9b4cc;
+  }
+
+  /* Lienzo de diseño 435×927 (9:16), se escala al tamaño de la fuente */
+  #stage {
+    position: absolute; left: 0; top: 0;
+    width: 435px; height: 927px;
+    transform-origin: 0 0;
+    font-family: "Segoe UI", "Helvetica Neue", Arial, system-ui, sans-serif;
+    color: var(--text);
+    font-size: 12px;
+    line-height: 1.25;
+  }
+  .panel {
+    position: absolute;
+    border-radius: 9px;
+    background: var(--dark);
+    border: 1.5px solid rgba(255,255,255,0.10);
+    overflow: hidden;
+  }
+  .ell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ── Chips de regalos (arriba) ─────────────────────────── */
+  #gifts {
+    position: absolute; left: 4px; top: 62px; width: 427px; height: 46px;
+    display: flex; gap: 5px;
+  }
+  .gchip {
+    flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
+    background: var(--amber-bg);
+    border: 1.5px solid var(--amber);
+    border-radius: 10px;
+    padding: 4px 7px 4px 5px;
+  }
+  .gimg { flex: 0 0 auto; width: 31px; height: 31px; object-fit: contain; filter: drop-shadow(0 1px 2px rgba(0,0,0,.6)); }
+  .gchip .txt { flex: 1; min-width: 0; }
+  .gchip .top { font-weight: 800; font-size: 13px; color: var(--amber); line-height: 1.1; white-space: nowrap; }
+  .gchip .top small { font-size: 11px; font-weight: 600; color: #f7dfae; }
+  .gchip .rw { font-size: 11px; color: #f7dfae; margin-top: 2px; }
+
+  /* Texto largo que se desplaza de lado */
+  .mq { overflow: hidden; white-space: nowrap; }
+  .mq > span { display: inline-block; will-change: transform; }
+  .mq > span > i { font-style: normal; padding-right: 26px; }
+
+  /* ── Repertorios (derecha) ─────────────────────────────── */
+  #reps {
+    position: absolute; left: 335px; top: 116px; width: 96px; height: 232px;
+    display: flex; flex-direction: column; gap: 5px;
+  }
+  .rep { position: relative; flex: 1; min-height: 0; border-radius: 9px; overflow: hidden;
+         border: 1.5px solid rgba(255,255,255,0.10); opacity: .78; transition: opacity .4s, border-color .4s; }
+  .rep.active { opacity: 1; border-color: var(--c); box-shadow: 0 0 10px -2px var(--c); }
+  .rep .hd { position: relative; z-index: 2; display: flex; justify-content: space-between; align-items: baseline;
+             padding: 3px 6px 2px; font-weight: 800; font-size: 11.5px; color: var(--c);
+             background: inherit; }
+  .rep .hd small { font-size: 11px; font-weight: 600; color: var(--muted); }
+  .rep .body { position: absolute; left: 0; right: 0; top: 19px; bottom: 0; overflow: hidden;
+               -webkit-mask-image: linear-gradient(transparent 0, #000 10%, #000 80%, transparent 100%);
+                       mask-image: linear-gradient(transparent 0, #000 10%, #000 80%, transparent 100%); }
+  .rep .track { will-change: transform; }
+  .rep .row { display: flex; gap: 4px; padding: 0 6px; height: 15px; align-items: center; font-size: 11px; }
+  .rep .row b { color: var(--c); min-width: 15px; text-align: right; font-weight: 700; flex: 0 0 auto; }
+  .rep .row .mq { flex: 1; min-width: 0; }
+  .rep .band { padding: 5px 6px 1px; font-size: 11px; font-weight: 900; letter-spacing: .03em; color: #fff;
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ── Columna izquierda ─────────────────────────────────── */
+  #left {
+    position: absolute; left: 4px; top: 300px; width: 106px;   /* EN FILA fija en y 300 */
+    display: flex; flex-direction: column; gap: 5px;
+  }
+  #left > * { position: relative; flex-shrink: 0; }
+  #left > #greqs { position: absolute; left: 0; right: 0; bottom: calc(100% + 5px); }   /* Galaxia: crece hacia arriba */
+
+  #queue { border-color: var(--c); padding: 4px 0 5px; }
+  #queue .hd { display: flex; justify-content: space-between; align-items: baseline; padding: 0 7px 3px; gap: 4px; font-weight: 800; font-size: 12px; white-space: nowrap; }
+  #queue .hd span:last-child { color: var(--c); font-size: 11px; }
+  #queue .rows { position: relative; }
+  .qrow { display: flex; align-items: center; height: 19px; margin: 0 5px 1px 5px; padding: 0 4px 0 5px;
+          border-left: 3px solid var(--c); border-radius: 2px; font-size: 12px; gap: 4px; }
+  .qrow .n { color: var(--c); font-weight: 800; min-width: 9px; }
+  .qrow .t { flex: 1; min-width: 0; }
+  .qrow:first-child .t { font-weight: 800; }
+  .qrow .v { font-weight: 700; color: var(--muted); }
+  .qrow.bump { animation: bump .7s ease-out; }
+  .qrow.gq { background: rgba(242,181,68,0.30); }   /* fondo color monedas; la línea izquierda = color del ritmo */
+  .qrow.gq .qi { width: 14px; height: 14px; object-fit: contain; flex: 0 0 auto; margin-left: -2px; }
+  .qrow.gq .t .mq { font-weight: 700; }
+  .qrow.gq .t .wait { font-weight: 500; font-style: italic; color: #f7dfae; }
+  @keyframes bump { 0% { background: color-mix(in srgb, var(--c) 55%, transparent); } 100% { background: transparent; } }
+  .qempty { padding: 2px 8px 3px; font-size: 11px; color: var(--muted); }
+  .qempty b { color: var(--text); }
+
+  .greq { background: var(--amber-bg); border: 1.5px solid var(--amber); border-radius: 8px; padding: 2px 7px 3px; line-height: 1.18;
+          animation: popIn .45s cubic-bezier(.2,1.4,.4,1); }
+  .greq .k { font-size: 11px; font-weight: 800; color: var(--amber); display: flex; justify-content: space-between; align-items: center; gap: 4px; text-transform: uppercase; }
+  .greq .k img { width: 15px; height: 15px; object-fit: contain; vertical-align: -3px; margin-right: 3px; }
+  .greq .k span:last-child { text-transform: none; }
+  .greq .k span:last-child { font-weight: 600; color: #f7dfae; }
+  .greq .s { font-size: 12px; font-weight: 700; }
+  .greq .s.wait { font-weight: 500; color: #f7dfae; font-style: italic; }
+  @keyframes popIn { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+  #stats { padding: 5px 7px 6px; }
+  #stats h4 { font-size: 12px; font-weight: 800; color: var(--muted); letter-spacing: .03em; }
+  #stats h4.coins { color: var(--amber); margin-top: 3px; }
+  .srow { display: flex; justify-content: space-between; gap: 4px; font-size: 12px; height: 15px; align-items: center; }
+  .srow .nm { flex: 1; min-width: 0; }
+  .srow .val { color: var(--muted); font-weight: 700; }
+  .srow .val.amb { color: var(--amber); }
+  .srow.none { color: var(--muted); font-size: 11px; }
+
+  /* ── Tarjeta "Cómo pedir" ──────────────────────────────── */
+  #howto {
+    position: absolute; left: 114px; top: 414px; width: 213px;
+    background: rgba(16,13,30,0.90);
+    border: 2px solid var(--amber); border-radius: 12px;
+    padding: 8px 10px 9px;
+    opacity: 0; visibility: hidden;
+  }
+  #howto.show { visibility: visible; animation: cardIn .55s cubic-bezier(.2,1.35,.45,1) forwards; }
+  #howto.hide { visibility: visible; animation: cardOut .4s ease-in forwards; }
+  @keyframes cardIn  { from { opacity: 0; transform: translateY(26px) scale(.92); } to { opacity: 1; transform: none; } }
+  @keyframes cardOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(14px) scale(.97); } }
+  #howto .ttl { text-align: center; font-weight: 900; font-size: 15px; color: var(--amber); letter-spacing: .04em; margin-bottom: 2px; }
+  #howto.show .ttl { animation: glow 1.4s ease-in-out .5s 2; }
+  @keyframes glow { 50% { text-shadow: 0 0 10px rgba(242,181,68,.9); transform: scale(1.06); } }
+  #howto.show::after { /* brillo que cruza la tarjeta una vez */
+    content: ""; position: absolute; inset: 0; border-radius: 10px; pointer-events: none;
+    background: linear-gradient(105deg, transparent 35%, rgba(255,230,170,.22) 50%, transparent 65%);
+    transform: translateX(-110%); animation: shine 1.1s ease-out .55s forwards;
+  }
+  @keyframes shine { to { transform: translateX(110%); } }
+  #howto .line { font-size: 11.5px; color: #ddd8ea; }
+  #howto .step { font-size: 12.5px; font-weight: 800; margin-top: 4px; }
+  #howto .gl { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: #ddd8ea; margin-top: 2px; }
+  #howto .gl img { width: 18px; height: 18px; object-fit: contain; flex: 0 0 auto; }
+  #howto .gl b { color: var(--amber); font-weight: 800; flex: 0 0 auto; }
+  #howto .gl .mq { flex: 1; min-width: 0; }
+  #howto .hl { color: var(--c); font-weight: 800; }
+  #howto.show .line, #howto.show .step, #howto.show .gl { animation: lineIn .35s ease-out both; }
+  @keyframes lineIn { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: none; } }
+
+  /* Indicador de conexión (solo se ve en modo demo/pruebas) */
+  #conn { position: absolute; right: 6px; top: 6px; font-size: 11px; padding: 2px 6px; border-radius: 6px;
+          background: rgba(0,0,0,.6); display: none; }
+  body.demo #conn { display: block; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="conn">…</div>
+  <div id="gifts"></div>
+  <div id="reps"></div>
+  <div id="left">
+    <div id="greqs" style="display:flex;flex-direction:column;gap:4px"></div>
+    <div id="queue" class="panel"><div class="hd"><span>EN FILA</span><span id="qStyle"></span></div><div class="rows" id="qRows"></div></div>
+    <div id="stats" class="panel"></div>
+  </div>
+  <div id="howto"></div>
+</div>
+
+<script>
+(function () {
+'use strict';
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = n => n >= 10000 ? (n/1000).toFixed(0) + 'k' : n >= 1000 ? (n/1000).toFixed(1).replace('.0','') + 'k' : String(n);
+const now = () => Date.now();
+const params = new URLSearchParams(location.search);
+const DEMO = true; // vista previa: demo siempre activo
+if (DEMO) { document.body.classList.add('demo'); CFG.owners.push('demo_host'); }
+const OWNERS = CFG.owners.map(o => o.toLowerCase().replace(/^@/, ''));
+
+/* ── Datos ──────────────────────────────────────────────── */
+STYLES.forEach(s => {
+  s.items = []; s.list = [];           // items = bandas + canciones (para mostrar); list = solo canciones (para votar)
+  s.songs.split('\n').map(x => x.trim()).filter(Boolean).forEach(line => {
+    if (/^[-–•]/.test(line)) { const t = line.replace(/^[-–•]\s*/, ''); s.list.push(t); s.items.push({ num: s.list.length, t }); }
+    else if (!/:$/.test(line)) s.items.push({ band: line });
+  });
+});
+const styleBy = k => STYLES.find(s => s.key === k);
+const voteRe = new RegExp('(?:^|[^a-záéíóúñ])(' + STYLES.map(s => s.key).join('|') + ')\\s*#?\\s*(\\d{1,3})(?!\\d)', 'i');
+function parseRef(text) {
+  const m = voteRe.exec(' ' + text);
+  if (!m) return null;
+  const st = styleBy(m[1].toLowerCase()), num = parseInt(m[2], 10);
+  if (!st || num < 1 || num > st.list.length) return null;
+  return { style: st.key, num, title: st.list[num - 1] };
+}
+
+/* ── Estado (se guarda por si se recarga el overlay en pleno live) ── */
+const SAVE_KEY = 'cola-overlay-v2';
+let S = { active: STYLES[0].key, votes: {}, cooldown: {}, likes: {}, coins: {}, gifts: [], giftImgs: {} };
+if (!DEMO) try { const saved = JSON.parse(localStorage.getItem(SAVE_KEY)); if (saved && styleBy(saved.active)) S = Object.assign(S, saved); } catch (e) {}
+let saveTimer = null;
+function saveNow() { saveTimer = null; if (DEMO) return; try { localStorage.setItem(SAVE_KEY, JSON.stringify(S)); } catch (e) {} }
+function save() { if (!saveTimer) saveTimer = setTimeout(saveNow, 600); }
+addEventListener('pagehide', saveNow);
+const lastComment = {};   // uid -> { text, ts } (no se guarda)
+
+/* ── Escalado al tamaño de la fuente ────────────────────── */
+function fit() {
+  const sc = Math.min(innerWidth / 435, innerHeight / 927);
+  const st = $('#stage');
+  st.style.transform = `scale(${sc})`;
+  st.style.left = ((innerWidth - 435 * sc) / 2) + 'px';
+}
+addEventListener('resize', () => { fit(); clearTimeout(fit.t); fit.t = setTimeout(() => { startScrolls(); runMarquees(document); }, 250); });
+fit();
+
+/* ── Chips de regalos ───────────────────────────────────── */
+// Ícono de respaldo mientras no tengamos la imagen real del regalo
+const FALLBACK_ICON = {
+  hat:    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><ellipse cx="20" cy="27" rx="17" ry="5" fill="#c98a2b"/><path d="M10 27c0-11 4-17 10-17s10 6 10 17z" fill="#e0a43a"/><rect x="10" y="22" width="20" height="3.5" fill="#7a3d12"/></svg>',
+  gun:    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><rect x="6" y="14" width="22" height="9" rx="3" fill="#e0a43a"/><rect x="10" y="22" width="7" height="11" rx="2" fill="#c98a2b"/><rect x="27" y="8" width="9" height="6" rx="1" fill="#5fbf6a" transform="rotate(20 31 11)"/><rect x="29" y="17" width="9" height="6" rx="1" fill="#5fbf6a" transform="rotate(-10 33 20)"/></svg>',
+  galaxy: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40"><circle cx="20" cy="20" r="16" fill="#3a2a7a"/><ellipse cx="20" cy="20" rx="15" ry="6" fill="none" stroke="#c9a7ff" stroke-width="2" transform="rotate(-25 20 20)"/><circle cx="20" cy="20" r="4" fill="#ffe8a8"/><circle cx="11" cy="13" r="1.3" fill="#fff"/><circle cx="29" cy="28" r="1.1" fill="#fff"/></svg>',
+};
+const giftImg = g => (S.giftImgs && S.giftImgs[g.key]) || g.img || '';
+function giftIconHTML(g, cls) {
+  const src = giftImg(g);
+  if (src) return `<img class="${cls}" src="${esc(src)}" alt="">`;
+  return `<img class="${cls}" src="data:image/svg+xml;utf8,${encodeURIComponent(FALLBACK_ICON[g.key] || FALLBACK_ICON.hat)}" alt="">`;
+}
+
+// Si el texto no cabe, se desplaza de lado en bucle (con pausa al inicio)
+function marquee(el) {
+  const span = el.firstElementChild;
+  span.getAnimations().forEach(a => a.cancel());
+  if (span.children.length > 1) span.lastElementChild.remove();
+  const i0 = span.firstElementChild;
+  if (i0.offsetWidth - 26 <= el.clientWidth + 1) return;   // 26 = espacio entre repeticiones
+  span.appendChild(span.firstElementChild.cloneNode(true));
+  const w = span.firstElementChild.offsetWidth;
+  const speed = el.closest('.rep') ? CFG.listMarqueeSpeed : CFG.marqueeSpeed;
+  const move = w / speed * 1000, pause = 1800;
+  span.animate([
+    { transform: 'translateX(0)', offset: 0 },
+    { transform: 'translateX(0)', offset: pause / (pause + move) },
+    { transform: `translateX(${-w}px)`, offset: 1 },
+  ], { duration: pause + move, iterations: Infinity, easing: 'linear' });
+}
+const mqHTML = (text, cls = '') => `<div class="mq ${cls}"><span><i>${esc(text)}</i></span></div>`;
+function runMarquees(root) { root.querySelectorAll('.mq').forEach(marquee); }
+
+function renderChips() {
+  $('#gifts').innerHTML = GIFTS.map(g =>
+    `<div class="gchip">${giftIconHTML(g, 'gimg')}<div class="txt"><div class="top">${g.coins.toLocaleString('en-US')} <small>monedas</small></div>${mqHTML(g.reward, 'rw')}</div></div>`
+  ).join('');
+  runMarquees($('#gifts'));
+}
+renderChips();
+
+/* ── Repertorios con scroll (GPU, sin JS por cuadro) ───── */
+const reps = $('#reps');
+STYLES.forEach(s => {
+  const el = document.createElement('div');
+  el.className = 'rep'; el.dataset.key = s.key;
+  el.style.setProperty('--c', s.color); el.style.background = s.panel;
+  const rows = s.items.map(it => it.band
+    ? `<div class="band">${mqHTML(it.band)}</div>`
+    : `<div class="row"><b>${it.num}</b>${mqHTML(it.t)}</div>`).join('');
+  el.innerHTML = `<div class="hd"><span>${esc(s.label)}</span><small>1-${s.list.length}</small></div>
+    <div class="body"><div class="track"><div class="copy">${rows}</div><div class="copy">${rows}</div></div></div>`;
+  reps.appendChild(el);
+});
+function startScrolls() {
+  reps.querySelectorAll('.rep').forEach(el => {
+    const track = el.querySelector('.track'), body = el.querySelector('.body');
+    track.getAnimations().forEach(a => a.cancel());
+    const loopH = track.children[1].offsetTop;
+    if (loopH <= body.clientHeight) { track.children[1].style.display = 'none'; return; }
+    track.children[1].style.display = '';
+    track.animate([{ transform: 'translate3d(0,0,0)' }, { transform: `translate3d(0,${-loopH}px,0)` }],
+      { duration: loopH / CFG.scrollSpeed * 1000, iterations: Infinity, easing: 'linear' });
+  });
+}
+
+/* ── EN FILA ────────────────────────────────────────────── */
+function queueItems() {
+  return Object.entries(S.votes)
+    .map(([num, v]) => ({ num: +num, count: v.count, first: v.first }))
+    .filter(x => x.count > 0)
+    .sort((a, b) => b.count - a.count || a.first - b.first);
+}
+const giftQueue = () => S.gifts.filter(g => g.gift !== 'galaxy');     // Sombrero / Pistola: van en la fila
+const galaxyList = () => S.gifts.filter(g => g.gift === 'galaxy');    // Galaxia: caja aparte
+function giftRowColor(g) {
+  if (g.style && styleBy(g.style)) return styleBy(g.style).color;      // color del ritmo de la canción
+  if (g.gift === 'hat') return styleBy(S.active).color;                // sombrero = ritmo actual
+  return getComputedStyle(document.documentElement).getPropertyValue('--amber').trim() || '#f2b544';
+}
+function renderQueue(bumpNum) {
+  const st = styleBy(S.active);
+  $('#left').style.setProperty('--c', st.color);
+  $('#howto').style.setProperty('--c', st.color);
+  $('#queue').style.background = st.panel;
+  $('#qStyle').textContent = st.label;
+  reps.querySelectorAll('.rep').forEach(r => r.classList.toggle('active', r.dataset.key === S.active));
+
+  const box = $('#qRows');
+  const before = {};
+  box.querySelectorAll('.qrow').forEach(r => before[r.dataset.k] = r.getBoundingClientRect().top);
+
+  const gifts = giftQueue().slice(0, Math.min(CFG.maxGiftRows, CFG.queueSize));
+  const votes = queueItems().slice(0, Math.max(0, CFG.queueSize - gifts.length));
+  if (!gifts.length && !votes.length) {
+    box.innerHTML = `<div class="qempty">Comenta<br><b>"${esc(st.key)} ${Math.min(12, st.list.length)}"</b> para votar</div>`;
+    return;
+  }
+  const giftRows = gifts.map(g => {
+    const gift = GIFTS.find(x => x.key === g.gift);
+    const txt = g.text ? mqHTML(g.text) : `<div class="wait ell">@${esc(g.name)} ¿qué canción?</div>`;
+    return `<div class="qrow gq" data-k="g${g.ts}" style="--c:${giftRowColor(g)}">${giftIconHTML(gift, 'qi')}<span class="t">${txt}</span></div>`;
+  });
+  const voteRows = votes.map((x, i) =>
+    `<div class="qrow" data-k="v${x.num}"><span class="n">${i + 1}</span><span class="t ell">${esc(st.list[x.num - 1])}</span><span class="v">${x.count}</span></div>`);
+  box.innerHTML = giftRows.concat(voteRows).join('');
+  runMarquees(box);
+
+  // animación FLIP: las filas se deslizan a su nueva posición
+  box.querySelectorAll('.qrow').forEach(r => {
+    const b = before[r.dataset.k], a = r.getBoundingClientRect().top;
+    if (b !== undefined && b !== a) r.animate([{ transform: `translateY(${b - a}px)` }, { transform: 'none' }], { duration: 350, easing: 'ease-out' });
+    else if (b === undefined) r.animate([{ opacity: 0, transform: 'translateX(-10px)' }, { opacity: 1, transform: 'none' }], { duration: 300, easing: 'ease-out' });
+    if (r.dataset.k === 'v' + bumpNum) r.classList.add('bump');
+  });
+}
+
+/* ── Galaxia (fuera de la fila, arriba) ─────────────────── */
+function renderGifts() {
+  const gal = GIFTS.find(x => x.key === 'galaxy');
+  $('#greqs').innerHTML = galaxyList().slice(0, CFG.maxGalaxy).map(g => {
+    const song = g.text ? mqHTML(g.text, 's') : `<div class="s wait ell">@${esc(g.name)}: ¿qué canción?</div>`;
+    return `<div class="greq"><div class="k"><span>${giftIconHTML(gal, '')}NUEVA</span><span class="ell">${g.text ? esc(g.name) : ''}</span></div>${song}</div>`;
+  }).join('');
+  runMarquees($('#greqs'));
+}
+function renderRequests() { renderQueue(); renderGifts(); }
+
+/* ── TOQUES / MONEDAS ───────────────────────────────────── */
+function top2(obj) { return Object.values(obj).sort((a, b) => b.n - a.n).slice(0, 2); }
+function renderStats() {
+  if (!CFG.showStats) { $('#stats').style.display = 'none'; return; }
+  const rows = (list, amb) => list.length
+    ? list.map((u, i) => `<div class="srow"><span class="nm ell">${i + 1}. ${esc(u.name)}</span><span class="val${amb ? ' amb' : ''}">${fmt(u.n)}</span></div>`).join('')
+    : `<div class="srow none">—</div>`;
+  $('#stats').innerHTML = `<h4>TOQUES</h4>${rows(top2(S.likes))}<h4 class="coins">MONEDAS</h4>${rows(top2(S.coins), true)}`;
+}
+let statsTimer = null;
+function statsSoon() { if (!statsTimer) statsTimer = setTimeout(() => { statsTimer = null; renderStats(); }, 1000); }
+
+/* ── Tarjeta Cómo pedir ─────────────────────────────────── */
+function buildHowTo() {
+  const st = styleBy(S.active);
+  const ex = `${st.key} ${Math.min(12, st.list.length)}`;
+  const cd = CFG.voteCooldownSec >= 60 ? `${Math.round(CFG.voteCooldownSec / 60)} min` : `${CFG.voteCooldownSec} s`;
+  let d = 0; const D = () => `style="animation-delay:${0.45 + (d++) * 0.09}s"`;
+  $('#howto').innerHTML = `
+    <div class="ttl">CÓMO PEDIR</div>
+    <div class="step" ${D()}>1. Gratis: vota del repertorio</div>
+    <div class="line" ${D()}>Comenta <span class="hl">"${esc(ex)}"</span></div>
+    <div class="line" ${D()}>Las más votadas pasan a EN FILA</div>
+    <div class="line" ${D()}>Un voto cada ${cd}</div>
+    <div class="step" ${D()}>2. Con regalo: salta la fila</div>
+    <div class="line" ${D()}>Escribe tu canción y envía:</div>
+    ${GIFTS.map(g => `<div class="gl" ${D()}>${giftIconHTML(g, '')}<b>${g.coins.toLocaleString('en-US')}</b>${mqHTML(g.card || g.reward)}</div>`).join('')}`;
+  runMarquees($('#howto'));
+}
+let howHide;
+function showHowTo() {
+  const el = $('#howto');
+  buildHowTo();
+  el.classList.remove('hide', 'show'); void el.offsetWidth; el.classList.add('show');
+  clearTimeout(howHide);
+  howHide = setTimeout(() => { el.classList.remove('show'); el.classList.add('hide'); }, CFG.howToShowSec * 1000);
+}
+setTimeout(showHowTo, 4000);
+setInterval(showHowTo, CFG.howToEverySec * 1000);
+
+/* ── Lógica del chat ────────────────────────────────────── */
+function onChat(uid, name, text) {
+  if (!uid || !text) return;
+  const t = text.trim();
+  const low = t.toLowerCase();
+
+  // Comandos (solo tu cuenta)
+  if (low.startsWith('!') && OWNERS.includes(uid.toLowerCase())) return command(low);
+
+  // ¿Tiene un pedido de regalo esperando su canción?
+  const pending = S.gifts.find(g => g.uid === uid && !g.text && now() - g.ts < CFG.giftCommentAfterSec * 1000);
+  if (pending) {
+    const ref = parseRef(t);
+    pending.text = ref ? ref.title : t.slice(0, 60);
+    pending.style = ref ? ref.style : '';
+    renderRequests(); save();
+    return;
+  }
+  lastComment[uid] = { text: t, ts: now() };
+
+  // Voto
+  const ref = parseRef(t);
+  if (!ref || ref.style !== S.active) return;                  // otro estilo: ignorado
+  const cd = S.cooldown[uid];
+  if (cd && now() - cd < CFG.voteCooldownSec * 1000) return;    // en cooldown
+  const v = S.votes[ref.num] || (S.votes[ref.num] = { count: 0, first: now(), voters: [] });
+  if (CFG.oneVotePerSong && v.voters.includes(uid)) return;     // ya votó esta canción
+  v.count++; v.voters.push(uid);
+  S.cooldown[uid] = now();
+  renderQueue(ref.num); save();
+}
+
+function command(c) {
+  const [cmd, arg] = c.split(/\s+/);
+  if (cmd === '!d') {                     // canción tocada: sale la primera de la fila (o !d 12)
+    let num = parseInt(arg, 10);
+    const gq = giftQueue();
+    if (!num && gq.length) S.gifts.splice(S.gifts.indexOf(gq[0]), 1);   // primero los pedidos con regalo
+    else {
+      if (!num) { const q = queueItems(); if (q.length) num = q[0].num; }
+      if (num) delete S.votes[num];                                     // votos a 0
+    }
+    renderQueue();
+  } else if (cmd === '!ritmo' && styleBy(arg)) {   // cambia estilo, fila vacía
+    S.active = arg; S.votes = {}; S.cooldown = {};
+    renderQueue();
+  } else if (cmd === '!g') {              // Galaxia atendida (la más antigua, o !g 2)
+    const gl = galaxyList(), i = Math.max(0, (parseInt(arg, 10) || 1) - 1);
+    if (gl[i]) S.gifts.splice(S.gifts.indexOf(gl[i]), 1);
+    renderGifts();
+  } else if (cmd === '!info') {
+    showHowTo();
+  } else if (cmd === '!reset') {          // empezar un live nuevo (borra todo)
+    S.votes = {}; S.cooldown = {}; S.likes = {}; S.coins = {}; S.gifts = [];
+    renderRequests(); renderStats();
+  }
+  save();
+}
+
+function matchGift(name, coins) {
+  const n = (name || '').toLowerCase();
+  return GIFTS.find(g => g.names.some(x => x.toLowerCase() === n))
+      || (CFG.matchGiftByCoins ? GIFTS.find(g => g.coins === coins) : null);
+}
+
+function learnGiftImage(giftName, imageUrl) {
+  if (!imageUrl) return;
+  const n = (giftName || '').toLowerCase();
+  const g = GIFTS.find(x => x.names.some(y => y.toLowerCase() === n));
+  if (g && !g.img && S.giftImgs[g.key] !== imageUrl) {
+    S.giftImgs[g.key] = imageUrl; renderChips(); renderRequests(); save();
+    console.log(`[Cola] Imagen guardada para ${g.label}: ${imageUrl}`);
+  }
+}
+
+function onGift(uid, name, giftName, coinsEach, count) {
+  const u = S.coins[uid] || (S.coins[uid] = { name, n: 0 });
+  u.name = name; u.n += coinsEach * count; statsSoon();
+
+  const g = matchGift(giftName, coinsEach);
+  if (g) {
+    const prev = lastComment[uid];
+    let text = '', style = '';
+    if (prev && now() - prev.ts < CFG.giftCommentWindowSec * 1000) {
+      const ref = parseRef(prev.text);
+      text = ref ? ref.title : prev.text.slice(0, 60);
+      style = ref ? ref.style : '';
+      delete lastComment[uid];
+    }
+    let ts = now(); while (S.gifts.some(x => x.ts === ts)) ts++;   // id único
+    S.gifts.push({ uid, name, gift: g.key, text, style, ts });
+    renderRequests();
+  }
+  save();
+}
+
+function onLike(uid, name, n) {
+  const u = S.likes[uid] || (S.likes[uid] = { name, n: 0 });
+  u.name = name; u.n += n; statsSoon(); save();
+}
+
+/* ── TikFinity WebSocket ────────────────────────────────── */
+let ws, reconnectTimer;
+function setConn(t) { $('#conn').textContent = t; }
+function connect() {
+  try { ws = new WebSocket(CFG.wsUrl); } catch (e) { return scheduleReconnect(); }
+  ws.onopen = () => { clearTimeout(reconnectTimer); setConn('TikFinity ✓'); console.log('[Cola] Conectado a TikFinity'); };
+  ws.onmessage = evt => {
+    let msg; try { msg = JSON.parse(evt.data); } catch { return; }
+    const d = msg.data || {};
+    const uid = d.uniqueId || d.userId || '';
+    const name = d.nickname || d.uniqueId || 'anónimo';
+    if (msg.event === 'chat') onChat(uid, name, d.comment || '');
+    else if (msg.event === 'like') onLike(uid, name, parseInt(d.likeCount || 1, 10));
+    else if (msg.event === 'gift') {
+      const giftName = d.originalName || d.giftName || d.name || '';
+      learnGiftImage(giftName, d.giftPictureUrl || '');
+      if (d.repeatEnd === false) return;               // esperar fin del combo
+      const coins = parseInt(d.diamondCount ?? d.gift?.diamond_count ?? 0, 10);
+      const count = parseInt(d.repeatCount || d.gift?.repeat_count || 1, 10);
+      console.log(`[Cola] Regalo "${giftName}" ${coins} monedas x${count} de @${uid}`);
+      onGift(uid, name, giftName, coins, count);
+    }
+  };
+  ws.onerror = () => {};
+  ws.onclose = () => { setConn('TikFinity ✗'); scheduleReconnect(); };
+}
+function scheduleReconnect() { clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connect, 5000); }
+
+/* ── Modo demo: cola.html?demo=1 simula un chat ─────────── */
+function demo() {
+  const names = ['Andrea', 'Lokito', 'Sumo', 'Luz', 'Marco', 'Kathy', 'Rolo', 'Vale', 'Pancho', 'Mery', 'Tito', 'Juanca'];
+  let i = 0;
+  setInterval(() => {
+    const nm = names[Math.floor(Math.random() * names.length)];
+    const uid = nm.toLowerCase() + (i++ % 40);
+    const r = Math.random();
+    if (r < 0.55) {
+      const st = Math.random() < 0.8 ? styleBy(S.active) : STYLES[Math.floor(Math.random() * STYLES.length)];
+      const pick = [10, 11, 12, 13, 15, 3, 7][Math.floor(Math.random() * 7)];
+      onChat(uid, nm, `${st.key} ${Math.min(pick, st.list.length)}`);
+    } else if (r < 0.85) onLike(nm, nm, 5 + Math.floor(Math.random() * 40));
+    else if (r < 0.92) onGift(nm, nm, 'Rose', 1, 5);
+    else if (r < 0.935) { onChat(nm, nm, 'disco 4'); onGift(nm, nm, 'Hat and Mustache', 99, 1); }
+    else if (r < 0.94) { onChat(nm, nm, 'cumbia 2'); onGift(nm, nm, 'Money Gun', 500, 1); }
+    else if (r < 0.97) { onGift(nm, nm, 'Galaxy', 1000, 1); setTimeout(() => onChat(nm, nm, 'Llorarás - Los Kjarkas'), 2500); }
+  }, 900);
+  setInterval(() => command('!d'), 25000);
+  setInterval(() => command('!g'), 33000);
+}
+addEventListener('keydown', e => { if (e.key === 'i' || e.key === 'I') showHowTo(); });
+
+/* ── Inicio ─────────────────────────────────────────────── */
+renderRequests(); renderStats();
+(document.fonts ? document.fonts.ready : Promise.resolve()).then(() => { startScrolls(); runMarquees(reps); });
+connect();
+if (DEMO) demo();
+window.cola = { chat: onChat, gift: onGift, like: onLike, command, showHowTo, learnGiftImage };   // para pruebas desde la consola
+})();
+</script>
+</body>
+</html>

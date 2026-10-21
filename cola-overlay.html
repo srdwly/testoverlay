@@ -968,7 +968,8 @@ function floatBonus(style, num, n, kind) {
 
 // Convierte lo que escribes en un comando interno, o null si no es comando
 function toCommand(low) {
-  const m = low.replace(/^!/, '').trim().split(/\s+/);
+  // normaliza: sin "!", tildes, puntos, emojis ni caracteres invisibles ("Ritmo cumbia." = "ritmo cumbia")
+  const m = words(low);
   if (m[0] === 'siguiente' && m.length <= 2) return '!d' + (m[1] ? ' ' + m[1] : '');   // siguiente / siguiente 12
   if (m[0] === 'ritmo' && m.length === 2 && styleBy(m[1])) return '!ritmo ' + m[1];      // ritmo cumbia
   if (low.startsWith('!')) return low;                                                   // !d, !g, !info, !reset…

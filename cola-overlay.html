@@ -1,4 +1,4 @@
-   <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="UTF-8">
@@ -20,13 +20,15 @@ const CFG = {
   maxGalaxy: 1,                       // pedidos de Galaxia visibles (si hay más, muestra "+N")
   nowEverySec: 90,                    // cartel grande "AHORA SUENA" arriba al centro: cada 90 s…
   nowShowSec: 6,                      // …se queda 6 s (también aparece al cambiar de ritmo)
+  tapsPerVote: 1000,                  // cada 1000 taps de una persona = +1 voto a la última canción que pidió (0 = apagado)
+  coinsPerVote: 10,                   // cada 10 monedas en regalos (que no sean Sombrero/Amplificado/Galaxia) = +1 voto
   hintSec: 7,                         // segundos que se ve el aviso "¿Regresa de RONISCH o ENLACE?" 
   giftCommentWindowSec: 90,           // usa el comentario que el usuario escribió hasta 90 s ANTES del regalo…
   giftCommentAfterSec: 180,           // …o el primero que escriba hasta 3 min DESPUÉS
 
-  howToEverySec: 150,                  // la tarjeta "Cómo pedir" aparece cada 90 s…
+  howToEverySec: 150,                 // la tarjeta "Cómo pedir" aparece cada 2.5 min…
   howToShowSec: 10,                   // …y se queda 10 s
-  howToTop: 350,                      // posición vertical de la tarjeta (más bajo = más arriba)
+  howToTop: 520,                      // posición vertical de la tarjeta (más alto = más abajo)
   scrollSpeed: 7,                     // velocidad del scroll de repertorios (px/s) — más bajo = más lento
   marqueeSpeed: 22,                   // velocidad de los textos largos que se desplazan de lado (px/s)
   listMarqueeSpeed: 10,               // igual, pero para los nombres largos en los repertorios (más lento)
@@ -329,6 +331,11 @@ LIBERACIÓN
   .qrow .t .by { font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: .02em; }
   .qrow.gq .t .by { color: #f7dfae; }
   .qrow.gq .t .wait { font-weight: 500; font-style: italic; color: #f7dfae; }
+  .qrow { position: relative; }
+  .plus { position: absolute; right: 2px; top: -2px; padding: 0 4px; border-radius: 6px; font-size: 11px; font-weight: 900;
+          pointer-events: none; white-space: nowrap; background: rgba(0,0,0,.75); color: #fff; }
+  .plus.coin { color: var(--amber); }
+  .plus.coin i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--amber); vertical-align: 0; }
   @keyframes bump { 0% { background: color-mix(in srgb, var(--c) 55%, transparent); } 100% { background: transparent; } }
   .qempty { padding: 1px 8px 2px; font-size: 11px; color: var(--muted); white-space: nowrap; }
   .qempty b { color: var(--text); }
@@ -350,7 +357,7 @@ LIBERACIÓN
   @keyframes nowOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-20px) scale(.9); } }
 
   /* Aviso para nombres repetidos */
-  #hint { position: absolute; left: 114px; top: 566px; width: 213px; padding: 5px 9px 6px; border-radius: 10px;
+  #hint { position: absolute; left: 114px; top: 466px; width: 213px; padding: 5px 9px 6px; border-radius: 10px;
           background: rgba(60,38,8,0.92); border: 1.5px solid var(--amber); font-size: 11.5px; line-height: 1.3;
           color: #f7dfae; opacity: 0; visibility: hidden; }
   #hint b { color: #fff; }
@@ -380,7 +387,7 @@ LIBERACIÓN
 
   /* ── Tarjeta "Cómo pedir" ──────────────────────────────── */
   #howto {
-    position: absolute; left: 114px; top: 350px; width: 213px;
+    position: absolute; left: 114px; top: 520px; width: 213px;
     background: rgba(16,13,30,0.90);
     border: 2px solid var(--amber); border-radius: 12px;
     padding: 8px 10px 9px;
@@ -566,11 +573,13 @@ function parseRef(text) {
 
 /* ── Estado (se guarda por si se recarga el overlay en pleno live) ── */
 const SAVE_KEY = 'cola-overlay-v2';
-let S = { active: STYLES[0].key, votes: {}, cooldown: {}, likes: {}, coins: {}, gifts: [], giftImgs: {} };
+let S = { active: STYLES[0].key, votes: {}, cooldown: {}, likes: {}, coins: {}, gifts: [], giftImgs: {},
+          support: {}, taps: {}, bank: {} };   // support = última canción pedida por persona; taps/bank = taps y monedas acumulados
 if (!DEMO) try { const saved = JSON.parse(localStorage.getItem(SAVE_KEY)); if (saved && styleBy(saved.active)) S = Object.assign(S, saved); } catch (e) {}
 // votos por ritmo: { disco: {num: …}, cumbia: {…} } (convierte el formato anterior)
 if (Object.keys(S.votes).some(k => !styleBy(k))) S.votes = { [S.active]: S.votes };
 const VOTES = k => S.votes[k] || (S.votes[k] = {});
+['support', 'taps', 'bank'].forEach(k => { if (!S[k]) S[k] = {}; });
 S.gifts.forEach(g => { if (!g.at) g.at = S.active; if (g.gift === 'gun') g.gift = 'amp'; });   // pedidos viejos con Pistola → Amplificado
 let saveTimer = null;
 function prune() {   // limpia datos viejos para que no crezcan en lives largos
@@ -843,6 +852,7 @@ function buildHowTo() {
     <div class="line" ${D()}>o su número: <span class="hl">"${esc(exNum)}"</span></div>
     <div class="line" ${D()}>La encuesta elige qué lista suena</div>
     <div class="line" ${D()}>Un voto cada ${cd}</div>
+    <div class="line" ${D()}><span class="hl">+1 voto</span>: ${fmt(CFG.tapsPerVote)} taps o ${CFG.coinsPerVote} monedas</div>
     <div class="step" ${D()}>2. Con regalo: salta la fila</div>
     <div class="line" ${D()}>Escribe tu canción y envía:</div>
     ${GIFTS.map(g => `<div class="gl" ${D()}>${giftIconHTML(g, '')}<b>${g.coins.toLocaleString('en-US')}</b>${mqHTML(g.card || g.reward)}</div>`).join('')}`;
@@ -897,6 +907,8 @@ function onChat(uid, name, text) {
   if (rr.type === 'vague') return dbg(`✘ muy general, coincide con: ${rr.titles.join(', ')}`, 'no');
   if (rr.type === 'none') return dbg('✘ no está en la lista', 'no');
   const ref = rr.ref;
+  S.support[uid] = { style: ref.style, num: ref.num };                  // a esta canción van sus taps y monedas
+  applyBonus(uid);                                                      // por si ya tenía taps/monedas acumulados
   const cd = S.cooldown[uid];
   if (cd && now() - cd < CFG.voteCooldownSec * 1000) return dbg(`✘ en espera: puede votar en ${Math.ceil((CFG.voteCooldownSec * 1000 - (now() - cd)) / 1000)} s`, 'no');
   const V = VOTES(ref.style);
@@ -906,6 +918,52 @@ function onChat(uid, name, text) {
   dbg(`✔ voto ${ref.style}${rr.moved ? ' (estaba en esa lista)' : ''}: ${ref.num} ${ref.title} – ${ref.band} (${v.count})`, 'ok');
   S.cooldown[uid] = now();
   scheduleQueue(ref.style, ref.num); save();
+}
+
+/* ── Taps y monedas = votos extra para la última canción pedida ── */
+function addBonus(uid, votes, kind) {
+  const sp = S.support[uid];
+  if (!sp || votes <= 0) return false;
+  const V = VOTES(sp.style);
+  const v = V[sp.num] || (V[sp.num] = { count: 0, first: now(), voters: [] });
+  v.count += votes;
+  dbg(`✔ +${votes} voto(s) por ${kind === 'tap' ? 'taps' : 'monedas'} → ${sp.style} ${sp.num} ${styleBy(sp.style).list[sp.num - 1]} (${v.count})`, 'ok');
+  scheduleQueue(sp.style, sp.num);
+  floatBonus(sp.style, sp.num, votes, kind);
+  save();
+  return true;
+}
+// convierte lo acumulado en votos (solo si la persona ya pidió una canción; si no, se guarda)
+function applyBonus(uid) {
+  if (!S.support[uid]) return;
+  if (CFG.tapsPerVote > 0 && (S.taps[uid] || 0) >= CFG.tapsPerVote) {
+    const n = Math.floor(S.taps[uid] / CFG.tapsPerVote);
+    S.taps[uid] -= n * CFG.tapsPerVote; addBonus(uid, n, 'tap');
+  }
+  if (CFG.coinsPerVote > 0 && (S.bank[uid] || 0) >= CFG.coinsPerVote) {
+    const n = Math.floor(S.bank[uid] / CFG.coinsPerVote);
+    S.bank[uid] -= n * CFG.coinsPerVote; addBonus(uid, n, 'coin');
+  }
+}
+// "+N" que sube y se desvanece sobre la fila de la canción
+const pendingFloat = [];
+function floatBonus(style, num, n, kind) {
+  pendingFloat.push({ style, num, n, kind });
+  setTimeout(() => {                                   // después del redibujado de la fila (250 ms)
+    while (pendingFloat.length) {
+      const f = pendingFloat.shift();
+      const row = qPanels[f.style] && qPanels[f.style].querySelector(`.qrow[data-k="v${f.num}"]`);
+      if (!row) continue;
+      const el = document.createElement('span');
+      el.className = 'plus ' + f.kind;
+      el.textContent = `+${f.n}${f.kind === 'tap' ? ' 👆' : ''}`;
+      if (f.kind === 'coin') el.innerHTML = `+${f.n} <i></i>`;
+      row.appendChild(el);
+      el.animate([{ opacity: 0, transform: 'translateY(4px) scale(.7)' }, { opacity: 1, transform: 'translateY(-6px) scale(1.1)', offset: .25 },
+                  { opacity: 1, transform: 'translateY(-10px) scale(1)', offset: .7 }, { opacity: 0, transform: 'translateY(-18px)' }],
+                 { duration: 1800, easing: 'ease-out' }).onfinish = () => el.remove();
+    }
+  }, 320);
 }
 
 // Convierte lo que escribes en un comando interno, o null si no es comando
@@ -926,7 +984,7 @@ function command(c) {
     if (!num && gq.length) S.gifts.splice(S.gifts.indexOf(gq[0]), 1);   // primero los pedidos con regalo
     else {
       if (!num) { const q = queueItems(k); if (q.length) num = q[0].num; }
-      if (num) delete V[num];                                           // votos a 0
+      if (num) { delete V[num]; for (const u in S.support) if (S.support[u].style === k && S.support[u].num === num) delete S.support[u]; }   // votos a 0; sus taps/monedas esperan un nuevo pedido
     }
     renderQueue(k);
   } else if (cmd === '!ritmo' && styleBy(arg)) {   // "ritmo cumbia": cambia lo que suena (las filas se conservan)
@@ -940,7 +998,7 @@ function command(c) {
   } else if (cmd === '!info') {
     showHowTo();
   } else if (cmd === '!reset') {          // empezar un live nuevo (borra todo)
-    S.votes = {}; S.cooldown = {}; S.likes = {}; S.coins = {}; S.gifts = [];
+    S.votes = {}; S.cooldown = {}; S.likes = {}; S.coins = {}; S.gifts = []; S.support = {}; S.taps = {}; S.bank = {};
     renderRequests(); renderStats();
   }
   save();
@@ -966,6 +1024,15 @@ function onGift(uid, name, giftName, coinsEach, count) {
   if (CFG.showStats) { const u = S.coins[uid] || (S.coins[uid] = { name, n: 0 }); u.name = name; u.n += coinsEach * count; statsSoon(); }
 
   const g = matchGift(giftName, coinsEach);
+  if (!g && CFG.coinsPerVote > 0 && coinsEach > 0) {                  // regalo normal: sus monedas suman votos
+    if (!S.support[uid]) {                                             // ¿escribió una canción justo antes?
+      const prev = lastComment[uid];
+      const rr = prev && now() - prev.ts < CFG.giftCommentWindowSec * 1000 ? resolveRequest(prev.text) : null;
+      if (rr && rr.type === 'ok') S.support[uid] = { style: rr.ref.style, num: rr.ref.num };
+    }
+    S.bank[uid] = (S.bank[uid] || 0) + coinsEach * count;
+    applyBonus(uid);
+  }
   if (g) {
     const prev = lastComment[uid];
     let text = '', style = '', band = '';
@@ -984,7 +1051,11 @@ function onGift(uid, name, giftName, coinsEach, count) {
 }
 
 function onLike(uid, name, n) {
-  if (!CFG.showStats) return;                                         // ranking oculto: no gastar nada en likes
+  if (CFG.tapsPerVote > 0 && uid) {                                   // taps → votos
+    S.taps[uid] = (S.taps[uid] || 0) + n;
+    if (S.taps[uid] >= CFG.tapsPerVote) applyBonus(uid);
+  }
+  if (!CFG.showStats) return;                                         // ranking oculto
   const u = S.likes[uid] || (S.likes[uid] = { name, n: 0 });
   u.name = name; u.n += n; statsSoon(); save();
 }
@@ -996,7 +1067,7 @@ function connect() {
   try { ws = new WebSocket(CFG.wsUrl); } catch (e) { return scheduleReconnect(); }
   ws.onopen = () => { clearTimeout(reconnectTimer); setConn('TikFinity ✓'); dbg('Conectado a TikFinity ' + CFG.wsUrl, 'ok'); console.log('[Cola] Conectado a TikFinity'); };
   ws.onmessage = evt => {
-    if (!CFG.showStats && evt.data.indexOf('"event":"like"') !== -1) return;   // taps: ni se leen
+    if (!CFG.showStats && !CFG.tapsPerVote && evt.data.indexOf('"event":"like"') !== -1) return;   // taps: ni se leen si no se usan
     let msg; try { msg = JSON.parse(evt.data); } catch { return; }
     const d = msg.data || {};
     const uid = d.uniqueId || d.userId || '';
@@ -1036,8 +1107,8 @@ function demo() {
       onChat(uid, nm, asText ? `${st.key} ${(st.bands[n - 1] || '').toLowerCase()} ${st.list[n - 1].toLowerCase()}` : `${st.key} ${n}`);
     }
     else if (r < 0.57) onChat(uid, nm, 'disco regresa');               // nombre repetido → aviso
-    else if (r < 0.85) onLike(nm, nm, 5 + Math.floor(Math.random() * 40));
-    else if (r < 0.92) onGift(nm, nm, 'Rose', 1, 5);
+    else if (r < 0.85) onLike(uid, nm, 40 + Math.floor(Math.random() * 300));   // taps (suman votos cada 1000)
+    else if (r < 0.92) onGift(uid, nm, 'Rose', 1, 5 + Math.floor(Math.random() * 15));   // rosas: 10 monedas = +1 voto
     else if (r < 0.935) { onChat(nm, nm, 'disco 4'); onGift(nm, nm, 'Hat and Mustache', 99, 1); }
     else if (r < 0.94) { onChat(nm, nm, 'cumbia 2'); onGift(nm, nm, 'Amplificado', 249, 1); }
     else if (r < 0.97) { onGift(nm, nm, 'Galaxy', 1000, 1); setTimeout(() => onChat(nm, nm, 'Llorarás - Los Kjarkas'), 2500); }

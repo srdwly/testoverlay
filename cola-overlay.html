@@ -26,7 +26,7 @@ const CFG = {
   giftCommentWindowSec: 90,           // usa el comentario que el usuario escribió hasta 90 s ANTES del regalo…
   giftCommentAfterSec: 180,           // …o el primero que escriba hasta 3 min DESPUÉS
 
-  howToEverySec: 150,                 // la tarjeta "Cómo pedir" aparece cada 2.5 min…
+  howToEverySec: 300,                 // la tarjeta "Cómo pedir" aparece cada 2.5 min…
   howToShowSec: 10,                   // …y se queda 10 s
   howToTop: 520,                      // posición vertical de la tarjeta (más alto = más abajo)
   scrollSpeed: 7,                     // velocidad del scroll de repertorios (px/s) — más bajo = más lento
@@ -78,7 +78,7 @@ RONISCH
 - Te amo extraño
 - Corazones rotos
 IBERIA
-- Sola
+- Sola (primera experiencia)
 - El Perdedor
 - El Soñador
 - Primer amor
@@ -126,6 +126,8 @@ GASTON ZAMBRANA
 - Enfermo de amor
 MAROYU
 - Se fue
+- Primer amor (disco)
+- Solo amigos
 LOS OVNIS
 - Minero
 ` },
@@ -856,7 +858,7 @@ function buildHowTo() {
   const cd = CFG.voteCooldownSec >= 60 ? `${Math.round(CFG.voteCooldownSec / 60)} min` : `${CFG.voteCooldownSec} s`;
   let d = 0; const D = () => `style="animation-delay:${0.45 + (d++) * 0.09}s"`;
   $('#howto').innerHTML = `
-    <div class="glow"></div><div class="ttl">CÓMO PEDIR</div>
+    <div class="glow"></div><div class="ttl">CÓMO JUGAR</div>
     <div class="step" ${D()}>1. Gratis: vota del repertorio</div>
     <div class="line" ${D()}>Comenta <span class="hl">"${esc(exName)}"</span></div>
     <div class="line" ${D()}>o su número: <span class="hl">"${esc(exNum)}"</span></div>

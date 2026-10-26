@@ -26,13 +26,16 @@ const CFG = {
   giftCommentWindowSec: 90,           // usa el comentario que el usuario escribió hasta 90 s ANTES del regalo…
   giftCommentAfterSec: 180,           // …o el primero que escriba hasta 3 min DESPUÉS
 
-  howToEverySec: 300,                 // la tarjeta "Cómo pedir" aparece cada 2.5 min…
+  howToEverySec: 300,                 // la tarjeta "Cómo jugar" aparece cada 5 min…
   howToShowSec: 10,                   // …y se queda 10 s
   howToTop: 520,                      // posición vertical de la tarjeta (más alto = más abajo)
   scrollSpeed: 7,                     // velocidad del scroll de repertorios (px/s) — más bajo = más lento
   marqueeSpeed: 22,                   // velocidad de los textos largos que se desplazan de lado (px/s)
   listMarqueeSpeed: 10,               // igual, pero para los nombres largos en los repertorios (más lento)
   showStats: false,                   // ranking TOQUES / MONEDAS (oculto: se usa el de TikFinity)
+  hatGivesVotes: true,                // el Sombrero salta la fila Y sus monedas suman votos (10 monedas = +1)
+  modsCanNext: true,                  // los moderadores también pueden usar "siguiente" / !d
+  nextCooldownSec: 12,                // "siguiente" se ignora si se repite antes de 12 s (evita que varios mods borren varias)
   matchGiftByCoins: true,             // si el nombre del regalo no coincide, lo reconoce por su precio
 };
 
@@ -504,9 +507,10 @@ const STOP = new Set('de la el los las y a en un una mi tu te me se que por favo
 const words = t => norm(t).split(' ').filter(Boolean);
 const SONGS = [], BANDWORDS = new Set();
 STYLES.forEach(st => st.list.forEach((title, i) => {
-  const all = words(title), tw = all.filter(w => !STOP.has(w));
+  const all = words(title.replace(/\(.*?\)/g, ' ')), tw = all.filter(w => !STOP.has(w));   // lo que va entre paréntesis es una nota: no hace falta escribirlo
+  const xw = words((title.match(/\((.*?)\)/g) || []).join(' ')).filter(w => !STOP.has(w)); // …pero si lo escriben, también cuenta
   SONGS.push({ style: st.key, num: i + 1, title, band: st.bands[i] || '',
-               tn: all.join(' '), tw: tw.length ? tw : all, bw: words(st.bands[i] || '').filter(w => !STOP.has(w)) });
+               tn: all.join(' '), xw, tw: tw.length ? tw : all, bw: words(st.bands[i] || '').filter(w => !STOP.has(w)) });
   words(st.bands[i] || '').forEach(w => { if (!STOP.has(w) && w.length >= 3) BANDWORDS.add(w); });
 }));
 function lev(a, b) {                       // distancia de edición (errores de tipeo)
@@ -540,12 +544,14 @@ function searchStyle(styleKey, Q) {
     };
     for (const w of sg.tw) tHit += pick(w);
     for (const w of sg.bw) bHit += pick(w);
+    for (const w of sg.xw) pick(w);                                     // palabras de la nota (paréntesis)
     // si nombró OTRA banda de la lista, no es esta canción ("cumbia corali prometí" ≠ Promesa de Ronisch)
     if (Q.some((q, i) => !used.has(i) && BANDWORDS.has(q))) continue;
     const cov = tHit / sg.tw.length, bcov = sg.bw.length ? bHit / sg.bw.length : 0;
     const unmatched = Q.length - used.size;
     if (!(cov >= 0.5 || (cov > 0 && bcov >= 0.5))) continue;
     if (unmatched > Math.max(1, Math.floor(Q.length / 3))) continue;
+    if (unmatched > 0 && cov < 1 && bcov < 0.5) continue;               // palabras de más + nombre incompleto = no es esta
     let score = cov * 2 + bcov - unmatched * 0.6;
     if (qj.includes(' ' + sg.tn + ' ')) score += 0.4 + 0.2 * sg.tn.split(' ').length;   // nombre exacto
     found.push({ sg, score });
@@ -574,6 +580,7 @@ function resolveRequest(text) {
       if (st.key === W[0]) continue;
       const o = searchStyle(st.key, Q);
       if (o.type === 'ok') return { type: 'ok', ref: refOf(o.sg), moved: true };
+      if (o.type === 'amb') return o;                                       // repetida en la otra lista → aviso
     }
   }
   return r;
@@ -893,7 +900,7 @@ setTimeout(showHowTo, 4000);
 setInterval(showHowTo, CFG.howToEverySec * 1000);
 
 /* ── Lógica del chat ────────────────────────────────────── */
-function onChat(uid, name, text) {
+function onChat(uid, name, text, isMod) {
   if (!uid || !text) return;
   const t = text.trim();
   const low = t.toLowerCase();
@@ -903,6 +910,7 @@ function onChat(uid, name, text) {
   const cmdText = toCommand(low);
   if (cmdText) {
     if (OWNERS.includes(uid.toLowerCase())) { dbg(`✔ comando ${cmdText}`, 'ok'); return command(cmdText); }
+    if (isMod && CFG.modsCanNext && cmdText.split(' ')[0] === '!d') { dbg(`✔ comando ${cmdText} (moderador @${uid})`, 'ok'); return command(cmdText); }
     if (low.startsWith('!')) { dbg(`✘ comando ignorado: @${uid} no está en owners (${OWNERS.join(', ')})`, 'no'); return; }
   }
 
@@ -913,6 +921,8 @@ function onChat(uid, name, text) {
     pending.text = ref ? ref.title : t.slice(0, 60);
     pending.style = ref ? ref.style : '';
     pending.band = ref ? ref.band : '';
+    pending.num = ref ? ref.num : 0;
+    if (ref && pending.gift === 'hat' && CFG.hatGivesVotes) { S.support[uid] = { style: ref.style, num: ref.num }; applyBonus(uid); }
     renderRequests(); save();
     dbg(`✔ canción para su regalo: ${pending.text}`, 'ok');
     return;
@@ -998,13 +1008,22 @@ function toCommand(low) {
 function command(c) {
   const [cmd, arg] = c.split(/\s+/);
   if (cmd === '!d') {                     // "siguiente": sale la primera de la fila del ritmo ACTUAL (o "siguiente 12")
+    if (now() - (command.lastNext || 0) < CFG.nextCooldownSec * 1000) {
+      dbg(`✘ "siguiente" ignorado: se usó hace menos de ${CFG.nextCooldownSec} s`, 'no'); return;
+    }
+    command.lastNext = now();
     const k = S.active, V = VOTES(k);
+    // canción tocada: votos a 0 y sus taps/monedas esperan un nuevo pedido
+    const played = (st, n) => { delete VOTES(st)[n]; for (const u in S.support) if (S.support[u].style === st && S.support[u].num === n) delete S.support[u]; };
     let num = parseInt(arg, 10);
     const gq = giftQueue(k);
-    if (!num && gq.length) S.gifts.splice(S.gifts.indexOf(gq[0]), 1);   // primero los pedidos con regalo
-    else {
+    if (!num && gq.length) {                                            // primero los pedidos con regalo
+      const g = gq[0];
+      S.gifts.splice(S.gifts.indexOf(g), 1);
+      if (g.style && g.num) { played(g.style, g.num); renderQueue(g.style); }   // si esa canción también tenía votos, se limpian
+    } else {
       if (!num) { const q = queueItems(k); if (q.length) num = q[0].num; }
-      if (num) { delete V[num]; for (const u in S.support) if (S.support[u].style === k && S.support[u].num === num) delete S.support[u]; }   // votos a 0; sus taps/monedas esperan un nuevo pedido
+      if (num) played(k, num);
     }
     renderQueue(k);
   } else if (cmd === '!ritmo' && styleBy(arg)) {   // "ritmo cumbia": cambia lo que suena (las filas se conservan)
@@ -1055,16 +1074,24 @@ function onGift(uid, name, giftName, coinsEach, count) {
   }
   if (g) {
     const prev = lastComment[uid];
-    let text = '', style = '', band = '';
+    let text = '', style = '', band = '', num = 0;
     if (prev && now() - prev.ts < CFG.giftCommentWindowSec * 1000) {
       const rr = resolveRequest(prev.text), ref = rr && rr.type === 'ok' ? rr.ref : null;
       text = ref ? ref.title : prev.text.slice(0, 60);
       style = ref ? ref.style : '';
       band = ref ? ref.band : '';
+      num = ref ? ref.num : 0;
       delete lastComment[uid];
     }
     let ts = now(); while (S.gifts.some(x => x.ts === ts)) ts++;   // id único
-    S.gifts.push({ uid, name, gift: g.key, text, style, band, at: S.active, ts });
+    S.gifts.push({ uid, name, gift: g.key, text, style, band, num, at: S.active, ts });
+    if (g.key === 'hat' && CFG.hatGivesVotes && CFG.coinsPerVote > 0) {
+      // Sombrero: además de saltar la fila, sus monedas son votos para su canción;
+      // si aún no dijo cuál (o no está en la lista), se guardan para su próximo pedido
+      if (style && num) S.support[uid] = { style, num };
+      S.bank[uid] = (S.bank[uid] || 0) + coinsEach * count;
+      applyBonus(uid);
+    }
     renderRequests();
   }
   save();
@@ -1093,7 +1120,7 @@ function connect() {
     const uid = d.uniqueId || d.userId || '';
     const name = d.nickname || d.uniqueId || 'anónimo';
     if (msg.event !== 'chat' && msg.event !== 'gift') dbg(`evento: ${msg.event}`, 'ev');
-    if (msg.event === 'chat') onChat(uid, name, d.comment || '');
+    if (msg.event === 'chat') onChat(uid, name, d.comment || '', d.isModerator === true || d.userIdentity?.isModeratorOfAnchor === true);
     else if (msg.event === 'like') onLike(uid, name, parseInt(d.likeCount || 1, 10));
     else if (msg.event === 'gift') {
       const giftName = d.originalName || d.giftName || d.name || '';

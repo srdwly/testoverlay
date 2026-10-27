@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Regalos FX</title>
+<!--
+  REGALOS FX: los regalos de TikFinity se lanzan hacia ti y CHOCAN con tu cuerpo (cabeza, hombros, torso, brazos),
+  resbalan y se apilan abajo. Usa la cámara virtual de OBS (como live-fx) y el detector de cuerpo de MediaPipe.
+
+  En Live Studio:  regalos-fx.html        ·  Para calibrar:  regalos-fx.html?debug=1
+  Debe ir encima de la cámara y del MISMO tamaño/posición que la imagen de la cámara (igual que live-fx).
+
+  PARÁMETROS (opcionales, mismos nombres que live-fx):
+    debug=1                    muestra la cámara, las "cápsulas" de tu cuerpo y el estado
+    from=lados|pov|arriba      desde dónde llegan los regalos (por defecto: lados, en arco desde los costados)
+    rotate=90                  rotación de la cámara (0, 90, 180, 270) — por defecto 90 como live-fx
+    fit=contain|cover          igual que live-fx
+    mirror=1                   voltear horizontalmente
+    camname=obs                cámara por nombre (por defecto la que contenga "obs") · cam=0 por índice
+    size=0.06                  tamaño de una rosa (proporción del ancho de la cámara)
+    fps=15                     veces por segundo que se detecta tu cuerpo (más = más preciso, más pesado)
+    detsize=256                tamaño del cuadro que se analiza (más chico = más rápido)
+
+  Pruebas: tecla G = lanzar rosas · tecla B = un regalo grande · ?demo=1 = regalos simulados
+-->
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; }
+  #cam { opacity: 0; }
+  #status { position: fixed; left: 10px; top: 10px; padding: 6px 10px; border-radius: 6px; z-index: 5;
+    font: 12px/1.35 ui-monospace, Consolas, monospace; color: #fff; background: rgba(0,0,0,.65); display: none; white-space: pre; }
+  body.debug #cam { opacity: .55; }
+  body.debug #status { display: block; }
+</style>
+</head>
+<body>
+<video id="vid" playsinline muted style="display:none"></video>
+<canvas id="cam"></canvas>
+<canvas id="debugLayer"></canvas>
+<canvas id="fxGift"></canvas>
+<div id="status">iniciando…</div>
+
+<script type="module">
+// ───────────────────────── Configuración ─────────────────────────
+const P = new URLSearchParams(location.search);
+const num = (k, d) => (P.has(k) && P.get(k) !== '' && !isNaN(+P.get(k))) ? +P.get(k) : d;
+const CFG = {
+  debug:  P.get('debug') === '1',
+  demo:   P.get('demo') === '1',
+  mirror: P.get('mirror') === '1',
+  cam:    num('cam', 0),
+  camname: (P.has('camname') ? P.get('camname') : (P.has('cam') ? '' : 'obs')).toLowerCase(),
+  fit:    P.get('fit') === 'cover' ? 'cover' : 'contain',
+  giftFrom: ['lados', 'pov', 'arriba'].includes(P.get('from')) ? P.get('from') : 'lados',
+  giftSize: num('size', 0.06),
+  fps:    num('fps', 15),
+  detSize: num('detsize', 256),
+  wsUrl:  'ws://localhost:21213/',
+};
+const ROT = ((num('rotate', 90) % 360) + 360) % 360;
+const FIT = CFG.fit, MIRROR = CFG.mirror;
+if (CFG.debug) document.body.classList.add('debug');
+const statusEl = document.getElementById('status');
+const setStatus = (t) => { statusEl.textContent = t; };
+
+// ───────────────────────── Lienzo y coordenadas (igual que live-fx) ─────────────────────────
+const dbg = document.getElementById('debugLayer'), dctx = dbg.getContext('2d');
+let W = 0, H = 0;
+function resize() { W = innerWidth; H = innerHeight; dbg.width = W; dbg.height = H; }
+addEventListener('resize', resize); resize();
+
+const video = document.getElementById('vid');
+const camView = document.getElementById('cam');
+const frameCv = document.createElement('canvas'), fctx = frameCv.getContext('2d');
+function frameSize() {
+  const vw0 = video.videoWidth || 1280, vh0 = video.videoHeight || 720;
+  return (ROT === 90 || ROT === 270) ? [vh0, vw0] : [vw0, vh0];
+}
+function grabFrame() {
+  const [fw0, fh0] = frameSize();
+  const sc = Math.min(1, CFG.detSize / Math.max(fw0, fh0));
+  const fw = Math.round(fw0 * sc), fh = Math.round(fh0 * sc);
+  if (frameCv.width !== fw || frameCv.height !== fh) { frameCv.width = fw; frameCv.height = fh; }
+  fctx.setTransform(1, 0, 0, 1, 0, 0);
+  fctx.translate(fw / 2, fh / 2); fctx.rotate(ROT * Math.PI / 180);
+  const vw = ROT === 90 || ROT === 270 ? fh : fw, vh = ROT === 90 || ROT === 270 ? fw : fh;
+  fctx.drawImage(video, -vw / 2, -vh / 2, vw, vh);
+  return frameCv;
+}
+function showFrame(src) {
+  if (!CFG.debug) return;
+  if (camView.width !== src.width || camView.height !== src.height) { camView.width = src.width; camView.height = src.height; }
+  camView.getContext('2d').drawImage(src, 0, 0);
+}
+function camRect() {
+  const [vw, vh] = frameSize();
+  const s = (FIT === 'contain' ? Math.min : Math.max)(W / vw, H / vh), w = vw * s, h = vh * s;
+  return { x: (W - w) / 2, y: (H - h) / 2, w, h };
+}
+function toScreen(nx, ny) {
+  const [vw, vh] = frameSize();
+  const s = (FIT === 'contain' ? Math.min : Math.max)(W / vw, H / vh), dw = vw * s, dh = vh * s;
+  if (MIRROR) nx = 1 - nx;
+  return [(W - dw) / 2 + nx * dw, (H - dh) / 2 + ny * dh];
+}
+
+// ───────────────────────── Efecto: regalos que chocan contigo (gifts=1) ─────────────────────────
+/* Los regalos de TikFinity se lanzan desde los costados (o desde el POV del espectador, o caen desde arriba),
+   chocan con tu cuerpo usando los puntos del detector de cuerpo que YA corre para el modo estrella
+   (cabeza, hombros, torso y brazos → "cápsulas"), resbalan y se apilan abajo de la imagen de la cámara.
+   No abre otra cámara ni otro modelo: reutiliza la misma detección. */
+const GiftFX = (() => {
+  const cv = document.getElementById('fxGift'), ctx = cv.getContext('2d');
+  const G = {
+    from: CFG.giftFrom,          // 'lados' | 'pov' | 'arriba'
+    size: CFG.giftSize,          // tamaño de una rosa (proporción del ancho de la cámara)
+    gravity: 1700, bounce: 0.35, overlap: 0.7,
+    maxItems: 80, pileMax: 0.33, lifeSec: 90, maxSpawn: 50, gapMs: 110,
+  };
+  const now = () => performance.now();
+  const rand = (a, b) => a + Math.random() * (b - a);
+
+  // sprites (imagen del regalo pre-dibujada una vez con sombra)
+  const SPR = 128, sprites = {};
+  const mk = (fn) => { const c = document.createElement('canvas'); c.width = c.height = SPR; const x = c.getContext('2d');
+    x.shadowColor = 'rgba(0,0,0,.45)'; x.shadowBlur = 8; x.shadowOffsetY = 4; fn(x); return c; };
+  const fallback = mk(x => { x.font = `${SPR * .72}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",serif`;
+    x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('🌹', SPR / 2, SPR / 2 + 4); });
+  function sprite(url) {
+    if (!url) return fallback;
+    let s = sprites[url];
+    if (!s) { s = sprites[url] = { c: null }; const img = new Image(); img.crossOrigin = 'anonymous';
+      img.onload = () => { s.c = mk(x => x.drawImage(img, 10, 8, SPR - 20, SPR - 20)); wake(); }; img.src = url; }
+    return s.c || fallback;
+  }
+
+  // ── tu cuerpo como cápsulas (segmentos con grosor), en coordenadas de pantalla ──
+  let caps = [], capsT = 0;
+  const prevPt = {};
+  function setPose(L) {
+    const t = now();
+    if (!L) { if (t - capsT > 600) caps = []; return; }
+    const vis = i => L[i] && (L[i].visibility ?? 1) > 0.5;
+    const P = {};
+    for (const i of [0, 7, 8, 11, 12, 13, 14, 15, 16, 23, 24]) {
+      if (!vis(i)) continue;
+      const [x, y] = toScreen(L[i].x, L[i].y);
+      const pr = prevPt[i];
+      const vx = pr ? (x - pr.x) / Math.max(0.02, (t - pr.t) / 1000) : 0, vy = pr ? (y - pr.y) / Math.max(0.02, (t - pr.t) / 1000) : 0;
+      P[i] = { x, y, vx: Math.max(-1500, Math.min(1500, vx)), vy: Math.max(-1500, Math.min(1500, vy)) };
+      prevPt[i] = { x, y, t };
+    }
+    if (!P[11] || !P[12]) { if (t - capsT > 600) caps = []; return; }
+    const sw = Math.hypot(P[11].x - P[12].x, P[11].y - P[12].y);
+    const mid = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, vx: (a.vx + b.vx) / 2, vy: (a.vy + b.vy) / 2 });
+    const sh = mid(P[11], P[12]);
+    const hip = (P[23] && P[24]) ? mid(P[23], P[24]) : { x: sh.x, y: sh.y + sw * 1.3, vx: sh.vx, vy: sh.vy };
+    const c = [];
+    if (P[0]) {                                                   // cabeza
+      const ear = (P[7] && P[8]) ? Math.hypot(P[7].x - P[8].x, P[7].y - P[8].y) : sw * 0.5;
+      const hc = { x: P[0].x, y: P[0].y - ear * 0.25, vx: P[0].vx, vy: P[0].vy };
+      c.push({ a: hc, b: hc, r: Math.max(ear * 0.7, sw * 0.3) });
+    }
+    c.push({ a: P[11], b: P[12], r: sw * 0.14 });                 // hombros
+    c.push({ a: sh, b: hip, r: sw * 0.42 });                      // torso
+    for (const [a, b, k] of [[11, 13, .12], [13, 15, .1], [12, 14, .12], [14, 16, .1]])   // brazos
+      if (P[a] && P[b]) c.push({ a: P[a], b: P[b], r: sw * k });
+    caps = c; capsT = t;
+    if (bodies.length && caps.some(k => Math.max(k.a.y, k.b.y) + k.r > pileTop - 40)) wake();   // te acercas a la pila: que reaccione
+  }
+
+  // ── cuerpos (regalos) ──
+  let bodies = [], parts = [], pileTop = 1e9, running = false, lastT = 0, acc = 0, pending = 0;
+  function rect() { return camRect(); }
+  function sizeFor(coins) { const R = rect(); return R.w * G.size * Math.min(2.6, 1 + 0.45 * Math.log10(Math.max(1, coins))) * rand(0.9, 1.1); }
+  function target(R) {                                            // a dónde apuntar: a tu cuerpo si te ve, si no al centro
+    if (caps.length && Math.random() < 0.85) {
+      const k = caps[(Math.random() * Math.min(3, caps.length)) | 0], u = Math.random();
+      return { x: k.a.x + (k.b.x - k.a.x) * u, y: k.a.y + (k.b.y - k.a.y) * u };
+    }
+    return { x: R.x + R.w * rand(0.3, 0.7), y: R.y + R.h * rand(0.3, 0.55) };
+  }
+  function spawnOne(url, coins) {
+    const R = rect();
+    if (bodies.length >= G.maxItems) fadeOldest(3);
+    const r = sizeFor(coins), tg = target(R), b = { r, m: r * r, a: rand(0, 6.28), av: rand(-6, 6), url, coins,
+      born: now(), rest: 0, sleep: false, fade: 0, inRect: false, hitFx: false };
+    if (G.from === 'arriba') {
+      Object.assign(b, { x: R.x + R.w * rand(0.15, 0.85), y: R.y - r, vx: rand(-50, 50), vy: rand(80, 200) });
+    } else if (G.from === 'pov') {
+      const sx = R.x + R.w / 2 + rand(-0.25, 0.25) * R.w;
+      Object.assign(b, { x: sx, y: R.y + R.h + r * 3, vx: 0, vy: 0,
+        throw: { t0: now(), dur: rand(700, 950), sx, sy: R.y + R.h + r * 3, tx: tg.x, ty: tg.y, spin: rand(-14, 14) } });
+    } else {                                                      // desde los costados, en arco hacia ti
+      const left = Math.random() < 0.5, T = rand(0.55, 0.8);
+      const sx = left ? R.x - r : R.x + R.w + r, sy = R.y + R.h * rand(0.15, 0.45);
+      Object.assign(b, { x: sx, y: sy, vx: (tg.x - sx) / T, vy: (tg.y - sy - 0.5 * G.gravity * T * T) / T });
+    }
+    bodies.push(b); wake();
+  }
+  function fadeOldest(n) { bodies.filter(b => !b.fade).sort((a, b) => a.born - b.born).slice(0, n).forEach(b => b.fade = now()); }
+
+  const ease = t => 1 - Math.pow(1 - t, 3);
+  function updateThrows(t) {
+    for (const b of bodies) {
+      const T = b.throw; if (!T) continue;
+      const k = Math.min(1, (t - T.t0) / T.dur), e = ease(k), R = rect();
+      b.x = T.sx + (T.tx - T.sx) * e; b.y = T.sy + (T.ty - T.sy) * e - R.h * 0.14 * Math.sin(Math.PI * k);
+      b.a += T.spin * (1 - k) * 0.016; b.vis = 1 + 2.4 * (1 - e);
+      if (k >= 1) {                                               // llegó: si te pega, rebota hacia la cámara y cae delante
+        b.throw = null; b.vis = 1;
+        const hit = caps.some(c => distSeg(b.x, b.y, c).d < c.r + b.r * 0.5);
+        if (hit) { b.vx = rand(-160, 160); b.vy = -rand(220, 380); b.av = rand(-10, 10); sparks(b.x, b.y, 10); }
+        else { b.vx = 0; b.vy = 120; }
+      }
+    }
+  }
+  function distSeg(x, y, c) {
+    const ax = c.a.x, ay = c.a.y, bx = c.b.x, by = c.b.y, dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy;
+    const u = L2 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / L2)) : 0;
+    const px = ax + dx * u, py = ay + dy * u;
+    return { d: Math.hypot(x - px, y - py), px, py, vx: c.a.vx + (c.b.vx - c.a.vx) * u, vy: c.a.vy + (c.b.vy - c.a.vy) * u };
+  }
+
+  function step(dt) {
+    const R = rect(), floor = R.y + R.h, k = G.overlap;
+    for (const b of bodies) {
+      if (b.sleep || b.throw || b.fade) continue;
+      b.vy += G.gravity * dt; b.vx *= 0.999; b.av *= 0.985;
+      b.x += b.vx * dt; b.y += b.vy * dt; b.a += b.av * dt;
+    }
+    // contra tu cuerpo (también despierta a los dormidos si los empujas)
+    if (caps.length) for (const b of bodies) {
+      if (b.throw || b.fade) continue;
+      for (const c of caps) {
+        const s = distSeg(b.x, b.y, c), min = c.r + b.r * 0.8;
+        if (s.d >= min) continue;
+        const nx = s.d ? (b.x - s.px) / s.d : 0, ny = s.d ? (b.y - s.py) / s.d : -1;
+        b.x = s.px + nx * min; b.y = s.py + ny * min;
+        const rvx = b.vx - s.vx, rvy = b.vy - s.vy, vn = rvx * nx + rvy * ny;
+        if (vn < 0) {
+          b.vx -= (1 + G.bounce) * vn * nx; b.vy -= (1 + G.bounce) * vn * ny;
+          b.av += (rvx * -ny + rvy * nx) / b.r * 0.3;
+          if (!b.hitFx && -vn > 350) { b.hitFx = true; sparks(b.x - nx * b.r, b.y - ny * b.r, 6); }
+        }
+        b.sleep = false; b.rest = 0;
+      }
+    }
+    // entre regalos (rejilla espacial)
+    const cell = R.w * G.size * 5.2, grid = new Map();
+    bodies.forEach((b, i) => { if (b.fade || b.throw) return; const key = ((b.x / cell) | 0) + ',' + ((b.y / cell) | 0); (grid.get(key) || grid.set(key, []).get(key)).push(i); });
+    for (let it = 0; it < 3; it++) for (let i = 0; i < bodies.length; i++) {
+      const a = bodies[i]; if (a.fade || a.throw) continue;
+      const cx = (a.x / cell) | 0, cy = (a.y / cell) | 0;
+      for (let gx = cx - 1; gx <= cx + 1; gx++) for (let gy = cy - 1; gy <= cy + 1; gy++) {
+        const list = grid.get(gx + ',' + gy); if (!list) continue;
+        for (const j of list) {
+          if (j <= i) continue;
+          const b = bodies[j]; if (b.fade || b.throw || (a.sleep && b.sleep)) continue;
+          const dx = b.x - a.x, dy = b.y - a.y, min = (a.r + b.r) * k, d2 = dx * dx + dy * dy;
+          if (d2 >= min * min || !d2) continue;
+          const d = Math.sqrt(d2), nx = dx / d, ny = dy / d, over = min - d;
+          const ia = a.sleep ? 0 : 1 / a.m, ib = b.sleep ? 0 : 1 / b.m, s = ia + ib; if (!s) continue;
+          a.x -= nx * over * ia / s; a.y -= ny * over * ia / s; b.x += nx * over * ib / s; b.y += ny * over * ib / s;
+          const rvx = b.vx - a.vx, rvy = b.vy - a.vy, vn = rvx * nx + rvy * ny;
+          if (vn < 0) {
+            const j2 = -(1 + G.bounce * 0.6) * vn / s;
+            a.vx -= j2 * nx * ia; a.vy -= j2 * ny * ia; b.vx += j2 * nx * ib; b.vy += j2 * ny * ib;
+            const tx = -ny, ty = nx, vt = rvx * tx + rvy * ty; let jt = -vt / s; const lim = 0.35 * j2; jt = Math.max(-lim, Math.min(lim, jt));
+            a.vx -= jt * tx * ia; a.vy -= jt * ty * ia; b.vx += jt * tx * ib; b.vy += jt * ty * ib;
+            a.contact = b.contact = true;
+          }
+        }
+      }
+    }
+    // piso (borde inferior de la cámara) y paredes (bordes de la cámara, una vez que entró)
+    pileTop = 1e9;
+    for (const b of bodies) {
+      if (b.throw || b.fade) continue;
+      if (!b.sleep) {
+        if (b.y + b.r * k > floor) { const hit = b.vy; b.y = floor - b.r * k; if (b.vy > 0) b.vy = -b.vy * G.bounce * 0.6; b.vx *= 0.88; b.av = b.av * 0.6 + b.vx / b.r * 0.4; if (hit > 400) sparks(b.x, floor - 3, 4); }
+        if (b.x > R.x + b.r && b.x < R.x + R.w - b.r) b.inRect = true;
+        if (b.inRect) {
+          if (b.x - b.r * k < R.x) { b.x = R.x + b.r * k; b.vx = Math.abs(b.vx) * G.bounce; }
+          if (b.x + b.r * k > R.x + R.w) { b.x = R.x + R.w - b.r * k; b.vx = -Math.abs(b.vx) * G.bounce; }
+        } else if (b.y > floor + b.r * 4 || b.x < R.x - R.w || b.x > R.x + R.w * 2) b.fade = now();   // se salió sin entrar
+        if (b.contact) b.av *= 0.9; b.contact = false;
+        b.rest = Math.abs(b.vx) + Math.abs(b.vy) < 40 ? b.rest + dt : 0;
+        if (b.rest > 0.6 && b.inRect) { b.sleep = true; b.vx = b.vy = b.av = 0; }
+      }
+      if (b.sleep) pileTop = Math.min(pileTop, b.y - b.r);
+    }
+  }
+
+  const SPK = ['#ffd36b', '#ff6f91', '#ffffff', '#ff9ec4'];
+  function sparks(x, y, n) {
+    for (let i = 0; i < n; i++) { const a = rand(0, 6.28), sp = rand(80, 300);
+      parts.push({ x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 80, life: rand(.3, .6), max: .6, s: rand(1.5, 3), c: SPK[(Math.random() * 4) | 0] }); }
+  }
+
+  function wake() { if (!running) { running = true; lastT = now(); requestAnimationFrame(loop); } }
+  function loop(t) {
+    const dt = Math.min(0.05, (t - lastT) / 1000); lastT = t; acc += dt;
+    updateThrows(now());
+    while (acc >= 1 / 120) { step(1 / 120); acc -= 1 / 120; }
+    const tn = now(), R = rect();
+    for (const b of bodies) if (!b.fade && b.sleep && tn - b.born > G.lifeSec * 1000) b.fade = tn;
+    if (pileTop < R.y + R.h * (1 - G.pileMax)) fadeOldest(2);
+    bodies = bodies.filter(b => !b.fade || tn - b.fade < 600);
+    if (bodies.some(b => b.fade)) bodies.forEach(b => { if (b.sleep && !b.fade) { b.sleep = false; b.rest = 0; } });
+    for (const p of parts) { p.vy += 800 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+    parts = parts.filter(p => p.life > 0);
+
+    ctx.clearRect(0, 0, W, H);
+    const order = bodies.slice().sort((a, b) => (a.throw ? 1 : 0) - (b.throw ? 1 : 0));
+    for (const b of order) {
+      const f = b.fade ? 1 - (tn - b.fade) / 600 : 1, sc = (b.fade ? 0.6 + 0.4 * f : 1) * (b.vis || 1);
+      ctx.globalAlpha = Math.max(0, f);
+      ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(b.a); ctx.scale(sc, sc);
+      ctx.drawImage(sprite(b.url), -b.r, -b.r, b.r * 2, b.r * 2); ctx.restore();
+    }
+    ctx.globalCompositeOperation = 'lighter';
+    for (const p of parts) { ctx.globalAlpha = Math.max(0, p.life / p.max); ctx.fillStyle = p.c; ctx.fillRect(p.x - p.s, p.y - p.s, p.s * 2, p.s * 2); }
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+
+    if (bodies.some(b => !b.sleep || b.fade || b.throw) || parts.length || pending > 0) requestAnimationFrame(loop);
+    else running = false;                                         // todo quieto: no gasta nada
+  }
+
+  // regalos en tiempo real durante el combo
+  const streaks = {};
+  function drop(key, url, coins, total, ended) {
+    const done = streaks[key] || 0, n = Math.max(0, Math.min(G.maxSpawn - Math.min(done, G.maxSpawn), total - done));
+    streaks[key] = Math.max(done, total);
+    for (let i = 0; i < n; i++) { pending++; setTimeout(() => { pending--; spawnOne(url, coins); }, i * G.gapMs); }
+    if (ended) setTimeout(() => delete streaks[key], 4000);
+  }
+  function resizeCanvas() { cv.width = W; cv.height = H; wake(); }
+  addEventListener('resize', resizeCanvas); resizeCanvas();
+  return { setPose, drop, get caps() { return caps; }, test: (n = 8, url = null, coins = 1) => drop('t' + Math.random(), url, coins, n, true) };
+})();
+
+// ───────────────────────── Pruebas ─────────────────────────
+addEventListener('keydown', (e) => {
+  if (e.key === 'g' || e.key === 'G') GiftFX.test(10);
+  if (e.key === 'b' || e.key === 'B') GiftFX.test(1, 'https://raw.githubusercontent.com/srdwly/testoverlay/main/img/galaxia.png', 1000);
+});
+if (CFG.demo) {
+  const REPO = 'https://raw.githubusercontent.com/srdwly/testoverlay/main/img/';
+  setInterval(() => {
+    const r = Math.random();
+    if (r < 0.8) GiftFX.test(4 + ((Math.random() * 10) | 0));
+    else GiftFX.test(1, REPO + ['sombrero.png', 'amplificado.png', 'galaxia.png'][(Math.random() * 3) | 0], [99, 249, 1000][(Math.random() * 3) | 0]);
+  }, 2500);
+}
+window.__gift = { GiftFX, CFG };
+
+// ───────────────────────── TikFinity: solo regalos ─────────────────────────
+function connectTikfinity() {
+  let ws; try { ws = new WebSocket(CFG.wsUrl); } catch { return setTimeout(connectTikfinity, 5000); }
+  ws.onmessage = (m) => {
+    if (m.data.indexOf('"gift"') === -1) return;                 // taps y chat: ni se leen
+    let msg; try { msg = JSON.parse(m.data); } catch { return; }
+    if (msg.event !== 'gift') return;
+    const d = msg.data || {};
+    const giftId = d.giftId ?? d.gift?.gift_id ?? d.giftName ?? '?';
+    GiftFX.drop((d.uniqueId || '?') + '|' + giftId, d.giftPictureUrl || '', parseInt(d.diamondCount ?? d.gift?.diamond_count ?? 1, 10) || 1,
+                parseInt(d.repeatCount || d.gift?.repeat_count || 1, 10), d.repeatEnd !== false);
+  };
+  ws.onclose = () => setTimeout(connectTikfinity, 5000);
+}
+connectTikfinity();
+
+// ───────────────────────── Debug ─────────────────────────
+let camList = [], camLabel = '', fps = 0, poseMs = 0, delegate = '?';
+function drawDebug() {
+  dctx.clearRect(0, 0, W, H);
+  if (!CFG.debug) return;
+  dctx.strokeStyle = 'rgba(255,120,180,.95)'; dctx.lineWidth = 2;
+  for (const c of GiftFX.caps) {
+    const ang = Math.atan2(c.b.y - c.a.y, c.b.x - c.a.x);
+    dctx.beginPath(); dctx.arc(c.a.x, c.a.y, c.r, ang + Math.PI / 2, ang - Math.PI / 2); dctx.arc(c.b.x, c.b.y, c.r, ang - Math.PI / 2, ang + Math.PI / 2); dctx.closePath(); dctx.stroke();
+  }
+  setStatus([`cámara: ${camLabel}   rot: ${ROT}°   fit: ${FIT}${MIRROR ? '   (espejo)' : ''}`,
+             `motor: ${delegate}   cuerpo: ${poseMs.toFixed(0)} ms   detecciones/s: ${fps}`,
+             `regalos desde: ${CFG.giftFrom}   cápsulas: ${GiftFX.caps.length}${GiftFX.caps.length ? '' : '  (no te ve: encuadra hombros)'}`,
+             `tecla G = rosas · B = regalo grande`].join('\n'));
+}
+
+// ───────────────────────── Cámara (misma lógica que live-fx: no toca la webcam física) ─────────────────────────
+async function openCamera() {
+  const C = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+  const gum = (id) => navigator.mediaDevices.getUserMedia({ video: id ? { ...C, deviceId: { exact: id } } : C });
+  const list = async () => (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === 'videoinput');
+  const pick = (cams) => CFG.camname ? cams.find(c => (c.label || '').toLowerCase().includes(CFG.camname)) : cams[CFG.cam];
+  const KEY = 'livefx-cam-' + (CFG.camname || CFG.cam);
+  const remember = (stream) => {
+    const tr = stream.getVideoTracks()[0];
+    camLabel = tr?.label || '?';
+    try { localStorage.setItem(KEY, tr.getSettings().deviceId || ''); } catch {}
+    if (CFG.camname && !camLabel.toLowerCase().includes(CFG.camname)) {
+      stream.getTracks().forEach(t => t.stop());
+      throw new Error(`Se abrió "${camLabel}" en vez de una cámara con "${CFG.camname}".`);
+    }
+    return stream;
+  };
+
+  let cams = await list();
+  camList = cams.map((c, i) => `${i}: ${c.label || '(sin nombre)'}`);
+
+  // 1) nombres visibles → abrir directo
+  if (cams.some(c => c.label)) {
+    const chosen = pick(cams);
+    if (!chosen) throw new Error(`No encontré la cámara "${CFG.camname || CFG.cam}".`);
+    return remember(await gum(chosen.deviceId));
+  }
+  // 2) cámara recordada
+  let saved = null; try { saved = localStorage.getItem(KEY); } catch {}
+  if (saved) { try { return remember(await gum(saved)); } catch (e) { console.warn('cámara recordada falló', e); } }
+  // 3) primera vez: pedir permiso
+  try {
+    const s = await gum(null);
+    const label = s.getVideoTracks()[0]?.label || '';
+    if (!CFG.camname || label.toLowerCase().includes(CFG.camname)) return remember(s);
+    s.getTracks().forEach(t => t.stop());
+  } catch (e) {
+    if (e.name === 'NotAllowedError') throw e;   // permiso negado: no hay nada más que hacer
+  }
+  cams = await list();
+  camList = cams.map((c, i) => `${i}: ${c.label || '(sin nombre)'}`);
+  const chosen = pick(cams);
+  if (!chosen) throw new Error(`No encontré la cámara "${CFG.camname || CFG.cam}".`);
+  return remember(await gum(chosen.deviceId));
+}
+
+// ───────────────────────── Detector de cuerpo ─────────────────────────
+async function start() {
+  try {
+    setStatus('cargando detector de cuerpo…');
+    const base = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+    const { FilesetResolver, PoseLandmarker } = await import(`${base}/vision_bundle.mjs`);
+    const fileset = await FilesetResolver.forVisionTasks(`${base}/wasm`);
+    const make = (dl) => PoseLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task', delegate: dl },
+      runningMode: 'VIDEO', numPoses: 1, minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5 });
+    let pose; try { pose = await make('GPU'); delegate = 'GPU'; } catch { pose = await make('CPU'); delegate = 'CPU (lento)'; }
+
+    setStatus('abriendo cámara…');
+    video.srcObject = await openCamera();
+    await video.play();
+    if (MIRROR) camView.style.transform = 'scaleX(-1)';
+    camView.style.objectFit = FIT;
+
+    // Solo se analiza tu cuerpo ~15 veces por segundo (suficiente para que los regalos te "vean") y en pequeño.
+    let lastVT = -1, lastRun = 0, frames = 0, fpsT = performance.now();
+    const minGap = 1000 / Math.max(1, CFG.fps);
+    const process = () => {
+      const t = performance.now();
+      if (video.readyState >= 2 && video.currentTime !== lastVT && t - lastRun >= minGap) {
+        lastVT = video.currentTime; lastRun = t;
+        const src = grabFrame(); showFrame(src);
+        const t0 = performance.now();
+        const L = pose.detectForVideo(src, t).landmarks?.[0] || null;
+        poseMs = poseMs ? poseMs * 0.9 + (performance.now() - t0) * 0.1 : performance.now() - t0;
+        GiftFX.setPose(L);
+        frames++; if (t - fpsT > 1000) { fps = frames; frames = 0; fpsT = t; }
+        drawDebug();
+      }
+    };
+    if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+      const onFrame = () => { process(); video.requestVideoFrameCallback(onFrame); };
+      video.requestVideoFrameCallback(onFrame);
+    } else { const loop = () => { process(); requestAnimationFrame(loop); }; loop(); }
+  } catch (e) {
+    console.error(e);
+    setStatus('⚠ ' + e.message + (camList.length ? '\n\nCámaras:\n' + camList.join('\n') : '') + '\n\nLos regalos igual caen, pero sin chocar contigo.\n(G = probar)');
+    document.body.classList.add('debug');
+  }
+}
+start();
+</script>
+</body>
+</html>

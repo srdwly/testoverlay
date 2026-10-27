@@ -897,7 +897,7 @@ function buildHowTo() {
   const cd = CFG.voteCooldownSec >= 60 ? `${Math.round(CFG.voteCooldownSec / 60)} min` : `${CFG.voteCooldownSec} s`;
   let d = 0; const D = () => `style="animation-delay:${0.45 + (d++) * 0.09}s"`;
   $('#howto').innerHTML = `
-    <div class="glow"></div><div class="ttl">CÓMO JUGAR</div>
+    <div class="glow"></div><div class="ttl"></div>
     <div class="step" ${D()}>1. Gratis: vota del repertorio</div>
     <div class="line" ${D()}>Comenta <span class="hl">"${esc(exName)}"</span></div>
     <div class="line" ${D()}>o su número: <span class="hl">"${esc(exNum)}"</span></div>

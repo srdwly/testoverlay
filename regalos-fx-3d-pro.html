@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Regalos 3D Pro FX</title>
+<!--
+  REGALOS 3D PRO FX: como regalos-fx-3d, pero con dos modelos más:
+    · SEGMENTACIÓN (en vivo): tu silueta exacta, guitarra incluida → los regalos detrás de ti se esconden perfecto.
+    · PROFUNDIDAD (una sola vez, al iniciar o con la tecla D): mide el cuarto → los regalos se esconden detrás de
+      los muebles y los bidones. Conviene que al iniciar NO estés delante de los muebles (o presiona D luego).
+
+  En Live Studio:  regalos-fx-3d-pro.html ·  Para calibrar:  regalos-fx-3d-pro.html?debug=1
+  Debe ir encima de la cámara y del MISMO tamaño/posición que la imagen de la cámara.
+
+  CALIBRAR EL PISO (solo si mueves la cámara): abre ?debug=1 en Chrome. Verás la cuadrícula de baldosas.
+  Arrastra los 4 puntos amarillos a 4 esquinas de baldosas que formen un cuadro de 2×2 baldosas.
+  Abajo aparece el texto floor=… : agrégalo al enlace de Live Studio.
+
+  PARÁMETROS (opcionales):
+    debug=1                    cámara, cuadrícula del piso, tu silueta y estado
+    rotate=90 · fit=contain · mirror=1 · camname=obs · cam=0     (igual que live-fx)
+    size=0.18                  tamaño de una rosa en baldosas
+    floor=…                    calibración del piso (8 números, se obtiene en debug)
+    room=…                     contorno del piso libre (puntos x,y de 0 a 1 en la imagen)
+    fps=15 · detsize=256       detección del cuerpo
+    src=video.mp4 · showsrc=1  probar con un video grabado en vez de la cámara
+
+  Pruebas: tecla G = lanzar rosas · tecla B = un regalo grande · tecla D = volver a medir el cuarto · ?demo=1 = regalos simulados
+    depth=0                    sin modelo de profundidad (solo silueta)
+-->
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; }
+  #cam { opacity: 0; }
+  #status { position: fixed; left: 10px; top: 10px; padding: 6px 10px; border-radius: 6px; z-index: 5;
+    font: 12px/1.35 ui-monospace, Consolas, monospace; color: #fff; background: rgba(0,0,0,.65); display: none; white-space: pre; }
+  body.debug #cam { opacity: .55; }
+  body.debug #status { display: block; }
+</style>
+</head>
+<body>
+<video id="vid" playsinline muted style="display:none"></video>
+<canvas id="cam"></canvas>
+<canvas id="debugLayer"></canvas>
+<canvas id="fxGift"></canvas>
+<div id="status">iniciando…</div>
+
+<script type="module">
+// ───────────────────────── Configuración ─────────────────────────
+const P = new URLSearchParams(location.search);
+const num = (k, d) => (P.has(k) && P.get(k) !== '' && !isNaN(+P.get(k))) ? +P.get(k) : d;
+const CFG = {
+  debug:  P.get('debug') === '1',
+  demo:   P.get('demo') === '1',
+  mirror: P.get('mirror') === '1',
+  cam:    num('cam', 0),
+  camname: (P.has('camname') ? P.get('camname') : (P.has('cam') ? '' : 'obs')).toLowerCase(),
+  fit:    P.get('fit') === 'cover' ? 'cover' : 'contain',
+  giftSize: num('size', 0.18),
+  fps:    num('fps', 15),
+  detSize: num('detsize', 256),
+  wsUrl:  'ws://localhost:21213/',
+  src:    P.get('src') || '',                 // probar con un video grabado en vez de la cámara (ej. src=clip.mp4)
+  showSrc: P.get('showsrc') === '1',          // mostrar ese video debajo (para pruebas)
+  mpBase: P.get('mp') || 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14',
+  segModel: P.get('segmodel') || 'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite',
+  depthModel: P.get('depthmodel') || 'onnx-community/depth-anything-v2-small',
+  depthOn: P.get('depth') !== '0',
+  poseModel: P.get('posemodel') || 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+};
+const ROT = ((num('rotate', 90) % 360) + 360) % 360;
+const FIT = CFG.fit, MIRROR = CFG.mirror;
+if (CFG.debug) document.body.classList.add('debug');
+const statusEl = document.getElementById('status');
+const setStatus = (t) => { statusEl.textContent = t; };
+
+// ───────────────────────── Lienzo y coordenadas (igual que live-fx) ─────────────────────────
+const dbg = document.getElementById('debugLayer'), dctx = dbg.getContext('2d');
+let W = 0, H = 0;
+function resize() { W = innerWidth; H = innerHeight; dbg.width = W; dbg.height = H; }
+addEventListener('resize', resize); resize();
+
+const video = document.getElementById('vid');
+const camView = document.getElementById('cam');
+const frameCv = document.createElement('canvas'), fctx = frameCv.getContext('2d');
+function frameSize() {
+  const vw0 = video.videoWidth || 1280, vh0 = video.videoHeight || 720;
+  return (ROT === 90 || ROT === 270) ? [vh0, vw0] : [vw0, vh0];
+}
+function grabFrame() {
+  const [fw0, fh0] = frameSize();
+  const sc = Math.min(1, CFG.detSize / Math.max(fw0, fh0));
+  const fw = Math.round(fw0 * sc), fh = Math.round(fh0 * sc);
+  if (frameCv.width !== fw || frameCv.height !== fh) { frameCv.width = fw; frameCv.height = fh; }
+  fctx.setTransform(1, 0, 0, 1, 0, 0);
+  fctx.translate(fw / 2, fh / 2); fctx.rotate(ROT * Math.PI / 180);
+  const vw = ROT === 90 || ROT === 270 ? fh : fw, vh = ROT === 90 || ROT === 270 ? fw : fh;
+  fctx.drawImage(video, -vw / 2, -vh / 2, vw, vh);
+  return frameCv;
+}
+function showFrame(src) {
+  if (!CFG.debug) return;
+  if (camView.width !== src.width || camView.height !== src.height) { camView.width = src.width; camView.height = src.height; }
+  camView.getContext('2d').drawImage(src, 0, 0);
+}
+function camRect() {
+  const [vw, vh] = frameSize();
+  const s = (FIT === 'contain' ? Math.min : Math.max)(W / vw, H / vh), w = vw * s, h = vh * s;
+  return { x: (W - w) / 2, y: (H - h) / 2, w, h };
+}
+function toScreen(nx, ny) {
+  const [vw, vh] = frameSize();
+  const s = (FIT === 'contain' ? Math.min : Math.max)(W / vw, H / vh), dw = vw * s, dh = vh * s;
+  if (MIRROR) nx = 1 - nx;
+  return [(W - dw) / 2 + nx * dw, (H - dh) / 2 + ny * dh];
+}
+
+// ───────────────────────── Piso 3D: calibración con las baldosas ─────────────────────────
+/* El piso se calibra con 4 esquinas de baldosas (un cuadro de 2×2 baldosas) en la imagen de la cámara.
+   Con eso se sabe dónde está cada punto del piso, qué tan lejos está y de qué tamaño se ve algo ahí.
+   Unidades del mundo: 1 = una baldosa. */
+const DEF_FLOOR = [0.2601, 0.8719, 0.7193, 0.9280, 0.3854, 0.7360, 0.7489, 0.7624];   // tu cuarto (foto de calibración)
+const DEF_ROOM = [0, 1, 0, .8854, .1389, .7552, .2778, .6927, .4167, .6719, .5556, .6432, .787, .6536, .7639, .7812, .7685, .8594, 1, .8958, 1, 1];
+const parseList = (k, def) => { const v = (P.get(k) || '').split(',').map(Number); return v.length === def.length && v.every(isFinite) ? v : def; };
+const FLOOR = parseList('floor', DEF_FLOOR);
+const ROOM = (P.get('room') || '').split(',').map(Number).filter(isFinite).length >= 6 ? P.get('room').split(',').map(Number) : DEF_ROOM;
+
+function solve(A, b) {                                  // Gauss para la homografía (8×8)
+  const n = b.length;
+  for (let i = 0; i < n; i++) {
+    let m = i; for (let r = i + 1; r < n; r++) if (Math.abs(A[r][i]) > Math.abs(A[m][i])) m = r;
+    [A[i], A[m]] = [A[m], A[i]]; [b[i], b[m]] = [b[m], b[i]];
+    for (let r = i + 1; r < n; r++) { const f = A[r][i] / A[i][i]; for (let c = i; c < n; c++) A[r][c] -= f * A[i][c]; b[r] -= f * b[i]; }
+  }
+  const x = new Array(n).fill(0);
+  for (let i = n - 1; i >= 0; i--) { let s = b[i]; for (let c = i + 1; c < n; c++) s -= A[i][c] * x[c]; x[i] = s / A[i][i]; }
+  return x;
+}
+function homography(src, dst) {
+  const A = [], b = [];
+  for (let i = 0; i < 4; i++) {
+    const [u, v] = src[i], [x, y] = dst[i];
+    A.push([u, v, 1, 0, 0, 0, -x * u, -x * v]); b.push(x);
+    A.push([0, 0, 0, u, v, 1, -y * u, -y * v]); b.push(y);
+  }
+  const h = solve(A, b); return [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1];
+}
+function invert3(m) {
+  const [a, b, c, d, e, f, g, h, i] = m, A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+  const det = a * A + b * B + c * C;
+  return [A / det, -(b * i - c * h) / det, (b * f - c * e) / det, B / det, (a * i - c * g) / det, -(a * f - c * d) / det, C / det, -(a * h - b * g) / det, (a * e - b * d) / det];
+}
+let Hm, Hi;
+function setFloor(f) {
+  Hm = homography([[0, 0], [2, 0], [0, 2], [2, 2]], [[f[0], f[1]], [f[2], f[3]], [f[4], f[5]], [f[6], f[7]]]);
+  Hi = invert3(Hm);
+}
+setFloor(FLOOR);
+const hApply = (m, x, y) => { const w = m[6] * x + m[7] * y + m[8]; return [(m[0] * x + m[1] * y + m[2]) / w, (m[3] * x + m[4] * y + m[5]) / w]; };
+const floorToNorm = (u, v) => hApply(Hm, u, v);                 // piso → imagen (0..1)
+const normToFloor = (nx, ny) => hApply(Hi, nx, ny);              // imagen (0..1) → piso
+const floorToScreen = (u, v) => { const [nx, ny] = floorToNorm(u, v); return toScreen(nx, ny); };
+function scaleAt(u, v) {                                          // píxeles de pantalla por baldosa (en horizontal) en ese punto del piso
+  const e = 0.05, [x0, y0] = floorToScreen(u, v), [x1, y1] = floorToScreen(u + e, v), [x2, y2] = floorToScreen(u, v + e);
+  const a = (x1 - x0) / e, c = (y1 - y0) / e, b = (x2 - x0) / e, d = (y2 - y0) / e, det = a * d - b * c;
+  if (!det) return 50;
+  const du = d / det, dv = -c / det;                              // paso en el piso que en pantalla es 1 px a la derecha
+  return 1 / Math.hypot(du, dv);
+}
+// polígono del cuarto (en el piso) → paredes
+let roomUV = [];
+function buildRoom() { roomUV = []; for (let i = 0; i < ROOM.length; i += 2) roomUV.push(normToFloor(ROOM[i], ROOM[i + 1])); }
+buildRoom();
+function insideRoom(u, v) {
+  let c = false;
+  for (let i = 0, j = roomUV.length - 1; i < roomUV.length; j = i++) {
+    const [xi, yi] = roomUV[i], [xj, yj] = roomUV[j];
+    if ((yi > v) !== (yj > v) && u < (xj - xi) * (v - yi) / (yj - yi) + xi) c = !c;
+  }
+  return c;
+}
+function closestWall(u, v) {                                      // punto más cercano del borde del cuarto + normal hacia adentro
+  let best = null;
+  for (let i = 0, j = roomUV.length - 1; i < roomUV.length; j = i++) {
+    const [ax, ay] = roomUV[j], [bx, by] = roomUV[i], dx = bx - ax, dy = by - ay, L2 = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((u - ax) * dx + (v - ay) * dy) / L2)), px = ax + dx * t, py = ay + dy * t, d = Math.hypot(u - px, v - py);
+    if (!best || d < best.d) best = { d, px, py };
+  }
+  return best;
+}
+
+// ───────────────────────── Regalos lanzados en 3D ─────────────────────────
+/* Los regalos vuelan desde el celular del espectador (abajo, cerca de la cámara) hacia el cuarto, caen al PISO REAL
+   con perspectiva (más lejos = más chicos), ruedan, chocan con las paredes/bidones y contigo, y se apilan.
+   Los que quedan DETRÁS de ti se esconden detrás de tu silueta. */
+const GiftFX = (() => {
+  const cv = document.getElementById('fxGift'), ctx = cv.getContext('2d');
+  const back = document.createElement('canvas'), bctx = back.getContext('2d');   // capa de lo que está detrás de ti
+  const G = { size: CFG.giftSize, gravity: 28, bounce: 0.32, friction: 0.9, maxItems: 70, lifeSec: 120, maxSpawn: 40, gapMs: 120 };
+  const now = () => performance.now();
+  const rand = (a, b) => a + Math.random() * (b - a);
+
+  // sprites: la imagen REAL de cada regalo (giftPictureUrl de TikFinity); la rosa solo si no hay imagen
+  const SPR = 128, sprites = {};
+  const mk = (fn) => { const c = document.createElement('canvas'); c.width = c.height = SPR; const x = c.getContext('2d'); fn(x); return c; };
+  const fallback = mk(x => { x.font = `${SPR * .78}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",serif`;
+    x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('🌹', SPR / 2, SPR / 2 + 4); });
+  function sprite(url) {
+    if (!url) return fallback;
+    let s = sprites[url];
+    if (!s) { s = sprites[url] = { c: null }; const img = new Image(); img.crossOrigin = 'anonymous';
+      img.onload = () => { s.c = mk(x => x.drawImage(img, 6, 6, SPR - 12, SPR - 12)); wake(); }; img.src = url; }
+    return s.c || fallback;
+  }
+  const shadowSpr = (() => { const c = document.createElement('canvas'); c.width = 128; c.height = 32;
+    const x = c.getContext('2d'), g = x.createRadialGradient(64, 64, 2, 64, 64, 64);
+    g.addColorStop(0, 'rgba(0,0,0,.5)'); g.addColorStop(1, 'rgba(0,0,0,0)'); x.fillStyle = g; x.scale(1, 0.25); x.fillRect(0, 0, 128, 128); return c; })();
+
+  // ── tú: posición en el piso (por tus pies), altura y silueta (para esconder lo que pasa detrás) ──
+  let me = null, sil = [], silT = 0;                    // me = { u, v, R, h } · sil = formas de la silueta en pantalla
+  // ── PRO: tu silueta exacta (modelo de segmentación) y la profundidad del cuarto (modelo de profundidad, una vez) ──
+  const personCv = document.createElement('canvas'), pctx = personCv.getContext('2d');   // máscara de tu silueta (imagen de la cámara)
+  let personT = 0;
+  function setMask(src, w, h) {                         // src: canvas/ImageBitmap/ImageData con tu silueta (blanco = tú)
+    if (personCv.width !== w || personCv.height !== h) { personCv.width = w; personCv.height = h; }
+    if (src instanceof ImageData) pctx.putImageData(src, 0, 0);
+    else {                                              // imagen en escala de grises (blanco = tú, negro = fondo) → pasar a transparencia
+      pctx.clearRect(0, 0, w, h); pctx.drawImage(src, 0, 0, w, h);
+      const im = pctx.getImageData(0, 0, w, h), D = im.data;
+      for (let i = 0; i < D.length; i += 4) { const a = D[i]; D[i] = D[i + 1] = D[i + 2] = 255; D[i + 3] = a; }
+      pctx.putImageData(im, 0, 0);
+    }
+    personT = now(); if (bodies.length) wake();
+  }
+  const zOf = (u, v) => Hm[6] * u + Hm[7] * v + Hm[8];   // profundidad (relativa) de un punto del piso
+  let occ = null;                                       // { bins:[z...], masks:[canvas...] } — lo que tapa cada distancia
+  function setDepth(d, w, h, personIgnore) {            // d: profundidad inversa relativa (más alto = más cerca), w×h, en la imagen de la cámara
+    // 1) ajustar la profundidad del modelo a la del piso calibrado: d ≈ a/z + b, usando los píxeles del piso
+    const X = [], Y = [];
+    for (let y = 0; y < h; y += 2) for (let x = 0; x < w; x += 2) {
+      const nx = (x + .5) / w, ny = (y + .5) / h, i = y * w + x;
+      if (personIgnore && personIgnore[i]) continue;
+      const [u, v] = normToFloor(nx, ny); if (!insideRoom(u, v)) continue;
+      const z = zOf(u, v); if (z <= 0) continue; X.push(1 / z); Y.push(d[i]);
+    }
+    if (X.length < 20) return false;
+    const n = X.length, mx = X.reduce((a, b) => a + b) / n, my = Y.reduce((a, b) => a + b) / n;
+    let sxy = 0, sxx = 0; for (let i = 0; i < n; i++) { sxy += (X[i] - mx) * (Y[i] - my); sxx += (X[i] - mx) ** 2; }
+    const a = sxy / sxx, b = my - a * mx;
+    // 2) profundidad de cada píxel, y si es "piso" (coincide con el piso calibrado) o un objeto
+    const Z = new Float32Array(w * h), isObj = new Uint8Array(w * h);
+    let zmin = 1e9, zmax = 0;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = y * w + x, dd = d[i] - b, z = dd > 1e-6 ? a / dd : 1e9; Z[i] = z;
+      if (personIgnore && personIgnore[i]) continue;              // donde estabas tú al tomar la foto: no es un objeto fijo
+      const [u, v] = normToFloor((x + .5) / w, (y + .5) / h), zf = zOf(u, v);
+      const floorLike = insideRoom(u, v) && zf > 0 && Math.abs(z - zf) / zf < 0.12;
+      isObj[i] = floorLike ? 0 : 1;
+      if (insideRoom(u, v) && zf > 0) { zmin = Math.min(zmin, zf); zmax = Math.max(zmax, zf); }
+    }
+    // 3) una máscara por rango de distancia: qué objetos quedan DELANTE de un regalo a esa distancia
+    const NB = 10, bins = [], masks = [];
+    for (let k = 0; k < NB; k++) {
+      const zb = zmin + (zmax - zmin) * k / (NB - 1);
+      const c = document.createElement('canvas'); c.width = w; c.height = h; const x = c.getContext('2d'), img = x.createImageData(w, h);
+      for (let i = 0; i < w * h; i++) if (isObj[i] && Z[i] < zb * 0.94) img.data[i * 4 + 3] = 255;
+      x.putImageData(img, 0, 0); bins.push(zb); masks.push(c);
+    }
+    occ = { bins, masks, a, b };
+    wake(); return true;
+  }
+  function setPose(L) {
+    const t = now();
+    if (!L) { if (t - silT > 600) { me = null; sil = []; } return; }
+    const vis = i => L[i] && (L[i].visibility ?? 1) > 0.5;
+    const S = i => toScreen(L[i].x, L[i].y);
+    if (!vis(11) || !vis(12)) { if (t - silT > 600) { me = null; sil = []; } return; }
+    const [s1x, s1y] = S(11), [s2x, s2y] = S(12), sw = Math.hypot(s1x - s2x, s1y - s2y);
+    // pies: tobillos si se ven; si no, se estiman bajo las caderas
+    let fx, fy;
+    if (vis(27) || vis(28)) {
+      const fs = [27, 28].filter(vis).map(i => [L[i].x, L[i].y]);
+      fx = fs.reduce((a, p) => a + p[0], 0) / fs.length; fy = Math.max(...fs.map(p => p[1])) + 0.01;
+    } else if (vis(23) && vis(24)) { fx = (L[23].x + L[24].x) / 2; fy = Math.min(1.05, (L[23].y + L[24].y) / 2 + 0.38); }
+    if (fx != null) {
+      const [u, v] = normToFloor(fx, fy), sc = scaleAt(u, v), [, footY] = toScreen(fx, fy);
+      const headY = vis(0) ? S(0)[1] - sw * 0.35 : Math.min(s1y, s2y) - sw * 0.8;
+      const nm = { u, v, R: Math.max(0.45, sw / sc * 0.55), h: Math.max(2, (footY - headY) / sc) };
+      me = me ? { u: me.u * 0.5 + nm.u * 0.5, v: me.v * 0.5 + nm.v * 0.5, R: nm.R, h: nm.h } : nm;
+    }
+    // silueta aproximada con los puntos del cuerpo (cabeza, torso, brazos, piernas y la guitarra)
+    const c = [], cap = (a, b, r) => { if (vis(a) && vis(b)) { const [ax, ay] = S(a), [bx, by] = S(b); c.push([ax, ay, bx, by, r]); } };
+    if (vis(0)) { const [nx, ny] = S(0); c.push([nx, ny - sw * 0.12, nx, ny - sw * 0.12, sw * 0.42]); }
+    const mid = (a, b) => [(S(a)[0] + S(b)[0]) / 2, (S(a)[1] + S(b)[1]) / 2];
+    const sh = mid(11, 12), hip = (vis(23) && vis(24)) ? mid(23, 24) : [sh[0], sh[1] + sw * 1.3];
+    c.push([sh[0], sh[1] + sw * 0.1, hip[0], hip[1], sw * 0.5]);
+    c.push([s1x, s1y, s2x, s2y, sw * 0.2]);
+    cap(11, 13, sw * .17); cap(13, 15, sw * .14); cap(12, 14, sw * .17); cap(14, 16, sw * .14);
+    cap(23, 25, sw * .24); cap(25, 27, sw * .2); cap(24, 26, sw * .24); cap(26, 28, sw * .2);
+    c.push([hip[0] - sw * 0.25, hip[1] - sw * 0.15, hip[0] + sw * 0.2, hip[1] - sw * 0.05, sw * 0.45]);   // cuerpo de la guitarra
+    sil = c; silT = t;
+    if (bodies.length) wake();
+  }
+
+  // ── regalos ──
+  let bodies = [], parts = [], running = false, lastT = 0, acc = 0, pending = 0;
+  const sizeFor = coins => G.size * Math.min(2.4, 1 + 0.45 * Math.log10(Math.max(1, coins))) * rand(0.9, 1.1);
+  function randomFloorTarget() {
+    for (let k = 0; k < 40; k++) {                                    // alrededor tuyo (delante, detrás y a los lados) o en el cuarto
+      let u, v;
+      if (me && Math.random() < 0.6) { u = me.u + rand(-1.6, 1.6); v = me.v + rand(-0.6, 2.4); }
+      else { const [nx, ny] = [rand(0.1, 0.9), rand(0.68, 0.98)]; [u, v] = normToFloor(nx, ny); }
+      if (insideRoom(u, v)) return [u, v];
+    }
+    return normToFloor(0.5, 0.9);
+  }
+  function spawnOne(url, coins) {
+    if (bodies.length >= G.maxItems) fadeOldest(3);
+    const r = sizeFor(coins), [cu, cv0] = normToFloor(0.5, 1.0);      // centro del borde inferior de la imagen, en el piso
+    const side = Math.random() < 0.5 ? -1 : 1, ref = me ? me.u : cu;           // sale desde "el celular": abajo, cerca de la cámara, a un lado tuyo
+    const su = ref + side * rand(1.1, 1.9), sv = cv0 - 0.9, sh = rand(2.2, 3.2);
+    let [tu, tv] = randomFloorTarget(), aimMe = false;
+    if (me && Math.random() < 0.3) { tu = me.u + rand(-0.3, 0.3); tv = me.v + rand(-0.1, 0.2); aimMe = true; }   // a veces te apunta a ti
+    let T = rand(0.75, 1.05), th = aimMe ? rand(1.5, me.h * 0.8) : 0;
+    let vh = (th - sh + 0.5 * G.gravity * T * T) / T;
+    if (me && !aimMe && tv > me.v) {                                  // si cae detrás de ti, el arco pasa por ENCIMA de tu cabeza
+      const need = me.h + 0.8;
+      for (let k = 0; k < 8; k++) {
+        const tc = Math.max(0.05, Math.min(T, (me.v - me.R - sv) / ((tv - sv) / T)));   // cuándo llega a tu distancia
+        if (sh + vh * tc - 0.5 * G.gravity * tc * tc >= need) break;
+        T *= 1.12; vh = (th - sh + 0.5 * G.gravity * T * T) / T;
+      }
+    }
+    bodies.push({ u: su, v: sv, h: sh, vu: (tu - su) / T, vv: (tv - sv) / T, vh,
+      r, a: rand(0, 6.28), av: rand(-12, 12), url, coins, born: now(), rest: 0, sleep: false, fade: 0, inRoom: false, hitFx: false });
+    wake();
+  }
+  function fadeOldest(n) { bodies.filter(b => !b.fade).sort((a, b) => a.born - b.born).slice(0, n).forEach(b => b.fade = now()); }
+
+  function step(dt) {
+    const tn0 = now();
+    for (const b of bodies) {
+      if (b.sleep || b.fade) continue;
+      b.vh -= G.gravity * dt;
+      b.u += b.vu * dt; b.v += b.vv * dt; b.h += b.vh * dt; b.a += b.av * dt;
+      // piso
+      if (b.h < b.r && b.inRoom) {
+        const hit = -b.vh; b.h = b.r;
+        if (b.vh < 0) b.vh = -b.vh * G.bounce;
+        b.vu *= G.friction; b.vv *= G.friction; b.av = b.av * 0.7 + (b.vu - b.vv) * 2;
+        if (hit > 6) sparks(b, Math.min(10, hit));
+      }
+      // paredes del cuarto (solo después de entrar)
+      const inside = insideRoom(b.u, b.v);
+      if (inside) b.inRoom = true;
+      else if (b.inRoom) {
+        const w = closestWall(b.u, b.v), nx = (w.px - b.u) / (w.d || 1), ny = (w.py - b.v) / (w.d || 1);
+        b.u = w.px + nx * 0.02; b.v = w.py + ny * 0.02;
+        const vn = b.vu * nx + b.vv * ny; if (vn < 0) { b.vu -= (1 + G.bounce) * vn * nx; b.vv -= (1 + G.bounce) * vn * ny; }
+      } else if (b.h < -2 || b.v > 20) b.fade = now();
+      // contigo: un cilindro con tu altura parado donde están tus pies
+      if (me && b.inRoom && b.h < me.h + b.r) {
+        const du = b.u - me.u, dv = b.v - me.v, d = Math.hypot(du, dv), min = me.R + b.r;
+        if (d < min) {
+          const nx = d ? du / d : 0, ny = d ? dv / d : -1;
+          b.u = me.u + nx * min; b.v = me.v + ny * min;
+          const vn = b.vu * nx + b.vv * ny;
+          if (vn < 0) { b.vu -= (1 + G.bounce) * vn * nx; b.vv -= (1 + G.bounce) * vn * ny; b.vh = Math.max(b.vh, 0) * 0.5; b.av = rand(-14, 14);
+            if (!b.hitFx && -vn > 3) { b.hitFx = true; sparks(b, 8); } }
+          b.sleep = false; b.rest = 0;
+        }
+      }
+    }
+    // entre regalos (esferas)
+    for (let it = 0; it < 2; it++) for (let i = 0; i < bodies.length; i++) {
+      const a = bodies[i]; if (a.fade) continue;
+      for (let j = i + 1; j < bodies.length; j++) {
+        const b = bodies[j]; if (b.fade || (a.sleep && b.sleep)) continue;
+        const du = b.u - a.u, dv = b.v - a.v, dh = b.h - a.h, min = (a.r + b.r) * 0.8, d2 = du * du + dv * dv + dh * dh;
+        if (d2 >= min * min || !d2) continue;
+        const d = Math.sqrt(d2), nu = du / d, nv = dv / d, nh = dh / d, o = (min - d) / 2;
+        const wa = a.sleep ? 0 : 1, wb = b.sleep ? 0 : 1, s = wa + wb; if (!s) continue;
+        a.u -= nu * o * 2 * wa / s; a.v -= nv * o * 2 * wa / s; a.h -= nh * o * 2 * wa / s;
+        b.u += nu * o * 2 * wb / s; b.v += nv * o * 2 * wb / s; b.h += nh * o * 2 * wb / s;
+        const vn = (b.vu - a.vu) * nu + (b.vv - a.vv) * nv + (b.vh - a.vh) * nh;
+        if (vn < 0) { const j2 = -(1 + G.bounce) * vn / s;
+          a.vu -= j2 * nu * wa; a.vv -= j2 * nv * wa; a.vh -= j2 * nh * wa; b.vu += j2 * nu * wb; b.vv += j2 * nv * wb; b.vh += j2 * nh * wb; }
+        if (a.h < a.r) a.h = a.r; if (b.h < b.r) b.h = b.r;
+      }
+    }
+    for (const b of bodies) {
+      if (b.sleep || b.fade) continue;
+      b.rest = (Math.abs(b.vu) + Math.abs(b.vv) + Math.abs(b.vh) < 0.6 && b.inRoom) ? b.rest + dt : 0;
+      if (b.rest > 0.5) { b.sleep = true; b.vu = b.vv = b.vh = b.av = 0; }
+      else b.av *= 0.98;
+    }
+  }
+
+  const SPK = ['#ffd36b', '#ff6f91', '#ffffff', '#ff9ec4'];
+  function sparks(b, n) {
+    const [x, y] = floorToScreen(b.u, b.v), s = scaleAt(b.u, b.v), sy = y - b.h * s;
+    for (let i = 0; i < n; i++) { const a = rand(0, 6.28), sp = rand(60, 220);
+      parts.push({ x, y: sy + b.r * s, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 70, life: rand(.25, .5), max: .5, s: rand(1.2, 2.6), c: SPK[(Math.random() * 4) | 0], behind: me && b.v > me.v });
+    }
+  }
+
+  function drawGift(c, b, tn) {
+    const [x, y] = floorToScreen(b.u, b.v), s = scaleAt(b.u, b.v);
+    const R = b.r * s, sy = y - b.h * s, f = b.fade ? 1 - (tn - b.fade) / 600 : 1;
+    if (b.h < b.r * 6) {                                              // sombra en el piso (más tenue cuanto más alto)
+      c.globalAlpha = Math.max(0, (1 - b.h / (b.r * 6))) * 0.8 * f;
+      c.drawImage(shadowSpr, x - R * 1.2, y - R * 0.28, R * 2.4, R * 0.6);
+    }
+    c.globalAlpha = Math.max(0, f);
+    c.save(); c.translate(x, sy); c.rotate(b.a); const k = b.fade ? 0.6 + 0.4 * f : 1; c.scale(k, k);
+    c.drawImage(sprite(b.url), -R, -R, R * 2, R * 2); c.restore();
+  }
+  function cutSilhouette(c) {                                         // borra de la capa de atrás todo lo que tapa tu cuerpo
+    c.globalAlpha = 1; c.globalCompositeOperation = 'destination-out'; c.fillStyle = '#000';
+    for (const [ax, ay, bx, by, r] of sil) {
+      const ang = Math.atan2(by - ay, bx - ax);
+      c.beginPath(); c.arc(ax, ay, r, ang + Math.PI / 2, ang - Math.PI / 2); c.arc(bx, by, r, ang - Math.PI / 2, ang + Math.PI / 2); c.closePath(); c.fill();
+    }
+    c.globalCompositeOperation = 'source-over';
+  }
+
+  function wake() { if (!running) { running = true; lastT = now(); requestAnimationFrame(loop); } }
+  function loop(t) {
+    const dt = Math.min(0.05, (t - lastT) / 1000); lastT = t; acc += dt;
+    while (acc >= 1 / 120) { step(1 / 120); acc -= 1 / 120; }
+    const tn = now();
+    for (const b of bodies) if (!b.fade && b.sleep && tn - b.born > G.lifeSec * 1000) b.fade = tn;
+    bodies = bodies.filter(b => !b.fade || tn - b.fade < 600);
+    if (bodies.some(b => b.fade)) bodies.forEach(b => { if (b.sleep && !b.fade) { b.sleep = false; b.rest = 0; } });
+    for (const p of parts) { p.vy += 700 * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+    parts = parts.filter(p => p.life > 0);
+
+    // dibujo por capas, de lejos a cerca. Cada capa se recorta con lo que la tapa:
+    //   · objetos del cuarto que están más cerca (profundidad) · tu silueta si el regalo está detrás de ti
+    ctx.clearRect(0, 0, W, H);
+    const order = bodies.slice().sort((a, b) => b.v - a.v);
+    const useMask = tn - personT < 600 && personCv.width;
+    const R = camRect();
+    const zMe = me ? zOf(me.u, me.v) : 0;
+    const groups = new Map();
+    for (const b of order) {
+      const zb = zOf(b.u, b.v), behindMe = !!me && zb > zMe * 1.03 && b.h < me.h;
+      let k = -1; if (occ && !b.throw) { k = 0; while (k < occ.bins.length - 1 && occ.bins[k + 1] <= zb) k++; }
+      const key = k + (behindMe ? 'b' : 'f');
+      if (!groups.has(key)) groups.set(key, { k, behindMe, list: [], z: zb });
+      groups.get(key).list.push(b);
+    }
+    for (const g of [...groups.values()].sort((a, b) => b.z - a.z)) {
+      if (g.k < 0 && !g.behindMe) { for (const b of g.list) drawGift(ctx, b, tn); continue; }
+      bctx.globalCompositeOperation = 'source-over'; bctx.clearRect(0, 0, W, H);
+      for (const b of g.list) drawGift(bctx, b, tn);
+      bctx.globalAlpha = 1; bctx.globalCompositeOperation = 'destination-out';
+      if (g.k >= 0) bctx.drawImage(occ.masks[g.k], R.x, R.y, R.w, R.h);          // muebles, bidones, etc. que están delante
+      if (g.behindMe) { if (useMask) bctx.drawImage(personCv, R.x, R.y, R.w, R.h); else cutSilhouette(bctx); }   // tú
+      bctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = 1; ctx.drawImage(back, 0, 0);
+    }
+    const behind = order.filter(b => me && zOf(b.u, b.v) > zMe * 1.03);
+    ctx.globalCompositeOperation = 'lighter';
+    for (const p of parts) { ctx.globalAlpha = Math.max(0, p.life / p.max); ctx.fillStyle = p.c; ctx.fillRect(p.x - p.s, p.y - p.s, p.s * 2, p.s * 2); }
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+
+    if (bodies.some(b => !b.sleep || b.fade) || parts.length || pending > 0 || (behind.length && (sil.length || useMask))) requestAnimationFrame(loop);
+    else running = false;
+  }
+
+  const streaks = {};
+  function drop(key, url, coins, total, ended) {
+    const done = streaks[key] || 0, n = Math.max(0, Math.min(G.maxSpawn - Math.min(done, G.maxSpawn), total - done));
+    streaks[key] = Math.max(done, total);
+    for (let i = 0; i < n; i++) { pending++; setTimeout(() => { pending--; spawnOne(url, coins); }, i * G.gapMs); }
+    if (ended) setTimeout(() => delete streaks[key], 4000);
+  }
+  function resizeCanvas() { cv.width = back.width = W; cv.height = back.height = H; buildRoom(); wake(); }
+  addEventListener('resize', resizeCanvas); resizeCanvas();
+  return { setPose, setMask, setDepth, get occ() { return occ; }, drop, get bodies() { return bodies; }, get me() { return me; }, get sil() { return sil; }, test: (n = 8, url = null, coins = 1) => drop('t' + Math.random(), url, coins, n, true) };
+})();
+
+// ───────────────────────── Pruebas ─────────────────────────
+addEventListener('keydown', (e) => {
+  if (e.key === 'g' || e.key === 'G') GiftFX.test(10);
+  if (e.key === 'b' || e.key === 'B') GiftFX.test(1, 'https://raw.githubusercontent.com/srdwly/testoverlay/main/img/galaxia.png', 1000);
+});
+if (CFG.demo) {
+  const REPO = 'https://raw.githubusercontent.com/srdwly/testoverlay/main/img/';
+  setInterval(() => {
+    const r = Math.random();
+    if (r < 0.8) GiftFX.test(4 + ((Math.random() * 10) | 0));
+    else GiftFX.test(1, REPO + ['sombrero.png', 'amplificado.png', 'galaxia.png'][(Math.random() * 3) | 0], [99, 249, 1000][(Math.random() * 3) | 0]);
+  }, 2500);
+}
+window.__gift = { GiftFX, CFG };
+
+// ───────────────────────── TikFinity: solo regalos ─────────────────────────
+function connectTikfinity() {
+  let ws; try { ws = new WebSocket(CFG.wsUrl); } catch { return setTimeout(connectTikfinity, 5000); }
+  ws.onmessage = (m) => {
+    if (m.data.indexOf('"gift"') === -1) return;                 // taps y chat: ni se leen
+    let msg; try { msg = JSON.parse(m.data); } catch { return; }
+    if (msg.event !== 'gift') return;
+    const d = msg.data || {};
+    const giftId = d.giftId ?? d.gift?.gift_id ?? d.giftName ?? '?';
+    GiftFX.drop((d.uniqueId || '?') + '|' + giftId, d.giftPictureUrl || '', parseInt(d.diamondCount ?? d.gift?.diamond_count ?? 1, 10) || 1,
+                parseInt(d.repeatCount || d.gift?.repeat_count || 1, 10), d.repeatEnd !== false);
+  };
+  ws.onclose = () => setTimeout(connectTikfinity, 5000);
+}
+connectTikfinity();
+
+// ───────────────────────── Debug: cuadrícula del piso, cuarto, tu silueta + calibración ─────────────────────────
+let camList = [], camLabel = '', fps = 0, poseMs = 0, delegate = '?';
+function screenToNorm(x, y) {
+  const [vw, vh] = frameSize(), s = (FIT === 'contain' ? Math.min : Math.max)(W / vw, H / vh), dw = vw * s, dh = vh * s;
+  let nx = (x - (W - dw) / 2) / dw; const ny = (y - (H - dh) / 2) / dh; if (MIRROR) nx = 1 - nx; return [nx, ny];
+}
+function drawDebug() {
+  dctx.clearRect(0, 0, W, H);
+  if (!CFG.debug) return;
+  dctx.lineWidth = 1.5; dctx.strokeStyle = 'rgba(0,255,255,.6)';
+  for (let k = -4; k <= 5; k++) {
+    dctx.beginPath(); for (let j = -12; j <= 15; j++) { const [x, y] = floorToScreen(k, j / 3); j === -12 ? dctx.moveTo(x, y) : dctx.lineTo(x, y); } dctx.stroke();
+    dctx.beginPath(); for (let j = -12; j <= 30; j++) { const [x, y] = floorToScreen(j / 3, k); j === -12 ? dctx.moveTo(x, y) : dctx.lineTo(x, y); } dctx.stroke();
+  }
+  dctx.strokeStyle = 'rgba(255,220,0,.9)'; dctx.lineWidth = 2; dctx.beginPath();
+  for (let i = 0; i < ROOM.length; i += 2) { const [x, y] = toScreen(ROOM[i], ROOM[i + 1]); i ? dctx.lineTo(x, y) : dctx.moveTo(x, y); } dctx.closePath(); dctx.stroke();
+  dctx.fillStyle = 'rgba(255,120,180,.35)';
+  for (const [ax, ay, bx, by, r] of GiftFX.sil) { const ang = Math.atan2(by - ay, bx - ax);
+    dctx.beginPath(); dctx.arc(ax, ay, r, ang + Math.PI / 2, ang - Math.PI / 2); dctx.arc(bx, by, r, ang - Math.PI / 2, ang + Math.PI / 2); dctx.closePath(); dctx.fill(); }
+  const me = GiftFX.me;
+  if (me) { dctx.strokeStyle = '#ff4dd2'; dctx.lineWidth = 3; dctx.beginPath();
+    for (let k = 0; k <= 24; k++) { const a = k / 24 * Math.PI * 2, [x, y] = floorToScreen(me.u + Math.cos(a) * me.R, me.v + Math.sin(a) * me.R); k ? dctx.lineTo(x, y) : dctx.moveTo(x, y); } dctx.stroke(); }
+  for (let i = 0; i < 4; i++) { const [x, y] = toScreen(FLOOR[i * 2], FLOOR[i * 2 + 1]);
+    dctx.fillStyle = '#ffd400'; dctx.beginPath(); dctx.arc(x, y, 9, 0, 7); dctx.fill(); dctx.fillStyle = '#000'; dctx.font = 'bold 11px Consolas'; dctx.fillText(i + 1, x - 3, y + 4); }
+  setStatus([`cámara: ${camLabel}   rot: ${ROT}°   fit: ${FIT}${MIRROR ? '   (espejo)' : ''}`,
+             `motor: ${delegate}   cuerpo: ${poseMs.toFixed(0)} ms   detecciones/s: ${fps}`,
+             me ? `te veo en el piso: baldosa (${me.u.toFixed(1)}, ${me.v.toFixed(1)})  altura ${me.h.toFixed(1)}` : 'no te veo (encuadra hombros y piernas)',
+             `arrastra los 4 puntos amarillos a esquinas de un cuadro de 2×2 baldosas`,
+             `floor=${FLOOR.map(v => v.toFixed(4)).join(',')}`,
+             `tecla G = rosas · B = regalo grande`].join('\n'));
+}
+if (CFG.debug) {                                                    // arrastrar los puntos de calibración
+  document.body.style.pointerEvents = 'auto';
+  let drag = -1;
+  addEventListener('pointerdown', e => { for (let i = 0; i < 4; i++) { const [x, y] = toScreen(FLOOR[i * 2], FLOOR[i * 2 + 1]); if (Math.hypot(x - e.clientX, y - e.clientY) < 18) drag = i; } });
+  addEventListener('pointermove', e => { if (drag < 0) return; const [nx, ny] = screenToNorm(e.clientX, e.clientY); FLOOR[drag * 2] = nx; FLOOR[drag * 2 + 1] = ny; setFloor(FLOOR); buildRoom(); drawDebug(); });
+  addEventListener('pointerup', () => drag = -1);
+  setInterval(drawDebug, 500);
+}
+
+// ───────────────────────── Cámara (misma lógica que live-fx: no toca la webcam física) ─────────────────────────
+async function openCamera() {
+  const C = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+  const gum = (id) => navigator.mediaDevices.getUserMedia({ video: id ? { ...C, deviceId: { exact: id } } : C });
+  const list = async () => (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === 'videoinput');
+  const pick = (cams) => CFG.camname ? cams.find(c => (c.label || '').toLowerCase().includes(CFG.camname)) : cams[CFG.cam];
+  const KEY = 'livefx-cam-' + (CFG.camname || CFG.cam);
+  const remember = (stream) => {
+    const tr = stream.getVideoTracks()[0];
+    camLabel = tr?.label || '?';
+    try { localStorage.setItem(KEY, tr.getSettings().deviceId || ''); } catch {}
+    if (CFG.camname && !camLabel.toLowerCase().includes(CFG.camname)) {
+      stream.getTracks().forEach(t => t.stop());
+      throw new Error(`Se abrió "${camLabel}" en vez de una cámara con "${CFG.camname}".`);
+    }
+    return stream;
+  };
+
+  let cams = await list();
+  camList = cams.map((c, i) => `${i}: ${c.label || '(sin nombre)'}`);
+
+  // 1) nombres visibles → abrir directo
+  if (cams.some(c => c.label)) {
+    const chosen = pick(cams);
+    if (!chosen) throw new Error(`No encontré la cámara "${CFG.camname || CFG.cam}".`);
+    return remember(await gum(chosen.deviceId));
+  }
+  // 2) cámara recordada
+  let saved = null; try { saved = localStorage.getItem(KEY); } catch {}
+  if (saved) { try { return remember(await gum(saved)); } catch (e) { console.warn('cámara recordada falló', e); } }
+  // 3) primera vez: pedir permiso
+  try {
+    const s = await gum(null);
+    const label = s.getVideoTracks()[0]?.label || '';
+    if (!CFG.camname || label.toLowerCase().includes(CFG.camname)) return remember(s);
+    s.getTracks().forEach(t => t.stop());
+  } catch (e) {
+    if (e.name === 'NotAllowedError') throw e;   // permiso negado: no hay nada más que hacer
+  }
+  cams = await list();
+  camList = cams.map((c, i) => `${i}: ${c.label || '(sin nombre)'}`);
+  const chosen = pick(cams);
+  if (!chosen) throw new Error(`No encontré la cámara "${CFG.camname || CFG.cam}".`);
+  return remember(await gum(chosen.deviceId));
+}
+
+// ───────────────────────── Detector de cuerpo ─────────────────────────
+let segModel = null, lastMask = null;            // última máscara (para ignorarte al medir el cuarto)
+async function measureRoom() {                     // modelo de profundidad: UNA vez (o con la tecla D)
+  if (!CFG.depthOn || video.readyState < 2) return;
+  try {
+    setStatus('midiendo el cuarto (profundidad)…');
+    const { pipeline, RawImage } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1');
+    if (!measureRoom.pipe) {
+      try { measureRoom.pipe = await pipeline('depth-estimation', CFG.depthModel, { device: 'webgpu', dtype: 'fp16' }); }
+      catch { measureRoom.pipe = await pipeline('depth-estimation', CFG.depthModel, { device: 'wasm', dtype: 'q8' }); }
+    }
+    const [fw, fh] = frameSize(), c = document.createElement('canvas'); c.width = Math.round(fw / 2); c.height = Math.round(fh / 2);
+    const x = c.getContext('2d'); x.translate(c.width / 2, c.height / 2); x.rotate(ROT * Math.PI / 180);
+    const vw = ROT % 180 ? c.height : c.width, vh = ROT % 180 ? c.width : c.height; x.drawImage(video, -vw / 2, -vh / 2, vw, vh);
+    const out = await measureRoom.pipe(RawImage.fromCanvas(c));
+    const pd = out.predicted_depth, [dh, dw] = pd.dims.slice(-2), src = pd.data;
+    const w = 135, h = 240, d = new Float32Array(w * h), ign = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) for (let x2 = 0; x2 < w; x2++) d[y * w + x2] = src[Math.floor(y / h * dh) * dw + Math.floor(x2 / w * dw)];
+    if (lastMask) for (let y = 0; y < h; y++) for (let x2 = 0; x2 < w; x2++) {          // donde estás tú: no es un mueble
+      const m = lastMask; ign[y * w + x2] = m.data[(Math.floor(y / h * m.h) * m.w + Math.floor(x2 / w * m.w))] > 0.3 ? 1 : 0;
+    }
+    const ok = GiftFX.setDepth(d, w, h, ign);
+    setStatus(ok ? 'cuarto medido ✓' : '⚠ no pude ajustar la profundidad al piso (revisa la calibración)');
+  } catch (e) { console.warn('profundidad no disponible', e); setStatus('⚠ profundidad no disponible: ' + e.message); }
+}
+addEventListener('keydown', e => { if (e.key === 'd' || e.key === 'D') measureRoom(); });
+
+async function start() {
+  try {
+    setStatus('cargando detectores (cuerpo y silueta)…');
+    const base = CFG.mpBase;
+    const { FilesetResolver, PoseLandmarker, ImageSegmenter } = await import(`${base}/vision_bundle.mjs`);
+    const fileset = await FilesetResolver.forVisionTasks(`${base}/wasm`);
+    const makePose = (dl) => PoseLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: CFG.poseModel, delegate: dl },
+      runningMode: 'VIDEO', numPoses: 1, minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5 });
+    const makeSeg = (dl) => ImageSegmenter.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: CFG.segModel, delegate: dl }, runningMode: 'VIDEO', outputConfidenceMasks: true, outputCategoryMask: false });
+    let pose; try { pose = await makePose('GPU'); delegate = 'GPU'; } catch { pose = await makePose('CPU'); delegate = 'CPU (lento)'; }
+    try { segModel = await makeSeg(delegate === 'GPU' ? 'GPU' : 'CPU'); } catch (e) { console.warn('segmentación no disponible, uso la silueta aproximada', e); }
+
+    setStatus('abriendo cámara…');
+    if (CFG.src) {
+      video.src = CFG.src; video.loop = true; camLabel = 'video: ' + CFG.src;
+      if (CFG.showSrc) Object.assign(video.style, { display: 'block', position: 'fixed', inset: '0', width: '100vw', height: '100vh', objectFit: FIT, zIndex: '-1' });
+    } else video.srcObject = await openCamera();
+    await video.play();
+    if (MIRROR) camView.style.transform = 'scaleX(-1)';
+    camView.style.objectFit = FIT;
+    setTimeout(measureRoom, 2500);                                    // medir el cuarto una vez
+
+    let lastVT = -1, lastRun = 0, frames = 0, fpsT = performance.now();
+    const minGap = 1000 / Math.max(1, CFG.fps);
+    const maskImg = { w: 0, h: 0, img: null };
+    const process = () => {
+      const t = performance.now();
+      if (video.readyState >= 2 && video.currentTime !== lastVT && t - lastRun >= minGap) {
+        lastVT = video.currentTime; lastRun = t;
+        const src = grabFrame(); showFrame(src);
+        const t0 = performance.now();
+        const L = pose.detectForVideo(src, t).landmarks?.[0] || null;
+        GiftFX.setPose(L);
+        if (segModel) {                                               // tu silueta exacta
+          const r = segModel.segmentForVideo(src, t), m = r.confidenceMasks?.[r.confidenceMasks.length - 1];
+          if (m) {
+            const w = m.width, h = m.height, f = m.getAsFloat32Array();
+            if (maskImg.w !== w || maskImg.h !== h) { maskImg.w = w; maskImg.h = h; maskImg.img = new ImageData(w, h); }
+            const D = maskImg.img.data;
+            for (let i = 0; i < w * h; i++) { const a = f[i] > 0.5 ? 255 : f[i] > 0.3 ? (f[i] - 0.3) * 1275 : 0; D[i * 4] = D[i * 4 + 1] = D[i * 4 + 2] = 255; D[i * 4 + 3] = a; }
+            GiftFX.setMask(maskImg.img, w, h);
+            lastMask = { w, h, data: f.slice() };
+            r.close?.();
+          }
+        }
+        poseMs = poseMs ? poseMs * 0.9 + (performance.now() - t0) * 0.1 : performance.now() - t0;
+        frames++; if (t - fpsT > 1000) { fps = frames; frames = 0; fpsT = t; }
+        drawDebug();
+      }
+    };
+    if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+      const onFrame = () => { process(); video.requestVideoFrameCallback(onFrame); };
+      video.requestVideoFrameCallback(onFrame);
+    } else { const loop = () => { process(); requestAnimationFrame(loop); }; loop(); }
+  } catch (e) {
+    console.error(e);
+    setStatus('⚠ ' + e.message + (camList.length ? '\n\nCámaras:\n' + camList.join('\n') : '') + '\n\nLos regalos igual caen, pero sin chocar contigo.\n(G = probar)');
+    document.body.classList.add('debug');
+  }
+}
+start();
+</script>
+</body>
+</html>

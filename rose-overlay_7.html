@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Palomitas de regalos</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+/* ════════════════════════════════════════════════════════════════
+   CONFIGURACIÓN
+   ════════════════════════════════════════════════════════════════ */
+const CFG = {
+  wsUrl: 'ws://localhost:21213/',     // TikFinity
+
+  // Zona donde caen y se apilan (en % del ancho de la fuente). Ej.: 0 a 75 deja libre la columna derecha.
+  areaLeft: 0,
+  areaRight: 100,
+
+  baseSize: 0.045,        // tamaño de un regalo de 1 moneda (proporción del ancho)
+  maxSizeMult: 2.8,       // los regalos caros crecen hasta este múltiplo
+  gravity: 1800,          // px/s² (más alto = caen más rápido)
+  bounce: 0.25,           // rebote al chocar (0 = nada, 1 = pelota)
+  friction: 0.35,         // roce entre regalos
+
+  maxItems: 90,           // máximo de regalos en pantalla (los más viejos se desvanecen)
+  pileMaxHeight: 0.42,    // si la pila supera esta altura (proporción del alto), se van los más viejos
+  lifeSec: 90,            // cada regalo apilado se desvanece después de este tiempo
+  maxSpawnPerGift: 60,    // tope de piezas por combo (para combos enormes)
+  spawnGapMs: 90,         // separación entre piezas de un combo
+
+  mode: 'lanzado',        // 'lluvia' = caen desde arriba · 'lanzado' = el espectador los lanza hacia la pantalla
+  overlap: 0.62,          // cuánto se pueden encimar al apilarse (1 = nada, 0.5 = mucho)
+  depth: true,            // profundidad 3D: unos regalos quedan más atrás (más chicos y oscuros)
+  depthFloor: 0.06,       // cuánto más arriba se apoyan los del fondo (proporción del alto) → perspectiva
+  bigGiftCoins: 100,      // desde cuántas monedas un regalo hace "onda" de impacto
+
+  // ── PALOMITAS ──
+  popBounce: 0.55,        // rebote del primer golpe (después rebota menos: 2-3 saltitos)
+  squash: true,           // se aplasta al caer y vuelve a su forma (como una palomita)
+  chain: true,            // al caer, los regalos cercanos de la pila saltan
+  chainRadius: 3.2,       // qué tan lejos llega el salto (en tamaños de regalo)
+  chainKick: 800,         // fuerza del salto de los vecinos
+  bigWave: true,          // los regalos grandes (≥ bigGiftCoins) hacen saltar TODA la pila en una onda
+  kernel: false,          // el regalo sale como un granito de maíz y REVIENTA en el aire (también con ?kernel=1)
+};
+{ const Q = new URLSearchParams(location.search);               // interruptores por el enlace: ?kernel=1  ?mode=lluvia
+  if (Q.has('kernel')) CFG.kernel = Q.get('kernel') === '1';
+  if (Q.get('mode') === 'lluvia' || Q.get('mode') === 'lanzado') CFG.mode = Q.get('mode');
+  if (Q.has('chain')) CFG.chain = Q.get('chain') !== '0'; }
+
+/* ════════════════════════════════════════════════════════════════ */
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  wake();
+}
+addEventListener('resize', resize);
+
+const now = () => performance.now();
+const rand = (a, b) => a + Math.random() * (b - a);
+const L = () => W * CFG.areaLeft / 100, R = () => W * CFG.areaRight / 100;
+
+/* ── Sprites: cada imagen de regalo se pre-dibuja una vez con su sombra ── */
+const sprites = {};                 // url → { canvas, ready }
+const SPR = 128;                    // resolución del sprite
+function makeSprite(drawFn) {
+  const c = document.createElement('canvas'); c.width = c.height = SPR;
+  const x = c.getContext('2d');
+  x.shadowColor = 'rgba(0,0,0,.45)'; x.shadowBlur = 8; x.shadowOffsetY = 4;
+  drawFn(x);
+  return c;
+}
+const fallback = makeSprite(x => {
+  x.font = `${SPR * 0.72}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",serif`;
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText('🌹', SPR / 2, SPR / 2 + 4);
+});
+// shade 0 = adelante (normal), 1 y 2 = más atrás (más oscuros) — se pre-dibujan una vez
+function shaded(src, shade) {
+  if (!shade) return src;
+  const c = document.createElement('canvas'); c.width = c.height = SPR;
+  const x = c.getContext('2d');
+  x.drawImage(src, 0, 0);
+  x.globalCompositeOperation = 'source-atop';
+  x.fillStyle = `rgba(20,10,30,${shade * 0.2})`; x.fillRect(0, 0, SPR, SPR);
+  return c;
+}
+const fallbackShades = [0, 1, 2].map(k => shaded(fallback, k));
+function getSprite(url, shade = 0) {
+  if (!url) return fallbackShades[shade];
+  let s = sprites[url];
+  if (!s) {
+    s = sprites[url] = { shades: null, ready: false };
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => { const base = makeSprite(x => x.drawImage(img, 10, 8, SPR - 20, SPR - 20)); s.shades = [0, 1, 2].map(k => shaded(base, k)); s.ready = true; wake(); };
+    img.src = url;
+  }
+  return s.ready ? s.shades[shade] : fallbackShades[shade];
+}
+// colores de cada regalo (para el "pop" de su color); si la imagen no lo permite, colores cálidos
+const DEF_COLS = ['#ffd36b', '#ff6f91', '#ffffff', '#ff9ec4'];
+const colorCache = {};
+function giftColors(url) {
+  const key = url || 'fallback';
+  if (colorCache[key]) return colorCache[key];
+  const spr = getSprite(url);
+  if (url && !(sprites[url] && sprites[url].ready)) return DEF_COLS;
+  try {
+    const d = spr.getContext('2d').getImageData(0, 0, SPR, SPR).data, cols = [];
+    for (let k = 0; k < 400 && cols.length < 6; k++) {
+      const i = (((Math.random() * SPR) | 0) * SPR + ((Math.random() * SPR) | 0)) * 4;
+      if (d[i + 3] > 200 && d[i] + d[i + 1] + d[i + 2] > 120) cols.push(`rgb(${d[i]},${d[i + 1]},${d[i + 2]})`);
+    }
+    colorCache[key] = cols.length >= 3 ? cols.concat(['#ffffff']) : DEF_COLS;
+  } catch { colorCache[key] = DEF_COLS; }
+  return colorCache[key];
+}
+// granito de maíz (modo kernel)
+const kernelSpr = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = SPR; const x = c.getContext('2d');
+  x.translate(SPR / 2, SPR / 2); x.shadowColor = 'rgba(0,0,0,.4)'; x.shadowBlur = 6; x.shadowOffsetY = 3;
+  const g = x.createRadialGradient(-12, -16, 4, 0, 0, 52); g.addColorStop(0, '#ffe39a'); g.addColorStop(0.55, '#f2b632'); g.addColorStop(1, '#c97f12');
+  x.fillStyle = g; x.beginPath(); x.moveTo(0, -46); x.bezierCurveTo(36, -40, 40, 16, 0, 48); x.bezierCurveTo(-40, 16, -36, -40, 0, -46); x.fill();
+  x.shadowBlur = 0; x.fillStyle = '#e9d9b0'; x.beginPath(); x.ellipse(0, 36, 12, 10, 0, 0, 7); x.fill();         // puntita
+  x.fillStyle = 'rgba(255,255,255,.7)'; x.beginPath(); x.ellipse(-12, -20, 7, 12, -0.4, 0, 7); x.fill();         // brillo
+  return c;
+})();
+// sombra suave de contacto (pre-dibujada)
+const shadowSpr = (() => {
+  const c = document.createElement('canvas'); c.width = 128; c.height = 32;
+  const x = c.getContext('2d'), g = x.createRadialGradient(64, 64, 2, 64, 64, 64);
+  g.addColorStop(0, 'rgba(0,0,0,.45)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = g; x.scale(1, 0.25); x.fillRect(0, 0, 128, 128); return c;
+})();
+
+/* ── Física: círculos que caen, chocan, ruedan y se apilan ── */
+let bodies = [];
+let parts = [];
+const rings = [];                    // ondas de impacto
+
+function sizeFor(coins) {
+  const m = Math.min(CFG.maxSizeMult, 1 + 0.45 * Math.log10(Math.max(1, coins)));
+  return W * CFG.baseSize * m * rand(0.9, 1.1);
+}
+function spawnOne(url, coins) {
+  if (bodies.length >= CFG.maxItems) fadeOldest(3);
+  const z = CFG.depth ? Math.random() : 0;                          // 0 = adelante, 1 = fondo
+  const r = sizeFor(coins) * (1 - 0.35 * z);                        // lo del fondo se ve más chico
+  const left = L() + r, right = R() - r;
+  const cx = (left + right) / 2, spread = (right - left) / 2;
+  const x = cx + (Math.random() + Math.random() - 1) * spread * 0.85;   // más al centro que a los bordes
+  const b = {
+    x, y: -r - rand(0, 40), vx: rand(-60, 60), vy: rand(80, 220),
+    r, m: r * r, a: rand(0, 6.28), av: rand(-4, 4), z, shade: z < 0.34 ? 0 : z < 0.67 ? 1 : 2,
+    url, coins, born: now(), rest: 0, sleep: false, fade: 0, landed: false, hits: 0, sq: 0, sqv: 0,
+  };
+  if (CFG.mode === 'lanzado') {                                     // sale desde abajo (el celular del espectador) hacia la escena
+    const sx = W / 2 + rand(-0.28, 0.28) * W;
+    b.throw = { t0: now(), dur: rand(750, 1000), sx, sy: H + r * 3, tx: x, ty: H * rand(0.3, 0.5), spin: rand(-14, 14), popAt: CFG.kernel ? rand(0.32, 0.5) : -1, popped: !CFG.kernel };
+    b.x = sx; b.y = H + r * 3;
+  }
+  bodies.push(b);
+  wake();
+}
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+const easeOutBack = x => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+function updateThrows(tn) {
+  for (const b of bodies) {
+    const T = b.throw; if (!T) continue;
+    const t = Math.min(1, (tn - T.t0) / T.dur), e = easeOut(t);
+    const px = b.x, py = b.y;
+    b.x = T.sx + (T.tx - T.sx) * e;
+    b.y = T.sy + (T.ty - T.sy) * e - H * 0.16 * Math.sin(Math.PI * t);   // arco
+    b.a += T.spin * (1 - t) * 0.016;
+    b.vis = 1 + 2.4 * (1 - e);                                       // cerca de la cámara = enorme, se aleja = normal
+    if (!T.popped && t >= T.popAt) {                                 // ¡POP! el granito revienta en el regalo
+      T.popped = true; T.popT = tn;
+      puff(b.x, b.y, b.r * b.vis, giftColors(b.url), 16, true);
+    }
+    if (t >= 1) {                                                    // llegó a la escena: ahora cae con física
+      b.throw = null; b.vis = 1;
+      b.vx = (b.x - px) * 30; b.vy = Math.max(60, (b.y - py) * 30); b.av = T.spin * 0.2;
+    }
+  }
+}
+function fadeOldest(n) {
+  bodies.filter(b => !b.fade).sort((a, b) => a.born - b.born).slice(0, n).forEach(b => b.fade = now());
+}
+
+function step(dt) {
+  const g = CFG.gravity, left = L(), right = R();
+  for (const b of bodies) {
+    if (b.sleep || b.throw) continue;
+    b.vy += g * dt;
+    b.vx *= 0.999; b.av *= 0.985;
+    b.x += b.vx * dt; b.y += b.vy * dt; b.a += b.av * dt;
+  }
+  // choques entre regalos (rejilla espacial para no comparar todos con todos)
+  const cell = W * CFG.baseSize * CFG.maxSizeMult * 2, grid = new Map();
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i]; if (b.fade || b.throw) continue;
+    const k = Math.floor(b.x / cell) + ',' + Math.floor(b.y / cell);
+    (grid.get(k) || grid.set(k, []).get(k)).push(i);
+  }
+  for (let it = 0; it < 3; it++) {
+    for (let i = 0; i < bodies.length; i++) {
+      const a = bodies[i]; if (a.fade || a.throw) continue;
+      const cx = Math.floor(a.x / cell), cy = Math.floor(a.y / cell);
+      for (let gx = cx - 1; gx <= cx + 1; gx++) for (let gy = cy - 1; gy <= cy + 1; gy++) {
+        const list = grid.get(gx + ',' + gy); if (!list) continue;
+        for (const j of list) {
+          if (j <= i) continue;
+          const b = bodies[j]; if (b.fade || b.throw || (a.sleep && b.sleep)) continue;
+          if (Math.abs(a.z - b.z) > 0.3) continue;                    // distinta profundidad: pasan uno delante del otro
+          const dx = b.x - a.x, dy = b.y - a.y, min = (a.r + b.r) * CFG.overlap, d2 = dx * dx + dy * dy;
+          if (d2 >= min * min || d2 === 0) continue;
+          const d = Math.sqrt(d2), nx = dx / d, ny = dy / d, over = min - d;
+          const ia = a.sleep ? 0 : 1 / a.m, ib = b.sleep ? 0 : 1 / b.m, s = ia + ib; if (!s) continue;
+          a.x -= nx * over * ia / s; a.y -= ny * over * ia / s;
+          b.x += nx * over * ib / s; b.y += ny * over * ib / s;
+          const rvx = b.vx - a.vx, rvy = b.vy - a.vy, vn = rvx * nx + rvy * ny;
+          if (vn < 0) {
+            const j2 = -(1 + CFG.bounce) * vn / s;
+            a.vx -= j2 * nx * ia; a.vy -= j2 * ny * ia; b.vx += j2 * nx * ib; b.vy += j2 * ny * ib;
+            const tx = -ny, ty = nx, vt = rvx * tx + rvy * ty;     // roce: frena el deslizamiento y hace girar
+            let jt = -vt / s; const lim = CFG.friction * j2; jt = Math.max(-lim, Math.min(lim, jt));
+            a.vx -= jt * tx * ia; a.vy -= jt * ty * ia; b.vx += jt * tx * ib; b.vy += jt * ty * ib;
+            a.av -= vt / a.r * 0.15; b.av += vt / b.r * 0.15;
+            a.contact = b.contact = true;
+            if (Math.abs(vn) > 250) { if (a.sleep) a.sleep = false; if (b.sleep) b.sleep = false; }
+            if (-vn > 300) {                                         // cayó sobre la pila: también "revienta"
+              if (!a.landed && a.vy > b.vy) impact(a, -vn, a.y + a.r * 0.5);
+              else if (!b.landed && b.vy > a.vy) impact(b, -vn, b.y + b.r * 0.5);
+            }
+            if (CFG.squash && -vn > 150) { a.sqv += Math.min(5, -vn * 0.003); b.sqv += Math.min(5, -vn * 0.003); }
+          }
+        }
+      }
+    }
+  }
+  // piso y paredes
+  for (const b of bodies) {
+    if (b.sleep || b.fade || b.throw) continue;
+    const floor = H - b.z * H * CFG.depthFloor, k = CFG.overlap;   // los del fondo se apoyan un poco más arriba
+    if (b.y + b.r * k > floor) {
+      const hit = b.vy;
+      b.y = floor - b.r * k;
+      const e = (hit > 120 && b.hits < 3) ? CFG.popBounce * Math.pow(0.55, b.hits) : CFG.bounce;   // 2-3 saltitos de palomita
+      if (b.vy > 0) b.vy = -b.vy * e;
+      if (hit > 120) { b.hits++; if (CFG.squash) b.sqv += Math.min(9, hit * 0.006); }
+      b.vx *= 0.9; b.av = b.av * 0.6 + (b.vx / b.r) * 0.4;   // rueda
+      if (!b.landed && hit > 300) impact(b, hit, floor - 4);
+    }
+    if (b.x - b.r * k < left) { b.x = left + b.r * k; b.vx = Math.abs(b.vx) * CFG.bounce; }
+    if (b.x + b.r * k > right) { b.x = right - b.r * k; b.vx = -Math.abs(b.vx) * CFG.bounce; }
+    // ¿se frenó de golpe? (cayó sobre la pila aunque sea en varios toques chiquitos) → impacto de palomita
+    if (!b.landed && b.pvy > 300 && b.vy < b.pvy * 0.35) impact(b, b.pvy, b.y + b.r * 0.5);
+    b.pvy = b.vy;
+    // dormir cuando ya no se mueve (ahorra procesador)
+    if (b.contact) b.av *= 0.9;                                  // apoyado: deja de girar pronto
+    b.contact = false;
+    const sp = Math.abs(b.vx) + Math.abs(b.vy);
+    b.rest = sp < 40 ? b.rest + dt : 0;
+    if (b.rest > 0.6 && b.y > -b.r) { b.sleep = true; b.vx = b.vy = b.av = 0; }
+  }
+}
+
+/* ── Impacto de palomita: pop de color + los vecinos saltan ── */
+const hops = [];                                     // saltos programados (la onda avanza con la distancia)
+function impact(b, speed, y) {
+  if (b.landed) return;
+  b.landed = true;
+  burst(b.x, y, b.coins);
+  puff(b.x, y - b.r * 0.3, b.r, giftColors(b.url), 8 + Math.min(10, Math.round(Math.log10(Math.max(1, b.coins)) * 4)), false);
+  if (!CFG.chain) return;
+  const big = CFG.bigWave && b.coins >= CFG.bigGiftCoins;
+  const Rr = big ? W * 1.2 : b.r * CFG.chainRadius, t0 = now();
+  for (const n of bodies) {
+    if (n === b || n.throw || n.fade) continue;
+    if (!big && Math.abs(n.z - b.z) > 0.45) continue;
+    const d = Math.hypot(n.x - b.x, n.y - b.y); if (d > Rr) continue;
+    const s = CFG.chainKick * (big ? 0.55 + 0.45 * Math.min(2.2, Math.log10(b.coins) / 1.5) * (1 - d / Rr) : (1 - d / Rr)) * rand(0.6, 1.1)
+              * Math.min(1.6, Math.sqrt(b.r / n.r));
+    if (s < 60) continue;
+    hops.push({ n, at: t0 + d / (big ? 0.9 : 1.6), s });            // ms: la onda se propaga
+  }
+}
+function hop(n, s) {
+  n.sleep = false; n.rest = 0;
+  n.vy = Math.min(n.vy, -s); n.vx += rand(-1, 1) * s * 0.25; n.av += rand(-8, 8);
+  if (CFG.squash) n.sqv -= Math.min(6, s * 0.006);                // se estira al saltar
+  n.hits = Math.min(n.hits, 1); n.landed = true;                    // rebota un poco al volver, sin causar otra cadena
+}
+/* ── Nubecita de color (el "pop") ── */
+function puff(x, y, r, cols, n, kernelPop) {
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, 6.28), sp = rand(60, kernelPop ? 260 : 200);
+    parts.push({ kind: 'puff', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 60, life: rand(0.35, 0.6), max: 0.6,
+                 s: rand(r * 0.12, r * 0.28), c: cols[(Math.random() * cols.length) | 0] });
+  }
+  if (kernelPop) for (let i = 0; i < 6; i++) {                       // nube blanca de palomita
+    const a = rand(0, 6.28);
+    parts.push({ kind: 'cloud', x: x + Math.cos(a) * r * 0.3, y: y + Math.sin(a) * r * 0.3, vx: Math.cos(a) * 40, vy: Math.sin(a) * 40 - 30,
+                 life: 0.45, max: 0.45, s: r * rand(0.35, 0.55), c: '#fff8e7' });
+  }
+}
+
+/* ── Chispas al caer ── */
+const SPARK = ['#ffd36b', '#ff6f91', '#ffffff', '#ff9ec4', '#ffe9a8'];
+function burst(x, y, coins) {
+  const n = Math.min(26, 6 + Math.round(Math.log10(Math.max(1, coins)) * 6));
+  for (let i = 0; i < n; i++) {
+    const ang = rand(Math.PI * 1.05, Math.PI * 1.95), sp = rand(120, 380);
+    parts.push({ x, y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: rand(0.4, 0.8), max: 0.8,
+                 s: rand(1.5, 3.2), c: SPARK[(Math.random() * SPARK.length) | 0] });
+  }
+  if (coins >= CFG.bigGiftCoins) rings.push({ x, y, t: 0, big: Math.min(3, Math.log10(coins)) });
+}
+
+/* ── Bucle (se detiene solo cuando no hay nada moviéndose) ── */
+let running = false, last = 0, acc = 0;
+function wake() { if (!running) { running = true; last = now(); requestAnimationFrame(loop); } }
+function loop(t) {
+  const dt = Math.min(0.05, (t - last) / 1000); last = t; acc += dt;
+  while (acc >= 1 / 120) { step(1 / 120); acc -= 1 / 120; }        // física estable a 120 Hz
+
+  // vida, pila demasiado alta, desvanecer
+  const tn = now();
+  updateThrows(tn);
+  for (let i = hops.length - 1; i >= 0; i--) if (hops[i].at <= tn) { const h = hops.splice(i, 1)[0]; if (bodies.includes(h.n) && !h.n.fade) hop(h.n, h.s); }
+  for (const b of bodies) if (b.sq || b.sqv) {                       // resorte del aplastado
+    b.sqv += (-170 * b.sq - 11 * b.sqv) * dt; b.sq += b.sqv * dt;
+    b.sq = Math.max(-0.35, Math.min(0.4, b.sq));
+    if (Math.abs(b.sq) < 0.004 && Math.abs(b.sqv) < 0.05) b.sq = b.sqv = 0;
+  }
+  for (const b of bodies) if (!b.fade && b.sleep && tn - b.born > CFG.lifeSec * 1000) b.fade = tn;
+  if (bodies.some(b => b.sleep && !b.fade && b.y - b.r < H * (1 - CFG.pileMaxHeight))) fadeOldest(2);
+  bodies = bodies.filter(b => !b.fade || tn - b.fade < 600);
+  if (bodies.some(b => b.fade)) bodies.forEach(b => { if (b.sleep && !b.fade) { b.sleep = false; b.rest = 0; } });   // los de arriba se acomodan
+
+  for (const p of parts) { const gk = p.kind ? (p.kind === 'cloud' ? -40 : 300) : 900; p.vy += gk * dt; if (p.kind) { p.vx *= 0.94; p.vy *= 0.94; } p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+  parts = parts.filter(p => p.life > 0);
+  for (const r of rings) r.t += dt;
+  for (let i = rings.length - 1; i >= 0; i--) if (rings[i].t > 0.7) rings.splice(i, 1);
+
+  // dibujo
+  ctx.clearRect(0, 0, W, H);
+  for (const r of rings) {
+    const k = r.t / 0.7;
+    ctx.globalAlpha = (1 - k) * 0.8; ctx.strokeStyle = '#ffd36b'; ctx.lineWidth = 4 * (1 - k) + 1;
+    ctx.beginPath(); ctx.ellipse(r.x, r.y, W * 0.12 * r.big * k + 10, W * 0.03 * r.big * k + 3, 0, 0, Math.PI * 2); ctx.stroke();
+  }
+  const order = bodies.slice().sort((a, b) => (b.throw ? -1 : b.z) - (a.throw ? -1 : a.z));   // fondo primero, lo lanzado encima
+  // sombras de contacto en el piso (dan volumen)
+  for (const b of order) {
+    if (b.throw) continue;
+    const floor = H - b.z * H * CFG.depthFloor, gap = floor - (b.y + b.r * CFG.overlap);
+    if (gap > b.r * 2) continue;
+    ctx.globalAlpha = Math.max(0, 1 - gap / (b.r * 2)) * (b.fade ? 0.4 : 0.8);
+    ctx.drawImage(shadowSpr, b.x - b.r * 1.1, floor - b.r * 0.22, b.r * 2.2, b.r * 0.55);
+  }
+  for (const b of order) {
+    const f = b.fade ? 1 - (tn - b.fade) / 600 : 1, sc = (b.fade ? 0.6 + 0.4 * f : 1) * (b.vis || 1);
+    const T0 = b.throw, isKernel = T0 && !T0.popped;
+    const spr = isKernel ? kernelSpr : getSprite(b.url, b.throw ? 0 : b.shade);
+    if (b.throw && !isKernel) {                                     // estela del lanzamiento
+      const T = b.throw, t = Math.min(1, (tn - T.t0) / T.dur);
+      for (let k = 3; k >= 1; k--) {
+        const tk = Math.max(0, t - k * 0.05), ek = easeOut(tk);
+        const gx = T.sx + (T.tx - T.sx) * ek, gy = T.sy + (T.ty - T.sy) * ek - H * 0.16 * Math.sin(Math.PI * tk), gs = 1 + 2.4 * (1 - ek);
+        ctx.globalAlpha = 0.12 * (4 - k);
+        ctx.drawImage(spr, gx - b.r * gs, gy - b.r * gs, b.r * 2 * gs, b.r * 2 * gs);
+      }
+    }
+    ctx.globalAlpha = Math.max(0, f);
+    let k2 = 1;
+    if (isKernel) k2 = 0.5;                                          // el granito es chiquito
+    else if (T0 && T0.popT) { const pt = Math.min(1, (tn - T0.popT) / 260); k2 = easeOutBack(pt); }   // revienta con rebote
+    const q = b.sq || 0;
+    ctx.save(); ctx.translate(b.x, b.y + b.r * q * 0.6);             // aplastado: se ensancha y baja, sin despegarse del piso
+    if (q) ctx.scale(1 + q, 1 - q);
+    ctx.rotate(b.a); ctx.scale(sc * k2, sc * k2);
+    ctx.drawImage(spr, -b.r, -b.r, b.r * 2, b.r * 2);
+    ctx.restore();
+  }
+  for (const p of parts) if (p.kind) {                              // nubecitas de color (color real, sin brillo)
+    const k = p.life / p.max; ctx.globalAlpha = Math.max(0, k) * (p.kind === 'cloud' ? 0.8 : 0.95); ctx.fillStyle = p.c;
+    const rr = p.kind === 'cloud' ? p.s * (1.6 - k * 0.6) : p.s * (0.5 + k * 0.5);
+    ctx.beginPath(); ctx.arc(p.x, p.y, rr, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of parts) if (!p.kind) {
+    ctx.globalAlpha = Math.max(0, p.life / p.max); ctx.fillStyle = p.c;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.s, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+
+  const busy = bodies.some(b => !b.sleep || b.fade || b.sq) || parts.length || rings.length || pending > 0 || hops.length || bodies.some(b => b.throw);
+  if (busy) requestAnimationFrame(loop); else running = false;          // sin nada que mover: 0 % de procesador
+}
+
+/* ── Regalos: combos en tiempo real (caen mientras el combo sigue) ── */
+let pending = 0;
+const streaks = {};                  // usuario+regalo → cantidad ya lanzada
+function dropGift(key, name, url, coins, totalSoFar, ended) {
+  const done = streaks[key] || 0;
+  const toSpawn = Math.max(0, Math.min(CFG.maxSpawnPerGift - Math.min(done, CFG.maxSpawnPerGift), totalSoFar - done));
+  streaks[key] = Math.max(done, totalSoFar);
+  for (let i = 0; i < toSpawn; i++) {
+    pending++;
+    setTimeout(() => { pending--; spawnOne(url, coins); }, i * CFG.spawnGapMs);
+  }
+  if (ended) setTimeout(() => delete streaks[key], 4000);
+}
+window.__pop = { get bodies() { return bodies; }, hops };   // para pruebas
+window.spawnGift = (url, count = 1, coins = 1) => dropGift('test' + Math.random(), 'prueba', url, coins, count, true);
+
+/* ── TikFinity ── */
+let ws, reconnectTimer;
+function connect() {
+  try { ws = new WebSocket(CFG.wsUrl); } catch (e) { return scheduleReconnect(); }
+  ws.onopen = () => { clearTimeout(reconnectTimer); console.log('[Regalos] Conectado a TikFinity'); };
+  ws.onmessage = evt => {
+    if (evt.data.indexOf('"gift"') === -1) return;                    // solo regalos: ni se leen los demás eventos
+    let msg; try { msg = JSON.parse(evt.data); } catch { return; }
+    if (msg.event !== 'gift') return;
+    const d = msg.data || {};
+    const giftId = d.giftId ?? d.gift?.gift_id ?? d.giftName ?? '?';
+    const uid = d.uniqueId || d.userId || '?';
+    const count = parseInt(d.repeatCount || d.gift?.repeat_count || 1, 10);
+    const coins = parseInt(d.diamondCount ?? d.gift?.diamond_count ?? 1, 10) || 1;
+    const ended = d.repeatEnd !== false;
+    dropGift(uid + '|' + giftId, d.nickname || uid, d.giftPictureUrl || '', coins, count, ended);
+  };
+  ws.onerror = () => {};
+  ws.onclose = () => scheduleReconnect();
+}
+function scheduleReconnect() { clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connect, 5000); }
+
+/* ── Pruebas: tecla R lanza rosas; ?demo=1 simula un live ── */
+const REPO = 'https://raw.githubusercontent.com/srdwly/testoverlay/main/img/';
+const DEMO_GIFTS = [[null, 1], [REPO + 'sombrero.png', 99], [REPO + 'amplificado.png', 249], [REPO + 'galaxia.png', 1000]];
+addEventListener('keydown', e => { if (e.key === 'r' || e.key === 'R') dropGift('k' + Math.random(), 'Prueba', null, 1, 10, true); });
+if (new URLSearchParams(location.search).get('demo') === '1') {
+  const names = ['Andrea', 'Lokito', 'Sumo', 'Luz', 'Marco', 'Kathy'];
+  setInterval(() => {
+    const r = Math.random(), nm = names[(Math.random() * names.length) | 0];
+    const [url, coins] = r < 0.8 ? DEMO_GIFTS[0] : DEMO_GIFTS[1 + ((Math.random() * 3) | 0)];
+    const key = nm + url, total = coins === 1 ? 5 + ((Math.random() * 20) | 0) : 1;
+    let n = 0;                                                         // simula un combo que va subiendo
+    const tick = setInterval(() => { n = Math.min(total, n + 3); dropGift(key, nm, url, coins, n, n >= total); if (n >= total) clearInterval(tick); }, 300);
+  }, 2600);
+}
+
+resize();
+connect();
+</script>
+</body>
+</html>

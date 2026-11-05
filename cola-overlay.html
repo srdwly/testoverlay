@@ -590,12 +590,67 @@ function searchStyle(styleKey, Q) {
   return { type: 'vague', titles: top.slice(0, 3).map(f => f.sg.title) };
 }
 const refOf = sg => ({ style: sg.style, num: sg.num, title: sg.title, band: sg.band });
+
+/* ── Detección en comentarios normales (sin escribir "disco"/"cumbia") ──
+   Busca en TODAS las listas y solo acepta si el comentario nombra la canción con bastante seguridad:
+   · todas las palabras del título (o el título incompleto + la banda), y
+   · si el título es una sola palabra, el comentario tiene que ser casi solo ese nombre (ej. "Ibeliz porfa")
+     y no puede ser una palabra muy común del chat (ej. "amor", "princesa", "cerveza"). */
+const CHAT_STOP = new Set('hola holi buenas buenos noches tardes dias saludos saludo desde para mi bro hermano hermana amigo amiga profe rodri rodrigo master crack genio grande gracias bendiciones besos abrazo abrazos jaja jajaja xd siii si no ya muy bien buena bueno lindo linda hermoso hermosa otra vez mas ese esa esta este temazo tema cancion canciones porfavor xfa xfavor plis pliss please quiero queremos toca tocame tocate pon ponme ponla dale'.split(' '));
+const COMMON = new Set('amor amiga amigo princesa cerveza cervezas jamas sola solo ven basta celosa regresa tormenta promesa lagrimas soledad suenos traicionera siempre volvere sufrire lloraras cuentame juana maribel isabel roxana julieta leny'.split(' '));
+let FILL = null;                                       // relleno del chat que NO aparece en ningún título
+function searchGeneral(W) {
+  if (!FILL) { const inTitles = new Set(SONGS.flatMap(sg => sg.tw.concat(sg.bw))); FILL = new Set([...CHAT_STOP].filter(w => !inTitles.has(w))); }
+  const Q = W.filter(w => !STOP.has(w) && !FILL.has(w));
+  if (!Q.length) return null;
+  const core = Q.join(' ');
+  const qj = ' ' + W.join(' ') + ' ', found = [];
+  for (const sg of SONGS) {
+    const used = new Set();
+    let tHit = 0, bHit = 0, allTitle = true;
+    const pick = w => { let m = 0, mi = -1;
+      Q.forEach((q, i) => { const sc = wordScore(q, w); if (sc > m || (sc === m && sc > 0 && used.has(mi) && !used.has(i))) { m = sc; mi = i; } });
+      if (mi >= 0) used.add(mi); return m; };
+    for (const w of sg.tw) { const m = pick(w); tHit += m; if (!m) allTitle = false; }
+    for (const w of sg.bw) bHit += pick(w);
+    for (const w of sg.xw) pick(w);
+    if (Q.some((q, i) => !used.has(i) && BANDWORDS.has(q))) continue;   // nombró otra banda
+    const cov = tHit / sg.tw.length, bcov = sg.bw.length ? bHit / sg.bw.length : 0;
+    const named = bcov >= 0.5;
+    if (!((allTitle && cov >= 0.85) || (cov >= 0.5 && named))) continue;
+    const exact = core === sg.tw.join(' ');                            // el comentario ES el título (ej. "traicionera", "por ti porfa")
+    const weak = sg.tw.length === 1 || sg.tw.every(w => COMMON.has(w) || CHAT_STOP.has(w) || w.length <= 3);
+    if (weak && !named && !exact) {                                    // títulos cortos o de palabras comunes: el comentario debe ser casi solo eso
+      if (Q.length > sg.tw.length + 1 || sg.tw.some(w => COMMON.has(w)) || sg.tw.join('').length < 4) continue;
+    }
+    let score = cov * 2 + bcov * 1.2 - (Q.length - used.size) * 0.03 + (sg.style === S.active ? 0.05 : 0);
+    if (qj.includes(' ' + sg.tn + ' ')) score += 0.4 + 0.2 * sg.tn.split(' ').length;   // nombre exacto
+    if (exact) score += 0.5;
+    found.push({ sg, score });
+  }
+  if (!found.length) return { type: 'none' };
+  found.sort((a, b) => b.score - a.score);
+  const top = found.filter(f => f.score >= found[0].score - 0.15);
+  if (top.length === 1) return { type: 'ok', ref: refOf(top[0].sg), general: true };
+  if (top.every(f => f.sg.tn === top[0].sg.tn)) {                     // mismo título en varias bandas/listas
+    const voted = top.map(f => ({ f, v: (VOTES(f.sg.style)[f.sg.num] || {}).count || 0 })).sort((a, b) => b.v - a.v);
+    if (voted[0].v > 0 && voted[0].v > (voted[1]?.v || 0)) return { type: 'ok', ref: refOf(voted[0].f.sg), general: true };   // la que ya va ganando
+    const same = top.filter(f => f.sg.style === S.active);
+    if (same.length === 1) return { type: 'ok', ref: refOf(same[0].sg), general: true };   // una sola en el ritmo que suena
+    return { type: 'amb', style: top[0].sg.style, title: top[0].sg.title, bands: top.map(f => f.sg.band), general: true };
+  }
+  return { type: 'vague', titles: top.slice(0, 3).map(f => f.sg.title) };
+}
 // Devuelve: {type:'ok', ref} | {type:'amb', …} | {type:'none'|'vague'} | null (no es pedido)
 function resolveRequest(text) {
   const byNum = parseRef(text);
   if (byNum) return { type: 'ok', ref: byNum };
   const W = words(text);
-  if (W.length < 2 || !styleBy(W[0])) return null;                        // debe empezar con "disco"/"cumbia"
+  if (!W.length) return null;
+  if (!styleBy(W[0]) || W.length < 2) {                                   // comentario normal: buscar la canción en todas las listas
+    const g = searchGeneral(W);
+    return g && g.type !== 'none' && g.type !== 'vague' ? g : null;       // si no está segura, no es pedido
+  }
   const Q = W.slice(1).filter(w => !STOP.has(w));
   if (!Q.length) return null;
   let r = searchStyle(W[0], Q);
@@ -956,7 +1011,7 @@ function onChat(uid, name, text, isMod) {
 
   // Voto (cuenta para la fila de su ritmo, aunque no sea el que suena ahora)
   const rr = resolveRequest(t);
-  if (!rr) return dbg('· no es pedido (empieza con "disco"/"cumbia")', 'no');
+  if (!rr) return dbg('· no es pedido (no nombra ninguna canción de la lista con seguridad)', 'no');
   if (rr.type === 'amb') { hintAmbiguous(rr); return dbg(`? "${rr.title}" está repetida (${rr.bands.join(' / ')}): falta el intérprete`, 'no'); }
   if (rr.type === 'vague') return dbg(`✘ muy general, coincide con: ${rr.titles.join(', ')}`, 'no');
   if (rr.type === 'none') return dbg('✘ no está en la lista', 'no');
@@ -969,7 +1024,7 @@ function onChat(uid, name, text, isMod) {
   const v = V[ref.num] || (V[ref.num] = { count: 0, first: now(), voters: [] });
   if (CFG.oneVotePerSong && v.voters.includes(uid)) return dbg(`✘ ya votó "${ref.title}" (se libera con "siguiente")`, 'no');
   v.count++; v.voters.push(uid);
-  dbg(`✔ voto ${ref.style}${rr.moved ? ' (estaba en esa lista)' : ''}: ${ref.num} ${ref.title} – ${ref.band} (${v.count})`, 'ok');
+  dbg(`✔ voto ${ref.style}${rr.moved ? ' (estaba en esa lista)' : ''}${rr.general ? ' (detectado en el comentario)' : ''}: ${ref.num} ${ref.title} – ${ref.band} (${v.count})`, 'ok');
   S.cooldown[uid] = now();
   scheduleQueue(ref.style, ref.num); save();
 }

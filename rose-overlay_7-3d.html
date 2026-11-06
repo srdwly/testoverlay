@@ -1,0 +1,853 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Palomitas de regalos</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+/* ════════════════════════════════════════════════════════════════
+   CONFIGURACIÓN
+   ════════════════════════════════════════════════════════════════ */
+const CFG = {
+  wsUrl: 'ws://localhost:21213/',     // TikFinity
+
+  // Zona donde caen y se apilan (en % del ancho de la fuente). Ej.: 0 a 75 deja libre la columna derecha.
+  areaLeft: 0,
+  areaRight: 100,
+
+  baseSize: 0.045,        // tamaño de un regalo de 1 moneda (proporción del ancho)
+  maxSizeMult: 2.8,       // los regalos caros crecen hasta este múltiplo
+  gravity: 1800,          // px/s² (más alto = caen más rápido)
+  bounce: 0.25,           // rebote al chocar (0 = nada, 1 = pelota)
+  friction: 0.35,         // roce entre regalos
+
+  maxItems: 135,          // máximo de regalos en pantalla (los más viejos se desvanecen)
+  pileMaxHeight: 0.42,    // si la pila supera esta altura (proporción del alto), se van los más viejos
+  lifeSec: 90,            // cada regalo apilado se desvanece después de este tiempo
+  maxSpawnPerGift: 60,    // tope de piezas por combo (para combos enormes)
+  spawnGapMs: 90,         // separación entre piezas de un combo
+
+  mode: 'lanzado',        // 'lluvia' = caen desde arriba · 'lanzado' = el espectador los lanza hacia la pantalla
+  overlap: 0.62,          // cuánto se pueden encimar al apilarse (1 = nada, 0.5 = mucho)
+  depth: true,            // profundidad 3D: unos regalos quedan más atrás (más chicos y oscuros)
+  depthFloor: 0.06,       // cuánto más arriba se apoyan los del fondo (proporción del alto) → perspectiva
+  bigGiftCoins: 100,      // desde cuántas monedas un regalo hace "onda" de impacto
+
+  // ── PALOMITAS ──
+  popBounce: 0.55,        // rebote del primer golpe (después rebota menos: 2-3 saltitos)
+  squash: true,           // se aplasta al caer y vuelve a su forma (como una palomita)
+  chain: true,            // al caer, los regalos cercanos de la pila saltan
+  chainRadius: 3.2,       // qué tan lejos llega el salto (en tamaños de regalo)
+  chainKick: 800,         // fuerza del salto de los vecinos
+  bigWave: true,          // los regalos grandes (≥ bigGiftCoins) hacen saltar TODA la pila en una onda
+  kernel: false,          // el regalo sale como un granito de maíz y REVIENTA en el aire (también con ?kernel=1)
+
+  // ── AGARRAR REGALOS CON LA MANO (cámara) ──  se activa con ?hands=1
+  // Puño = agarra (primero los grandes que estén en tu mano; si no hay, el más cercano) · mano abierta = suelta / lanza.
+  hands: false,
+  camname: 'obs',         // cámara por nombre (OBS Virtual Camera); si no la encuentra usa la cámara "cam"
+  camAvoid: '',           // evita cámaras con este nombre (la vista previa evita 'obs' para usar tu webcam)
+  obsRotate: 90,          // cámara de OBS horizontal (sin ?rotate=) se gira así; si OBS ya la manda vertical, no se gira
+  cam: 0,
+  rotate: 90,             // igual que live-fx: 0, 90, 180, 270
+  fit: 'contain',         // contain | cover (igual que tu fuente de cámara)
+  mirror: false,
+  handFps: 20,            // cuántas veces por segundo se mira la mano (más = más fluido, más procesador)
+  detSize: 256,           // tamaño del cuadro que analiza el detector
+  grabRadius: 1.5,        // alcance para agarrar (en tamaños de palma)
+  fistFingers: 3,         // cuántos dedos (de 4) deben estar cerrados para contar como puño
+  confirmFrames: 2,       // cuadros seguidos para confirmar puño / mano abierta (evita falsos)
+  throwMult: 1.0,         // fuerza del lanzamiento al soltar (0 = solo se cae)
+  lostMs: 500,            // si no se ve la mano por este tiempo, el regalo se suelta
+  debug: false,           // ?debug=1 muestra la cámara, los puntos de la mano y el alcance
+  mouse: false,           // ?mouse=1 para probar sin cámara: mantener clic = puño
+  showCam: false,         // ?showcam=1 muestra la cámara detrás de los regalos (para probar en el navegador)
+  // ── FICHAS 3D ──  ?ficha=siempre | mano | 0
+  // 'siempre' = giran en 3D desde que los lanzan y quedan un poco inclinados en la pila
+  // 'mano'    = planos como antes; se vuelven ficha 3D solo al levantarlos con el puño (y vuelven a planos al asentarse)
+  // 'off'     = todo plano (como la versión anterior)
+  ficha3d: 'siempre',
+  fichaGrosor: 0.22,      // grosor de la ficha (proporción del tamaño del regalo)
+  fichaInclina: 28,       // inclinación máxima (grados) con la que quedan en la pila en modo 'siempre'
+  floorUp: 0,             // sube el piso (proporción del alto). Ej.: 0.15 → la pila queda un poco más arriba
+};
+{ const Q = new URLSearchParams(location.search);               // interruptores por el enlace: ?kernel=1  ?mode=lluvia
+  if (Q.has('kernel')) CFG.kernel = Q.get('kernel') === '1';
+  if (Q.get('mode') === 'lluvia' || Q.get('mode') === 'lanzado') CFG.mode = Q.get('mode');
+  if (Q.has('chain')) CFG.chain = Q.get('chain') !== '0';
+  const n = (k, d) => (Q.has(k) && Q.get(k) !== '' && !isNaN(+Q.get(k))) ? +Q.get(k) : d;
+  if (Q.has('hands')) CFG.hands = Q.get('hands') === '1';
+  if (Q.has('camname')) CFG.camname = Q.get('camname').toLowerCase();
+  CFG.rotateSet = Q.has('rotate');
+  CFG.cam = n('cam', CFG.cam); CFG.rotate = ((n('rotate', CFG.rotate) % 360) + 360) % 360;
+  if (Q.has('fit')) CFG.fit = Q.get('fit') === 'cover' ? 'cover' : 'contain';
+  if (Q.has('mirror')) CFG.mirror = Q.get('mirror') === '1';
+  CFG.grabRadius = n('grab', CFG.grabRadius); CFG.fistFingers = n('fingers', CFG.fistFingers);
+  CFG.throwMult = n('throw', CFG.throwMult); CFG.handFps = n('handfps', CFG.handFps); CFG.detSize = n('detsize', CFG.detSize);
+  if (Q.has('debug')) CFG.debug = Q.get('debug') === '1';
+  if (Q.has('mouse')) CFG.mouse = Q.get('mouse') === '1';
+  if (Q.has('showcam')) CFG.showCam = Q.get('showcam') === '1';
+  CFG.floorUp = n('floorup', CFG.floorUp);
+  if (Q.has('ficha')) { const f = Q.get('ficha'); CFG.ficha3d = f === 'mano' ? 'mano' : (f === '0' || f === 'off') ? 'off' : 'siempre'; }
+  CFG.maxItems = n('max', CFG.maxItems); }
+
+/* ════════════════════════════════════════════════════════════════ */
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W = 0, H = 0, DPR = 1;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = innerWidth; H = innerHeight;
+  canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  wake();
+}
+addEventListener('resize', resize);
+
+const now = () => performance.now();
+const rand = (a, b) => a + Math.random() * (b - a);
+const FLOOR = () => H * (1 - CFG.floorUp);              // altura del piso
+const L = () => W * CFG.areaLeft / 100, R = () => W * CFG.areaRight / 100;
+const F3D = () => CFG.ficha3d !== 'off';
+
+/* ── Matrices 3×3 (por filas) para las fichas 3D ── */
+const mmul = (a, b) => [
+  a[0] * b[0] + a[1] * b[3] + a[2] * b[6], a[0] * b[1] + a[1] * b[4] + a[2] * b[7], a[0] * b[2] + a[1] * b[5] + a[2] * b[8],
+  a[3] * b[0] + a[4] * b[3] + a[5] * b[6], a[3] * b[1] + a[4] * b[4] + a[5] * b[7], a[3] * b[2] + a[4] * b[5] + a[5] * b[8],
+  a[6] * b[0] + a[7] * b[3] + a[8] * b[6], a[6] * b[1] + a[7] * b[4] + a[8] * b[7], a[6] * b[2] + a[7] * b[5] + a[8] * b[8]];
+const mT = m => [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]];
+const IDM = () => [1, 0, 0, 0, 1, 0, 0, 0, 1];
+const rotY = t => { const c = Math.cos(t), s = Math.sin(t); return [c, 0, s, 0, 1, 0, -s, 0, c]; };
+const rotX = t => { const c = Math.cos(t), s = Math.sin(t); return [1, 0, 0, 0, c, -s, 0, s, c]; };
+const rotZ = t => { const c = Math.cos(t), s = Math.sin(t); return [c, -s, 0, s, c, 0, 0, 0, 1]; };
+function rotAxis(x, y, z, t) {                       // rotación de t radianes alrededor del eje (x,y,z) unitario
+  const c = Math.cos(t), s = Math.sin(t), k = 1 - c;
+  return [c + x * x * k, x * y * k - z * s, x * z * k + y * s, y * x * k + z * s, c + y * y * k, y * z * k - x * s, z * x * k - y * s, z * y * k + x * s, c + z * z * k];
+}
+function ortho(m) {                                  // corrige el redondeo (columnas perpendiculares)
+  let ax = m[0], ay = m[3], az = m[6], l = Math.hypot(ax, ay, az) || 1; ax /= l; ay /= l; az /= l;
+  let bx = m[1], by = m[4], bz = m[7]; const d = ax * bx + ay * by + az * bz; bx -= d * ax; by -= d * ay; bz -= d * az;
+  l = Math.hypot(bx, by, bz) || 1; bx /= l; by /= l; bz /= l;
+  return [ax, bx, ay * bz - az * by, ay, by, az * bx - ax * bz, az, bz, ax * by - ay * bx];
+}
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+/* ── Sprites: cada imagen de regalo se pre-dibuja una vez con su sombra ── */
+const sprites = {};                 // url → { canvas, ready }
+const SPR = 128;                    // resolución del sprite
+function makeSprite(drawFn) {
+  const c = document.createElement('canvas'); c.width = c.height = SPR;
+  const x = c.getContext('2d');
+  x.shadowColor = 'rgba(0,0,0,.45)'; x.shadowBlur = 8; x.shadowOffsetY = 4;
+  drawFn(x);
+  return c;
+}
+const fallback = makeSprite(x => {
+  x.font = `${SPR * 0.72}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",serif`;
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText('🌹', SPR / 2, SPR / 2 + 4);
+});
+// shade 0 = adelante (normal), 1 y 2 = más atrás (más oscuros) — se pre-dibujan una vez
+function shaded(src, shade) {
+  if (!shade) return src;
+  const c = document.createElement('canvas'); c.width = c.height = SPR;
+  const x = c.getContext('2d');
+  x.drawImage(src, 0, 0);
+  x.globalCompositeOperation = 'source-atop';
+  x.fillStyle = `rgba(20,10,30,${shade * 0.2})`; x.fillRect(0, 0, SPR, SPR);
+  return c;
+}
+const fallbackShades = [0, 1, 2].map(k => shaded(fallback, k));
+// canto y reverso de la ficha (sin sombra, más oscuros) — se pre-dibujan una vez por regalo
+function tint(drawFn, fill) {
+  const c = document.createElement('canvas'); c.width = c.height = SPR;
+  const x = c.getContext('2d'); drawFn(x);
+  x.globalCompositeOperation = 'source-atop'; x.fillStyle = fill; x.fillRect(0, 0, SPR, SPR);
+  return c;
+}
+const tokenParts = draw => ({ edge: tint(draw, 'rgba(45,25,10,.6)'), back: tint(draw, 'rgba(15,8,20,.35)') });
+const fallbackToken = tokenParts(x => {
+  x.font = `${SPR * 0.72}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",serif`;
+  x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('🌹', SPR / 2, SPR / 2 + 4);
+});
+function getToken(url) { return url && sprites[url] && sprites[url].ready ? sprites[url].token : fallbackToken; }
+function getSprite(url, shade = 0) {
+  if (!url) return fallbackShades[shade];
+  let s = sprites[url];
+  if (!s) {
+    s = sprites[url] = { shades: null, ready: false };
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => { const base = makeSprite(x => x.drawImage(img, 10, 8, SPR - 20, SPR - 20)); s.shades = [0, 1, 2].map(k => shaded(base, k));
+      s.token = tokenParts(x => x.drawImage(img, 10, 8, SPR - 20, SPR - 20)); s.ready = true; wake(); };
+    img.src = url;
+  }
+  return s.ready ? s.shades[shade] : fallbackShades[shade];
+}
+// colores de cada regalo (para el "pop" de su color); si la imagen no lo permite, colores cálidos
+const DEF_COLS = ['#ffd36b', '#ff6f91', '#ffffff', '#ff9ec4'];
+const colorCache = {};
+function giftColors(url) {
+  const key = url || 'fallback';
+  if (colorCache[key]) return colorCache[key];
+  const spr = getSprite(url);
+  if (url && !(sprites[url] && sprites[url].ready)) return DEF_COLS;
+  try {
+    const d = spr.getContext('2d').getImageData(0, 0, SPR, SPR).data, cols = [];
+    for (let k = 0; k < 400 && cols.length < 6; k++) {
+      const i = (((Math.random() * SPR) | 0) * SPR + ((Math.random() * SPR) | 0)) * 4;
+      if (d[i + 3] > 200 && d[i] + d[i + 1] + d[i + 2] > 120) cols.push(`rgb(${d[i]},${d[i + 1]},${d[i + 2]})`);
+    }
+    colorCache[key] = cols.length >= 3 ? cols.concat(['#ffffff']) : DEF_COLS;
+  } catch { colorCache[key] = DEF_COLS; }
+  return colorCache[key];
+}
+// granito de maíz (modo kernel)
+const kernelSpr = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = SPR; const x = c.getContext('2d');
+  x.translate(SPR / 2, SPR / 2); x.shadowColor = 'rgba(0,0,0,.4)'; x.shadowBlur = 6; x.shadowOffsetY = 3;
+  const g = x.createRadialGradient(-12, -16, 4, 0, 0, 52); g.addColorStop(0, '#ffe39a'); g.addColorStop(0.55, '#f2b632'); g.addColorStop(1, '#c97f12');
+  x.fillStyle = g; x.beginPath(); x.moveTo(0, -46); x.bezierCurveTo(36, -40, 40, 16, 0, 48); x.bezierCurveTo(-40, 16, -36, -40, 0, -46); x.fill();
+  x.shadowBlur = 0; x.fillStyle = '#e9d9b0'; x.beginPath(); x.ellipse(0, 36, 12, 10, 0, 0, 7); x.fill();         // puntita
+  x.fillStyle = 'rgba(255,255,255,.7)'; x.beginPath(); x.ellipse(-12, -20, 7, 12, -0.4, 0, 7); x.fill();         // brillo
+  return c;
+})();
+// sombra suave de contacto (pre-dibujada)
+const shadowSpr = (() => {
+  const c = document.createElement('canvas'); c.width = 128; c.height = 32;
+  const x = c.getContext('2d'), g = x.createRadialGradient(64, 64, 2, 64, 64, 64);
+  g.addColorStop(0, 'rgba(0,0,0,.45)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+  x.fillStyle = g; x.scale(1, 0.25); x.fillRect(0, 0, 128, 128); return c;
+})();
+
+// brillo del regalo agarrado (pre-dibujado)
+const glowSpr = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const x = c.getContext('2d'), g = x.createRadialGradient(64, 64, 10, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,230,150,.55)'); g.addColorStop(0.5, 'rgba(255,200,120,.22)'); g.addColorStop(1, 'rgba(255,200,120,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 128, 128); return c;
+})();
+
+/* ── Física: círculos que caen, chocan, ruedan y se apilan ── */
+let bodies = [];
+let parts = [];
+const rings = [];                    // ondas de impacto
+
+function sizeFor(coins) {
+  const m = Math.min(CFG.maxSizeMult, 1 + 0.45 * Math.log10(Math.max(1, coins)));
+  return W * CFG.baseSize * m * rand(0.9, 1.1);
+}
+function spawnOne(url, coins) {
+  if (bodies.length >= CFG.maxItems) fadeOldest(3);
+  const z = CFG.depth ? Math.random() : 0;                          // 0 = adelante, 1 = fondo
+  const r = sizeFor(coins) * (1 - 0.35 * z);                        // lo del fondo se ve más chico
+  const left = L() + r, right = R() - r;
+  const cx = (left + right) / 2, spread = (right - left) / 2;
+  const x = cx + (Math.random() + Math.random() - 1) * spread * 0.85;   // más al centro que a los bordes
+  const b = {
+    x, y: -r - rand(0, 40), vx: rand(-60, 60), vy: rand(80, 220),
+    r, m: r * r, a: rand(0, 6.28), av: rand(-4, 4), z, shade: z < 0.34 ? 0 : z < 0.67 ? 1 : 2,
+    url, coins, born: now(), rest: 0, sleep: false, fade: 0, landed: false, hits: 0, sq: 0, sqv: 0,
+  };
+  if (CFG.mode === 'lanzado') {                                     // sale desde abajo (el celular del espectador) hacia la escena
+    const sx = W / 2 + rand(-0.28, 0.28) * W;
+    b.throw = { t0: now(), dur: rand(750, 1000), sx, sy: H + r * 3, tx: x, ty: H * rand(0.3, 0.5), spin: rand(-14, 14), popAt: CFG.kernel ? rand(0.32, 0.5) : -1, popped: !CFG.kernel };
+    b.x = sx; b.y = H + r * 3;
+  }
+  if (CFG.ficha3d === 'siempre') {                                   // ficha 3D desde el lanzamiento: gira como moneda
+    const ang = rand(0, 6.28);
+    b.T = rotAxis(Math.cos(ang), Math.sin(ang), 0, rand(0.2, 1.1));
+    b.wy = rand(CFG.mode === 'lanzado' ? 9 : 5, CFG.mode === 'lanzado' ? 16 : 11) * (Math.random() < 0.5 ? -1 : 1);
+    b.wx = rand(-2.5, 2.5);
+  }
+  bodies.push(b);
+  wake();
+}
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+const easeOutBack = x => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+function updateThrows(tn) {
+  for (const b of bodies) {
+    const T = b.throw; if (!T) continue;
+    const t = Math.min(1, (tn - T.t0) / T.dur), e = easeOut(t);
+    const px = b.x, py = b.y;
+    b.x = T.sx + (T.tx - T.sx) * e;
+    b.y = T.sy + (T.ty - T.sy) * e - H * 0.16 * Math.sin(Math.PI * t);   // arco
+    b.a += T.spin * (1 - t) * 0.016;
+    b.vis = 1 + 2.4 * (1 - e);                                       // cerca de la cámara = enorme, se aleja = normal
+    if (!T.popped && t >= T.popAt) {                                 // ¡POP! el granito revienta en el regalo
+      T.popped = true; T.popT = tn;
+      puff(b.x, b.y, b.r * b.vis, giftColors(b.url), 16, true);
+    }
+    if (t >= 1) {                                                    // llegó a la escena: ahora cae con física
+      b.throw = null; b.vis = 1;
+      b.vx = (b.x - px) * 30; b.vy = Math.max(60, (b.y - py) * 30); b.av = T.spin * 0.2;
+    }
+  }
+}
+function fadeOldest(n) {
+  bodies.filter(b => !b.fade && !b.held).sort((a, b) => a.born - b.born).slice(0, n).forEach(b => b.fade = now());
+}
+
+function step(dt) {
+  const g = CFG.gravity, left = L(), right = R();
+  for (const b of bodies) {
+    if (b.held) {                                                   // en la mano: sigue al puño (sin gravedad) y empuja a los demás
+      const h = b.held, f = Math.pow(0.0005, dt);
+      b.hx *= f; b.hy *= f;                                          // se centra en el puño
+      const tx = h.x + h.vx * 0.04 + b.hx, ty = h.y + h.vy * 0.04 + b.hy;
+      b.vx = (tx - b.x) * 22; b.vy = (ty - b.y) * 22;
+      b.x += b.vx * dt; b.y += b.vy * dt;
+      if (b.rel) b.av = 0; else { b.av = b.av * 0.9 + b.vx / b.r * 0.004; b.a += b.av * dt; }   // con ficha 3D gira con tu mano
+      b.z += (0 - b.z) * Math.min(1, dt * 6);                        // al levantarlo pasa adelante
+      continue;
+    }
+    if (b.sleep || b.throw) continue;
+    b.vy += g * dt;
+    b.vx *= 0.999; b.av *= 0.985;
+    b.x += b.vx * dt; b.y += b.vy * dt; b.a += b.av * dt;
+  }
+  // choques entre regalos (rejilla espacial para no comparar todos con todos)
+  const cell = W * CFG.baseSize * CFG.maxSizeMult * 2, grid = new Map();
+  for (let i = 0; i < bodies.length; i++) {
+    const b = bodies[i]; if (b.fade || b.throw) continue;
+    const k = Math.floor(b.x / cell) + ',' + Math.floor(b.y / cell);
+    (grid.get(k) || grid.set(k, []).get(k)).push(i);
+  }
+  for (let it = 0; it < 3; it++) {
+    for (let i = 0; i < bodies.length; i++) {
+      const a = bodies[i]; if (a.fade || a.throw) continue;
+      const cx = Math.floor(a.x / cell), cy = Math.floor(a.y / cell);
+      for (let gx = cx - 1; gx <= cx + 1; gx++) for (let gy = cy - 1; gy <= cy + 1; gy++) {
+        const list = grid.get(gx + ',' + gy); if (!list) continue;
+        for (const j of list) {
+          if (j <= i) continue;
+          const b = bodies[j]; if (b.fade || b.throw || (a.sleep && b.sleep)) continue;
+          if (Math.abs(a.z - b.z) > 0.3 && !a.held && !b.held) continue;   // distinta profundidad: pasan uno delante del otro
+          const dx = b.x - a.x, dy = b.y - a.y, min = (a.r + b.r) * CFG.overlap, d2 = dx * dx + dy * dy;
+          if (d2 >= min * min || d2 === 0) continue;
+          const d = Math.sqrt(d2), nx = dx / d, ny = dy / d, over = min - d;
+          if (a.held && b.sleep) { b.sleep = false; b.rest = 0; }      // la mano empuja lo que toca
+          if (b.held && a.sleep) { a.sleep = false; a.rest = 0; }
+          const ia = (a.sleep || a.held) ? 0 : 1 / a.m, ib = (b.sleep || b.held) ? 0 : 1 / b.m, s = ia + ib; if (!s) continue;
+          a.x -= nx * over * ia / s; a.y -= ny * over * ia / s;
+          b.x += nx * over * ib / s; b.y += ny * over * ib / s;
+          const rvx = b.vx - a.vx, rvy = b.vy - a.vy, vn = rvx * nx + rvy * ny;
+          if (vn < 0) {
+            const j2 = -(1 + CFG.bounce) * vn / s;
+            a.vx -= j2 * nx * ia; a.vy -= j2 * ny * ia; b.vx += j2 * nx * ib; b.vy += j2 * ny * ib;
+            const tx = -ny, ty = nx, vt = rvx * tx + rvy * ty;     // roce: frena el deslizamiento y hace girar
+            let jt = -vt / s; const lim = CFG.friction * j2; jt = Math.max(-lim, Math.min(lim, jt));
+            a.vx -= jt * tx * ia; a.vy -= jt * ty * ia; b.vx += jt * tx * ib; b.vy += jt * ty * ib;
+            a.av -= vt / a.r * 0.15; b.av += vt / b.r * 0.15;
+            a.contact = b.contact = true;
+            if (Math.abs(vn) > 250) { if (a.sleep) a.sleep = false; if (b.sleep) b.sleep = false; }
+            if (-vn > 300) {                                         // cayó sobre la pila: también "revienta"
+              if (!a.landed && a.vy > b.vy) impact(a, -vn, a.y + a.r * 0.5);
+              else if (!b.landed && b.vy > a.vy) impact(b, -vn, b.y + b.r * 0.5);
+            }
+            if (CFG.squash && -vn > 150) { a.sqv += Math.min(5, -vn * 0.003); b.sqv += Math.min(5, -vn * 0.003); }
+          }
+        }
+      }
+    }
+  }
+  // piso y paredes
+  for (const b of bodies) {
+    if (b.sleep || b.fade || b.throw) continue;
+    const floor = FLOOR() - b.z * H * CFG.depthFloor, k = CFG.overlap;   // los del fondo se apoyan un poco más arriba
+    if (b.held) {                                                   // en la mano: solo no atravesar el piso ni salir de la pantalla
+      b.y = Math.min(b.y, floor - b.r * k); b.x = Math.max(b.r * k, Math.min(W - b.r * k, b.x));
+      b.pvy = 0; b.rest = 0; b.contact = false; continue;
+    }
+    if (b.y + b.r * k > floor) {
+      const hit = b.vy;
+      b.y = floor - b.r * k;
+      const e = (hit > 120 && b.hits < 3) ? CFG.popBounce * Math.pow(0.55, b.hits) : CFG.bounce;   // 2-3 saltitos de palomita
+      if (b.vy > 0) b.vy = -b.vy * e;
+      if (hit > 120) { b.hits++; if (CFG.squash) b.sqv += Math.min(9, hit * 0.006); }
+      b.vx *= 0.9; b.av = b.av * 0.6 + (b.vx / b.r) * 0.4;   // rueda
+      if (!b.landed && hit > 300) impact(b, hit, floor - 4);
+    }
+    if (b.x - b.r * k < left) { b.x = left + b.r * k; b.vx = Math.abs(b.vx) * CFG.bounce; }
+    if (b.x + b.r * k > right) { b.x = right - b.r * k; b.vx = -Math.abs(b.vx) * CFG.bounce; }
+    // ¿se frenó de golpe? (cayó sobre la pila aunque sea en varios toques chiquitos) → impacto de palomita
+    if (!b.landed && b.pvy > 300 && b.vy < b.pvy * 0.35) impact(b, b.pvy, b.y + b.r * 0.5);
+    b.pvy = b.vy;
+    // dormir cuando ya no se mueve (ahorra procesador)
+    if (b.contact) b.av *= 0.9;                                  // apoyado: deja de girar pronto
+    b.contact = false;
+    const sp = Math.abs(b.vx) + Math.abs(b.vy);
+    b.rest = sp < 40 ? b.rest + dt : 0;
+    if (b.rest > 0.6 && b.y > -b.r) { b.sleep = true; b.vx = b.vy = b.av = 0; }
+  }
+}
+
+/* ── Ficha 3D: giro, asentarse en la pila, seguir la rotación de la mano ── */
+function updateTilt(b, dt) {
+  b.tilting = false;
+  if (b.held) {
+    const h = b.held;
+    if (h.R && b.rel) { const tg = mmul(h.R, b.rel), k = Math.min(1, dt * 14); b.T = ortho(b.T.map((v, i) => v + (tg[i] - v) * k)); b.tilting = true; }
+    return;
+  }
+  if (!b.T) return;
+  const settled = !b.throw && (b.landed || b.hits > 0 || b.sleep || b.rest > 0.1);
+  if (b.wx || b.wy) {
+    b.T = mmul(b.T, rotY(b.wy * dt)); if (b.wx) b.T = mmul(b.T, rotX(b.wx * dt));
+    const damp = b.throw ? 1 : Math.pow(settled ? 0.04 : 0.7, dt);
+    b.wx *= damp; b.wy *= damp; if (Math.abs(b.wx) + Math.abs(b.wy) < 0.08) b.wx = b.wy = 0;
+    b.T = ortho(b.T); b.tilting = true;
+  }
+  if (settled) {                                                     // se asienta mirando a la cámara (con un poco de inclinación)
+    const nx = b.T[2], ny = b.T[5], th = Math.acos(clamp(b.T[8], -1, 1));
+    const lim = CFG.ficha3d === 'siempre' ? CFG.fichaInclina * Math.PI / 180 : 0;
+    if (th > lim + 0.01) {
+      let ax = ny, ay = -nx; const l = Math.hypot(ax, ay); if (l < 1e-4) { ax = 1; ay = 0; } else { ax /= l; ay /= l; }
+      b.T = mmul(rotAxis(ax, ay, 0, Math.min(th - lim, (b.sleep ? 3 : 5) * dt)), b.T); b.tilting = true;
+    } else if (!lim && !b.wx && !b.wy) { b.a += Math.atan2(b.T[3], b.T[0]); b.T = null; }   // plano otra vez: dibujo 2D (más liviano)
+  }
+}
+// dibuja la ficha: capas del canto de atrás hacia adelante y la cara que mira a la cámara al final
+function drawToken(b, spr, sc) {
+  const T = b.T, c = Math.cos(b.a), s = Math.sin(b.a), r = b.r * sc;
+  const e0 = (c * T[0] - s * T[3]) * r, e1 = (s * T[0] + c * T[3]) * r;       // eje x de la ficha en pantalla
+  const f0 = (c * T[1] - s * T[4]) * r, f1 = (s * T[1] + c * T[4]) * r;       // eje y
+  const th = CFG.fichaGrosor * r, front = T[8] >= 0;
+  const dx = (c * T[2] - s * T[5]) * th * (front ? 1 : -1), dy = (s * T[2] + c * T[5]) * th * (front ? 1 : -1);
+  const len = Math.hypot(dx, dy), layers = len < 0.7 ? 0 : Math.min(16, Math.ceil(len / (1.1 + 2 * Math.abs(T[8]))));   // de canto: más capas (sin rayas)
+  const B = ctx.getTransform(), tok = getToken(b.url);
+  for (let i = 0; i <= layers; i++) {
+    const k = layers ? i / layers - 0.5 : 0.5, ox = dx * k, oy = dy * k, last = i === layers;
+    ctx.setTransform(B.a * e0 + B.c * e1, B.b * e0 + B.d * e1, B.a * f0 + B.c * f1, B.b * f0 + B.d * f1,
+                     B.a * ox + B.c * oy + B.e, B.b * ox + B.d * oy + B.f);
+    ctx.drawImage(last ? (front ? spr : tok.back) : tok.edge, -1, -1, 2, 2);
+  }
+  ctx.setTransform(B);
+}
+
+/* ── Impacto de palomita: pop de color + los vecinos saltan ── */
+const hops = [];                                     // saltos programados (la onda avanza con la distancia)
+function impact(b, speed, y) {
+  if (b.landed) return;
+  b.landed = true;
+  burst(b.x, y, b.coins);
+  puff(b.x, y - b.r * 0.3, b.r, giftColors(b.url), 8 + Math.min(10, Math.round(Math.log10(Math.max(1, b.coins)) * 4)), false);
+  if (!CFG.chain) return;
+  const big = CFG.bigWave && b.coins >= CFG.bigGiftCoins;
+  const Rr = big ? W * 1.2 : b.r * CFG.chainRadius, t0 = now();
+  for (const n of bodies) {
+    if (n === b || n.throw || n.fade) continue;
+    if (!big && Math.abs(n.z - b.z) > 0.45) continue;
+    const d = Math.hypot(n.x - b.x, n.y - b.y); if (d > Rr) continue;
+    const s = CFG.chainKick * (big ? 0.55 + 0.45 * Math.min(2.2, Math.log10(b.coins) / 1.5) * (1 - d / Rr) : (1 - d / Rr)) * rand(0.6, 1.1)
+              * Math.min(1.6, Math.sqrt(b.r / n.r));
+    if (s < 60) continue;
+    hops.push({ n, at: t0 + d / (big ? 0.9 : 1.6), s });            // ms: la onda se propaga
+  }
+}
+function hop(n, s) {
+  n.sleep = false; n.rest = 0;
+  n.vy = Math.min(n.vy, -s); n.vx += rand(-1, 1) * s * 0.25; n.av += rand(-8, 8);
+  if (CFG.squash) n.sqv -= Math.min(6, s * 0.006);                // se estira al saltar
+  n.hits = Math.min(n.hits, 1); n.landed = true;                    // rebota un poco al volver, sin causar otra cadena
+  if (CFG.ficha3d === 'siempre') { n.T = n.T || IDM(); n.wy += rand(-1, 1) * Math.min(9, s * 0.012); n.wx += rand(-2, 2); }
+}
+/* ── Nubecita de color (el "pop") ── */
+function puff(x, y, r, cols, n, kernelPop) {
+  for (let i = 0; i < n; i++) {
+    const a = rand(0, 6.28), sp = rand(60, kernelPop ? 260 : 200);
+    parts.push({ kind: 'puff', x, y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 60, life: rand(0.35, 0.6), max: 0.6,
+                 s: rand(r * 0.12, r * 0.28), c: cols[(Math.random() * cols.length) | 0] });
+  }
+  if (kernelPop) for (let i = 0; i < 6; i++) {                       // nube blanca de palomita
+    const a = rand(0, 6.28);
+    parts.push({ kind: 'cloud', x: x + Math.cos(a) * r * 0.3, y: y + Math.sin(a) * r * 0.3, vx: Math.cos(a) * 40, vy: Math.sin(a) * 40 - 30,
+                 life: 0.45, max: 0.45, s: r * rand(0.35, 0.55), c: '#fff8e7' });
+  }
+}
+
+/* ── Chispas al caer ── */
+const SPARK = ['#ffd36b', '#ff6f91', '#ffffff', '#ff9ec4', '#ffe9a8'];
+function burst(x, y, coins) {
+  const n = Math.min(26, 6 + Math.round(Math.log10(Math.max(1, coins)) * 6));
+  for (let i = 0; i < n; i++) {
+    const ang = rand(Math.PI * 1.05, Math.PI * 1.95), sp = rand(120, 380);
+    parts.push({ x, y, vx: Math.cos(ang) * sp, vy: Math.sin(ang) * sp, life: rand(0.4, 0.8), max: 0.8,
+                 s: rand(1.5, 3.2), c: SPARK[(Math.random() * SPARK.length) | 0] });
+  }
+  if (coins >= CFG.bigGiftCoins) rings.push({ x, y, t: 0, big: Math.min(3, Math.log10(coins)) });
+}
+
+/* ── Bucle (se detiene solo cuando no hay nada moviéndose) ── */
+let running = false, last = 0, acc = 0;
+function wake() { if (!running) { running = true; last = now(); requestAnimationFrame(loop); } }
+function loop(t) {
+  const dt = Math.min(0.05, (t - last) / 1000); last = t; acc += dt;
+  while (acc >= 1 / 120) { step(1 / 120); acc -= 1 / 120; }        // física estable a 120 Hz
+
+  // vida, pila demasiado alta, desvanecer
+  const tn = now();
+  updateThrows(tn);
+  for (let i = hops.length - 1; i >= 0; i--) if (hops[i].at <= tn) { const h = hops.splice(i, 1)[0]; if (bodies.includes(h.n) && !h.n.fade) hop(h.n, h.s); }
+  if (F3D()) for (const b of bodies) updateTilt(b, dt);
+  for (const b of bodies) if (b.sq || b.sqv) {                       // resorte del aplastado
+    b.sqv += (-170 * b.sq - 11 * b.sqv) * dt; b.sq += b.sqv * dt;
+    b.sq = Math.max(-0.35, Math.min(0.4, b.sq));
+    if (Math.abs(b.sq) < 0.004 && Math.abs(b.sqv) < 0.05) b.sq = b.sqv = 0;
+  }
+  for (const b of bodies) if (!b.fade && b.sleep && tn - b.born > CFG.lifeSec * 1000) b.fade = tn;
+  for (const b of bodies) { const tl = b.held ? 1 : 0, l = b.lift || 0; if (l !== tl) { b.lift = Math.abs(tl - l) < 0.01 ? tl : l + (tl - l) * Math.min(1, dt * 10); } }
+  if (bodies.some(b => b.sleep && !b.fade && b.y - b.r < FLOOR() - H * CFG.pileMaxHeight)) fadeOldest(2);
+  bodies = bodies.filter(b => !b.fade || tn - b.fade < 600);
+  if (bodies.some(b => b.fade)) bodies.forEach(b => { if (b.sleep && !b.fade) { b.sleep = false; b.rest = 0; } });   // los de arriba se acomodan
+
+  for (const p of parts) { const gk = p.kind ? (p.kind === 'cloud' ? -40 : 300) : 900; p.vy += gk * dt; if (p.kind) { p.vx *= 0.94; p.vy *= 0.94; } p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+  parts = parts.filter(p => p.life > 0);
+  for (const r of rings) r.t += dt;
+  for (let i = rings.length - 1; i >= 0; i--) if (rings[i].t > 0.7) rings.splice(i, 1);
+
+  // dibujo
+  ctx.clearRect(0, 0, W, H);
+  if (CFG.debug && HANDS.frame && !CFG.showCam) { const r = camRect(); ctx.globalAlpha = 0.35; ctx.drawImage(HANDS.frame, r.x, r.y, r.w, r.h); ctx.globalAlpha = 1; }
+  for (const r of rings) {
+    const k = r.t / 0.7;
+    ctx.globalAlpha = (1 - k) * 0.8; ctx.strokeStyle = '#ffd36b'; ctx.lineWidth = 4 * (1 - k) + 1;
+    ctx.beginPath(); ctx.ellipse(r.x, r.y, W * 0.12 * r.big * k + 10, W * 0.03 * r.big * k + 3, 0, 0, Math.PI * 2); ctx.stroke();
+  }
+  const key = b => b.held ? -2 : b.throw ? -1 : b.z;
+  const order = bodies.slice().sort((a, b) => key(b) - key(a));   // fondo primero, lo lanzado y lo agarrado encima
+  // sombras de contacto en el piso (dan volumen)
+  for (const b of order) {
+    if (b.throw) continue;
+    const floor = FLOOR() - b.z * H * CFG.depthFloor, gap = floor - (b.y + b.r * CFG.overlap);
+    if (gap > b.r * 2) continue;
+    ctx.globalAlpha = Math.max(0, 1 - gap / (b.r * 2)) * (b.fade ? 0.4 : 0.8);
+    ctx.drawImage(shadowSpr, b.x - b.r * 1.1, floor - b.r * 0.22, b.r * 2.2, b.r * 0.55);
+  }
+  for (const b of order) {
+    const f = b.fade ? 1 - (tn - b.fade) / 600 : 1, sc = (b.fade ? 0.6 + 0.4 * f : 1) * (b.vis || 1) * (1 + 0.15 * (b.lift || 0));
+    const T0 = b.throw, isKernel = T0 && !T0.popped;
+    const spr = isKernel ? kernelSpr : getSprite(b.url, (b.throw || b.held) ? 0 : b.shade);
+    if (b.lift > 0.02) {                                            // brillo suave alrededor del regalo agarrado
+      ctx.globalAlpha = 0.5 * b.lift; ctx.drawImage(glowSpr, b.x - b.r * 1.9, b.y - b.r * 1.9, b.r * 3.8, b.r * 3.8);
+    }
+    if (b.throw && !isKernel) {                                     // estela del lanzamiento
+      const T = b.throw, t = Math.min(1, (tn - T.t0) / T.dur);
+      for (let k = 3; k >= 1; k--) {
+        const tk = Math.max(0, t - k * 0.05), ek = easeOut(tk);
+        const gx = T.sx + (T.tx - T.sx) * ek, gy = T.sy + (T.ty - T.sy) * ek - H * 0.16 * Math.sin(Math.PI * tk), gs = 1 + 2.4 * (1 - ek);
+        ctx.globalAlpha = 0.12 * (4 - k);
+        ctx.drawImage(spr, gx - b.r * gs, gy - b.r * gs, b.r * 2 * gs, b.r * 2 * gs);
+      }
+    }
+    ctx.globalAlpha = Math.max(0, f);
+    let k2 = 1;
+    if (isKernel) k2 = 0.5;                                          // el granito es chiquito
+    else if (T0 && T0.popT) { const pt = Math.min(1, (tn - T0.popT) / 260); k2 = easeOutBack(pt); }   // revienta con rebote
+    const q = b.sq || 0;
+    ctx.save(); ctx.translate(b.x, b.y + b.r * q * 0.6);             // aplastado: se ensancha y baja, sin despegarse del piso
+    if (q) ctx.scale(1 + q, 1 - q);
+    if (b.T && !isKernel) drawToken(b, spr, sc * k2);
+    else { ctx.rotate(b.a); ctx.scale(sc * k2, sc * k2); ctx.drawImage(spr, -b.r, -b.r, b.r * 2, b.r * 2); }
+    ctx.restore();
+  }
+  for (const p of parts) if (p.kind) {                              // nubecitas de color (color real, sin brillo)
+    const k = p.life / p.max; ctx.globalAlpha = Math.max(0, k) * (p.kind === 'cloud' ? 0.8 : 0.95); ctx.fillStyle = p.c;
+    const rr = p.kind === 'cloud' ? p.s * (1.6 - k * 0.6) : p.s * (0.5 + k * 0.5);
+    ctx.beginPath(); ctx.arc(p.x, p.y, rr, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'lighter';
+  for (const p of parts) if (!p.kind) {
+    ctx.globalAlpha = Math.max(0, p.life / p.max); ctx.fillStyle = p.c;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.s, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+  if (CFG.debug) drawHandsDebug(tn);
+
+  const busy = bodies.some(b => !b.sleep || b.fade || b.sq || b.lift || b.tilting) || parts.length || rings.length || pending > 0 || hops.length || bodies.some(b => b.throw)
+             || (CFG.debug && (CFG.hands || CFG.mouse));
+  if (busy) requestAnimationFrame(loop); else running = false;          // sin nada que mover: 0 % de procesador
+}
+
+/* ── Regalos: combos en tiempo real (caen mientras el combo sigue) ── */
+let pending = 0;
+const streaks = {};                  // usuario+regalo → cantidad ya lanzada
+function dropGift(key, name, url, coins, totalSoFar, ended) {
+  const done = streaks[key] || 0;
+  const toSpawn = Math.max(0, Math.min(CFG.maxSpawnPerGift - Math.min(done, CFG.maxSpawnPerGift), totalSoFar - done));
+  streaks[key] = Math.max(done, totalSoFar);
+  for (let i = 0; i < toSpawn; i++) {
+    pending++;
+    setTimeout(() => { pending--; spawnOne(url, coins); }, i * CFG.spawnGapMs);
+  }
+  if (ended) setTimeout(() => delete streaks[key], 4000);
+}
+window.__pop = { get bodies() { return bodies; }, hops };   // para pruebas
+window.spawnGift = (url, count = 1, coins = 1) => dropGift('test' + Math.random(), 'prueba', url, coins, count, true);
+
+
+/* ════════════════════════════════════════════════════════════════
+   MANO: puño = agarrar · abrir = soltar (cámara + MediaPipe, solo con ?hands=1)
+   ════════════════════════════════════════════════════════════════ */
+const HANDS = { list: [], frame: null, status: '', fps: 0, label: '', nextId: 1 };
+const video = document.createElement('video'); video.muted = true; video.playsInline = true;
+const frameCv = document.createElement('canvas'), fctx = frameCv.getContext('2d');
+function frameSize() {
+  const vw0 = video.videoWidth || 1280, vh0 = video.videoHeight || 720;
+  return (CFG.rotate === 90 || CFG.rotate === 270) ? [vh0, vw0] : [vw0, vh0];
+}
+function grabFrame() {                     // cuadro enderezado y reducido (el detector no necesita 1280 px)
+  const [fw0, fh0] = frameSize(), sc = Math.min(1, CFG.detSize / Math.max(fw0, fh0));
+  const fw = Math.round(fw0 * sc), fh = Math.round(fh0 * sc);
+  if (frameCv.width !== fw || frameCv.height !== fh) { frameCv.width = fw; frameCv.height = fh; }
+  fctx.setTransform(1, 0, 0, 1, 0, 0); fctx.translate(fw / 2, fh / 2); fctx.rotate(CFG.rotate * Math.PI / 180);
+  const rot = CFG.rotate === 90 || CFG.rotate === 270, vw = rot ? fh : fw, vh = rot ? fw : fh;
+  fctx.drawImage(video, -vw / 2, -vh / 2, vw, vh);
+  return frameCv;
+}
+function camRect() {                       // dónde se ve la cámara dentro de esta fuente
+  const [vw, vh] = frameSize(), s = (CFG.fit === 'contain' ? Math.min : Math.max)(W / vw, H / vh), w = vw * s, h = vh * s;
+  return { x: (W - w) / 2, y: (H - h) / 2, w, h };
+}
+function toScreen(nx, ny) {
+  const r = camRect(); if (CFG.mirror) nx = 1 - nx;
+  return [r.x + nx * r.w, r.y + ny * r.h];
+}
+// 21 puntos de MediaPipe → { x, y, size, fist, open } en pantalla
+const FINGERS = [[8, 6], [12, 10], [16, 14], [20, 18]];      // [punta, articulación del medio]
+function handFromLandmarks(L) {
+  const S = L.map(p => toScreen(p.x, p.y)), d = (a, b) => Math.hypot(S[a][0] - S[b][0], S[a][1] - S[b][1]);
+  const palm = [0, 5, 9, 13, 17];
+  const x = palm.reduce((s, i) => s + S[i][0], 0) / 5, y = palm.reduce((s, i) => s + S[i][1], 0) / 5;
+  const size = Math.max(d(0, 9), d(5, 17) * 1.3);                // tamaño de la palma (sirve de girada también)
+  const curled = FINGERS.filter(([t, p]) => d(t, 0) < d(p, 0)).length;
+  // orientación 3D de la mano (muñeca y nudillos: no cambian al cerrar el puño)
+  const zs = camRect().w, P = i => [S[i][0], S[i][1], -(L[i].z || 0) * zs];
+  const p0 = P(0), p9 = P(9), p5 = P(5), p17 = P(17);
+  const u = [p9[0] - p0[0], p9[1] - p0[1], p9[2] - p0[2]], a = [p5[0] - p17[0], p5[1] - p17[1], p5[2] - p17[2]];
+  return { x, y, size, fist: curled >= CFG.fistFingers, open: curled <= 1, pts: S, u, a };
+}
+// seguimiento de cada mano entre cuadros + estados con confirmación
+function updateHands(found, t) {
+  const used = new Set();
+  for (const m of found) {
+    let best = null, bd = Infinity;
+    for (const h of HANDS.list) {
+      if (used.has(h)) continue;
+      const dd = Math.hypot(h.x - m.x, h.y - m.y);
+      if (dd < bd && dd < Math.max(m.size, h.size) * 4) { bd = dd; best = h; }
+    }
+    if (!best) { best = { id: HANDS.nextId++, x: m.x, y: m.y, vx: 0, vy: 0, fist: false, fistN: 0, openN: 0, armed: false, held: null, hist: [] }; HANDS.list.push(best); }
+    used.add(best);
+    Object.assign(best, { x: m.x, y: m.y, size: m.size, pts: m.pts, seen: t });
+    if (m.R) best.R = m.R;                                           // mouse: rotación con la rueda
+    else if (m.u) {                                                  // cámara: suaviza y arma la orientación de la mano
+      const mix = (o, v) => o ? o.map((q, i) => q + (v[i] - q) * 0.5) : v.slice();
+      best.u = mix(best.u, m.u); best.a = mix(best.a, m.a); best.R = handFrame(best.u, best.a);
+    }
+    best.hist.push({ t, x: m.x, y: m.y });
+    while (best.hist.length > 2 && t - best.hist[0].t > 160) best.hist.shift();
+    const h0 = best.hist[0], dt = (t - h0.t) / 1000;              // velocidad de la mano (para lanzar)
+    if (dt > 0.02) { best.vx = (m.x - h0.x) / dt; best.vy = (m.y - h0.y) / dt; }
+    if (m.fist) { best.fistN++; best.openN = 0; } else if (m.open) { best.openN++; best.fistN = 0; } else { best.fistN = best.openN = 0; }
+    if (!best.fist && best.fistN >= CFG.confirmFrames) { best.fist = true; if (best.armed) grabWith(best); best.armed = false; }
+    else if (best.fist && best.openN >= CFG.confirmFrames) { best.fist = false; releaseFrom(best); }
+    if (!best.fist && best.openN >= CFG.confirmFrames) best.armed = true;   // hay que ver la mano abierta antes de un puño
+  }
+  for (let i = HANDS.list.length - 1; i >= 0; i--) {
+    const h = HANDS.list[i];
+    if (!used.has(h) && t - h.seen > CFG.lostMs) { releaseFrom(h, true); HANDS.list.splice(i, 1); }
+  }
+  if (HANDS.list.some(h => h.held) || CFG.debug) wake();
+}
+function handFrame(u, a) {
+  let l = Math.hypot(u[0], u[1], u[2]) || 1; const ux = u[0] / l, uy = u[1] / l, uz = u[2] / l;
+  let wx = uy * a[2] - uz * a[1], wy = uz * a[0] - ux * a[2], wz = ux * a[1] - uy * a[0];
+  l = Math.hypot(wx, wy, wz); if (l < 1e-6) return null; wx /= l; wy /= l; wz /= l;
+  const ex = uy * wz - uz * wy, ey = uz * wx - ux * wz, ez = ux * wy - uy * wx;
+  return [ex, ux, wx, ey, uy, wy, ez, uz, wz];
+}
+function grabWith(h) {
+  const R = h.size * CFG.grabRadius;
+  let best = null, bs = -Infinity;
+  for (const b of bodies) {
+    if (b.throw || b.fade || b.held) continue;
+    const dd = Math.hypot(b.x - h.x, b.y - h.y);
+    if (dd > R + b.r * 0.5) continue;
+    const s = (b.coins >= CFG.bigGiftCoins ? 1e6 : 0) - dd;        // primero los grandes; entre iguales, el más cercano
+    if (s > bs) { bs = s; best = b; }
+  }
+  h.lastTry = { t: now(), ok: !!best };
+  if (!best) return;
+  h.held = best; best.held = h;
+  if (F3D()) {                                                       // pasa a ficha 3D y queda "pegada" a la orientación de tu mano
+    best.T = mmul(rotZ(best.a), best.T || IDM()); best.a = 0; best.av = 0; best.wx = best.wy = 0;
+    best.rel = h.R ? mmul(mT(h.R), best.T) : null;
+  }
+  Object.assign(best, { sleep: false, rest: 0, landed: true, hits: 0, shade: 0, hx: best.x - h.x, hy: best.y - h.y });
+  best.sqv -= 3;                                                     // se estira un poco al levantarlo
+  for (const n of bodies) if (n !== best && Math.hypot(n.x - best.x, n.y - best.y) < best.r * 4) { n.sleep = false; n.rest = 0; }   // la pila se acomoda
+  puff(best.x, best.y, best.r * 0.8, giftColors(best.url), 6, false);
+  wake();
+}
+function releaseFrom(h, lost) {
+  const b = h.held; if (!b) return;
+  h.held = null; b.held = null;
+  let vx = lost ? 0 : h.vx * CFG.throwMult, vy = lost ? 0 : h.vy * CFG.throwMult;
+  const sp = Math.hypot(vx, vy), mx = 2600; if (sp > mx) { vx *= mx / sp; vy *= mx / sp; }
+  Object.assign(b, { vx, vy, landed: false, hits: 0, sleep: false, rest: 0, born: now(), pvy: vy });
+  b.av += vx / b.r * 0.25;
+  b.rel = null;
+  if (F3D() && b.T) { b.av = 0; b.wy = clamp(vx / b.r * 0.05, -14, 14); b.wx = clamp(-vy / b.r * 0.03, -9, 9); }   // al lanzarla sigue girando
+  wake();
+}
+function drawHandsDebug(tn) {
+  ctx.font = '12px system-ui, sans-serif'; ctx.textBaseline = 'top';
+  for (const h of HANDS.list) {
+    if (h.pts) { ctx.fillStyle = '#7df9ff'; for (const [x, y] of h.pts) { ctx.beginPath(); ctx.arc(x, y, 2.5, 0, 7); ctx.fill(); } }
+    ctx.strokeStyle = h.fist ? (h.held ? '#5dff7a' : '#ffd36b') : '#ffffff'; ctx.lineWidth = 2; ctx.globalAlpha = 0.85;
+    ctx.beginPath(); ctx.arc(h.x, h.y, h.size * CFG.grabRadius, 0, 7); ctx.stroke(); ctx.globalAlpha = 1;
+    ctx.fillStyle = '#fff';
+    const txt = h.held ? 'agarrando ' + (h.held.coins >= CFG.bigGiftCoins ? '(grande)' : '') : h.fist ? (h.lastTry && !h.lastTry.ok ? 'puño (nada cerca)' : 'puño') : h.armed ? 'abierta' : '…';
+    ctx.fillText(txt, h.x + 8, h.y + h.size * CFG.grabRadius + 4);
+  }
+  const st = `manos: ${HANDS.list.length} · ${HANDS.fps} fps · ${HANDS.status}`;
+  ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(6, 6, Math.min(W - 12, ctx.measureText(st).width + 12), 20);
+  ctx.fillStyle = '#fff'; ctx.fillText(st, 12, 10, W - 24);
+}
+async function openCamera() {              // misma idea que live-fx (no abre la webcam física si no hace falta)
+  const C = { width: { ideal: 1280 }, height: { ideal: 1280 }, frameRate: { ideal: 30 }, resizeMode: { ideal: 'none' } };   // sin recortar: respeta la cámara vertical de OBS
+  const gum = id => navigator.mediaDevices.getUserMedia({ video: id ? { ...C, deviceId: { exact: id } } : C });
+  const list = async () => (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === 'videoinput');
+  const low = c => (c.label || '').toLowerCase();
+  const okLabel = l => (!CFG.camname || l.includes(CFG.camname)) && !(CFG.camAvoid && l.includes(CFG.camAvoid));
+  const pick = cams => cams.find(c => okLabel(low(c)))                                         // la que pediste
+    || (CFG.camAvoid && cams.find(c => !low(c).includes(CFG.camAvoid)))                           // cualquiera que no sea la evitada
+    || cams[CFG.cam] || cams[0];
+  const KEY = 'regalos-cam-' + (CFG.camname || CFG.cam) + (CFG.camAvoid ? '-sin-' + CFG.camAvoid : '');
+  const remember = s => { const tr = s.getVideoTracks()[0]; HANDS.label = tr?.label || '?'; try { localStorage.setItem(KEY, tr.getSettings().deviceId || ''); } catch {} return s; };
+  const labelOf = s => (s.getVideoTracks()[0]?.label || '').toLowerCase();
+  let cams = await list();
+  if (!cams.some(c => c.label)) {          // el navegador aún no muestra los nombres
+    let saved = null; try { saved = localStorage.getItem(KEY); } catch {}
+    if (saved) { try { const s = await gum(saved); if (okLabel(labelOf(s))) return remember(s); s.getTracks().forEach(t => t.stop()); } catch (e) { console.warn('cámara recordada falló', e); } }
+    try {
+      const s = await gum(null);
+      if (okLabel(labelOf(s))) return remember(s);
+      s.getTracks().forEach(t => t.stop());
+    } catch (e) { if (e.name === 'NotAllowedError') throw new Error('permiso de cámara negado'); }
+    cams = await list();
+  }
+  const c = pick(cams); if (!c) throw new Error('no encontré ninguna cámara');
+  try { return remember(await gum(c.deviceId)); }
+  catch (e) { throw new Error(`no pude abrir "${c.label || 'la cámara'}" (${e.name === 'NotReadableError' ? 'la está usando otro programa' : e.message})`); }
+}
+// muestra la cámara de fondo (vista previa), también girada
+function placeVideo() {
+  if (!video.parentNode) return;
+  const rot = CFG.rotate === 90 || CFG.rotate === 270;
+  Object.assign(video.style, { position: 'fixed', left: '50%', top: '50%', width: (rot ? H : W) + 'px', height: (rot ? W : H) + 'px',
+    objectFit: CFG.fit, zIndex: '-1', transform: `translate(-50%,-50%) ${CFG.mirror ? 'scaleX(-1) ' : ''}rotate(${CFG.rotate}deg)` });
+}
+addEventListener('resize', placeVideo);
+async function startHands() {
+  try {
+    HANDS.status = 'cargando modelo…';
+    const base = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+    const { FilesetResolver, HandLandmarker } = await import(`${base}/vision_bundle.mjs`);
+    const fileset = await FilesetResolver.forVisionTasks(`${base}/wasm`);
+    const make = delegate => HandLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate },
+      runningMode: 'VIDEO', numHands: 2, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5 });
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('este navegador no permite la cámara aquí (abre el archivo en Chrome)');
+    let model; try { model = await make('GPU'); } catch (e) { console.warn('GPU no disponible, CPU', e); model = await make('CPU'); }
+    HANDS.status = 'abriendo cámara…';
+    video.srcObject = await openCamera(); await video.play();
+    if (HANDS.label.toLowerCase().includes('obs') && !CFG.rotateSet)                               // cámara de OBS: horizontal → se gira · vertical (ya girada en OBS) → no
+      CFG.rotate = video.videoWidth > video.videoHeight ? CFG.obsRotate : 0;
+    if (CFG.showCam) { document.body.style.background = '#111'; document.body.prepend(video); placeVideo(); }   // cámara de fondo (para probar en el navegador)
+    HANDS.status = `${HANDS.label} ${video.videoWidth}×${video.videoHeight}` + (CFG.rotate ? ` · girada ${CFG.rotate}°` : '');
+    console.log('[Regalos] mano lista con cámara:', HANDS.label);
+    let lastVT = -1, lastT = 0, frames = 0, fpsT = performance.now();
+    const tick = () => {
+      const t = performance.now();
+      if (video.readyState >= 2 && video.currentTime !== lastVT && t - lastT >= 1000 / CFG.handFps - 4) {
+        lastVT = video.currentTime; lastT = t;
+        const f = grabFrame(); if (CFG.debug) HANDS.frame = f;
+        const res = model.detectForVideo(f, t);
+        updateHands((res.landmarks || []).map(handFromLandmarks), now());
+        frames++; if (t - fpsT > 1000) { HANDS.fps = frames; frames = 0; fpsT = t; }
+      }
+      if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(tick); else setTimeout(tick, 1000 / CFG.handFps);
+    };
+    tick();
+  } catch (e) {
+    console.error('[Regalos] mano:', e); HANDS.status = '⚠ ' + e.message; CFG.debug = true;
+    if (!CFG.mouse) { CFG.mouse = true; startMouse(); HANDS.status += ' · prueba con el mouse'; }
+    wake();
+  }
+}
+if (CFG.hands) startHands();
+if (CFG.mouse) startMouse();
+function startMouse() {                    // prueba con el mouse: mantener clic = puño
+  let mx = -1, my = -1, down = false, yaw = 0, roll = 0;
+  addEventListener('wheel', e => { if (e.shiftKey) roll += e.deltaY * 0.004; else yaw += e.deltaY * 0.004; }, { passive: true });   // rueda = girar la "mano"
+  addEventListener('pointermove', e => { mx = e.clientX; my = e.clientY; });
+  addEventListener('pointerdown', e => { mx = e.clientX; my = e.clientY; down = true; });
+  addEventListener('pointerup', () => { down = false; });
+  document.documentElement.style.cursor = 'crosshair';
+  setInterval(() => { if (mx >= 0) updateHands([{ x: mx, y: my, size: W * 0.07, fist: down, open: !down, R: mmul(rotZ(roll), rotY(yaw)) }], now()); }, 33);
+  if (!CFG.hands) HANDS.status = 'mouse: mantén clic para agarrar · rueda = girar (Shift = inclinar)';
+}
+window.__hands = { feed: (list) => updateHands(list, now()), fromLandmarks: handFromLandmarks, get list() { return HANDS.list; } };   // para pruebas
+
+/* ── TikFinity ── */
+let ws, reconnectTimer;
+function connect() {
+  try { ws = new WebSocket(CFG.wsUrl); } catch (e) { return scheduleReconnect(); }
+  ws.onopen = () => { clearTimeout(reconnectTimer); console.log('[Regalos] Conectado a TikFinity'); };
+  ws.onmessage = evt => {
+    if (evt.data.indexOf('"gift"') === -1) return;                    // solo regalos: ni se leen los demás eventos
+    let msg; try { msg = JSON.parse(evt.data); } catch { return; }
+    if (msg.event !== 'gift') return;
+    const d = msg.data || {};
+    const giftId = d.giftId ?? d.gift?.gift_id ?? d.giftName ?? '?';
+    const uid = d.uniqueId || d.userId || '?';
+    const count = parseInt(d.repeatCount || d.gift?.repeat_count || 1, 10);
+    const coins = parseInt(d.diamondCount ?? d.gift?.diamond_count ?? 1, 10) || 1;
+    const ended = d.repeatEnd !== false;
+    dropGift(uid + '|' + giftId, d.nickname || uid, d.giftPictureUrl || '', coins, count, ended);
+  };
+  ws.onerror = () => {};
+  ws.onclose = () => scheduleReconnect();
+}
+function scheduleReconnect() { clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connect, 5000); }
+
+/* ── Pruebas: tecla R lanza rosas; ?demo=1 simula un live ── */
+const REPO = 'https://raw.githubusercontent.com/srdwly/testoverlay/main/img/';
+const DEMO_GIFTS = [[null, 1], [REPO + 'sombrero.png', 99], [REPO + 'amplificado.png', 249], [REPO + 'galaxia.png', 1000]];
+addEventListener('keydown', e => { if (e.key === 'r' || e.key === 'R') dropGift('k' + Math.random(), 'Prueba', null, 1, 10, true); });
+if (new URLSearchParams(location.search).get('demo') === '1') {
+  const names = ['Andrea', 'Lokito', 'Sumo', 'Luz', 'Marco', 'Kathy'];
+  setInterval(() => {
+    const r = Math.random(), nm = names[(Math.random() * names.length) | 0];
+    const [url, coins] = r < 0.8 ? DEMO_GIFTS[0] : DEMO_GIFTS[1 + ((Math.random() * 3) | 0)];
+    const key = nm + url, total = coins === 1 ? 5 + ((Math.random() * 20) | 0) : 1;
+    let n = 0;                                                         // simula un combo que va subiendo
+    const tick = setInterval(() => { n = Math.min(total, n + 3); dropGift(key, nm, url, coins, n, n >= total); if (n >= total) clearInterval(tick); }, 300);
+  }, 2600);
+}
+
+resize();
+connect();
+</script>
+</body>
+</html>

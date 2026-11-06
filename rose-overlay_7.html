@@ -29,7 +29,7 @@ const CFG = {
   bounce: 0.25,           // rebote al chocar (0 = nada, 1 = pelota)
   friction: 0.35,         // roce entre regalos
 
-  maxItems: 135,          // máximo de regalos en pantalla (los más viejos se desvanecen)
+  maxItems: 90,           // máximo de regalos en pantalla (los más viejos se desvanecen)
   pileMaxHeight: 0.42,    // si la pila supera esta altura (proporción del alto), se van los más viejos
   lifeSec: 90,            // cada regalo apilado se desvanece después de este tiempo
   maxSpawnPerGift: 60,    // tope de piezas por combo (para combos enormes)
@@ -74,7 +74,7 @@ const CFG = {
   // 'siempre' = giran en 3D desde que los lanzan y quedan un poco inclinados en la pila
   // 'mano'    = planos como antes; se vuelven ficha 3D solo al levantarlos con el puño (y vuelven a planos al asentarse)
   // 'off'     = todo plano (como la versión anterior)
-  ficha3d: 'siempre',
+  ficha3d: 'off',    
   fichaGrosor: 0.22,      // grosor de la ficha (proporción del tamaño del regalo)
   fichaInclina: 28,       // inclinación máxima (grados) con la que quedan en la pila en modo 'siempre'
   floorUp: 0,             // sube el piso (proporción del alto). Ej.: 0.15 → la pila queda un poco más arriba

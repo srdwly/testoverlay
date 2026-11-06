@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Battle FX · Duelo de Cuerdas</title>
+<!--
+  BATTLE FX "DUELO DE CUERDAS" — pack de batalla con tema de guitarra. Todo es código (canvas, fondo transparente).
+
+  ANIMACIONES          TECLA   GESTO
+    BATALLA (inicio)     1     🤙 pulgar + meñique            (una mano, zona alta, sostenido ~0.7 s)
+    X2                   2     ✌  índice + medio
+    X3                   3     🤟 índice + medio + anular
+    GUANTE               4     🤜🤛 CHOCAR LOS PUÑOS (las dos manos)
+    SNIPE                5     ☝  solo índice
+    TAP TAP              6     🖐  mano abierta
+    MVP                  7     👍 pulgar arriba
+    GANAMOS              8     🤘 cuernos (índice + meñique)
+    (0 = demo: pasa todas)
+
+  DÓNDE PONERLO (para que se vea también en las batallas):
+    · En OBS (fuente de navegador, 1080×1920):   battle-fx.html?mode=overlay
+        dibuja las animaciones DENTRO del video de la cámara, así TikTok no las puede ocultar.
+    · En TikTok LIVE Studio (fuente de enlace):  battle-fx.html?mode=detector
+        mira tu cámara, detecta los gestos y le avisa a OBS (por el WebSocket que ya trae OBS).
+        En OBS: Herramientas → Ajustes del servidor WebSocket → "Habilitar servidor WebSocket".
+        Si dejas la autenticación activada, agrega &obspass=TU_CONTRASEÑA_DE_OBS_WEBSOCKET.
+    · Para probar todo en un navegador:          battle-fx.html?gestures=1&debug=1
+
+  PARÁMETROS (todos opcionales):
+    mode=all|detector|overlay   all = detecta y dibuja (por defecto) · detector = solo detecta · overlay = solo dibuja
+    gestures=1          activar gestos con cámara (en mode=detector ya vienen activados)
+    obs=ws://localhost:4455     servidor WebSocket de OBS (para mode=detector)
+    obspass=            contraseña del WebSocket de OBS (si tiene autenticación)
+    debug=1             ver cámara, puntos de la mano, gesto detectado y zona
+    camname=obs         cámara por nombre (por defecto "obs" → OBS Virtual Camera)
+    cam=0               índice de cámara si no hay camname
+    rotate=auto         auto = si la cámara llega horizontal se gira 90°, si llega vertical no se gira · 0, 90, 180, 270
+    mirror=1            voltear horizontalmente
+    fit=contain|cover   igual que live-fx
+    zone=0.45           gestos de una mano: la mano debe estar POR ENCIMA de esta altura (0 = arriba, 1 = abajo)
+    bumpzone=0.75       choque de puños: el choque debe pasar por encima de esta altura
+    bump=1.5            qué tan cerca deben quedar los puños (en tamaños de mano)
+    hand=any|left|right qué mano puede hacer gestos de una mano (lado de la imagen)
+    hold=700            ms que hay que sostener un gesto de una mano
+    cooldown=2500       ms mínimos entre dos animaciones disparadas por gesto
+    sens=1              >1 más permisivo · <1 más estricto
+    off=x3,snipe        desactivar gestos concretos (las teclas siguen funcionando)
+    name=@usuario       nombre fijo para el MVP (si no, usa el que más regaló según TikFinity)
+    y=0.5               altura del centro de las animaciones (proporción del alto)
+    size=1              tamaño general
+    tikfinity=1         escuchar TikFinity: inicio de batalla automático y nombre del MVP
+    relay=ws://localhost:8765   recibir {"battle":"x2"} desde otro programa
+    demo=1              fondo oscuro + pasa todas las animaciones en bucle
+    panel=1             botones en pantalla para probar
+-->
+<style>
+  html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; }
+  #cam { opacity: 0; object-fit: contain; }
+  body.debug #cam { opacity: .5; }
+  body.demo { background: radial-gradient(ellipse at 50% 45%, #2a2233 0%, #0d0b10 70%); }
+  #status {
+    position: fixed; left: 10px; top: 10px; padding: 6px 10px; border-radius: 6px; z-index: 5;
+    font: 12px/1.4 ui-monospace, Consolas, monospace; color: #fff; background: rgba(0,0,0,.7);
+    display: none; white-space: pre; pointer-events: none;
+  }
+  body.debug #status { display: block; }
+  #panel {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 6;
+    display: none; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 96vw;
+  }
+  body.panel #panel { display: flex; }
+  #panel button {
+    font: 700 13px system-ui, sans-serif; color: #fff; background: rgba(20,16,24,.85);
+    border: 1px solid rgba(255,176,0,.55); border-radius: 999px; padding: 7px 12px; cursor: pointer;
+  }
+  #panel button:hover { background: rgba(255,140,0,.35); }
+</style>
+</head>
+<body>
+<video id="vid" playsinline muted style="display:none"></video>
+<canvas id="cam"></canvas>
+<canvas id="dbg"></canvas>
+<canvas id="fx"></canvas>
+<div id="status">iniciando…</div>
+<div id="panel"></div>
+
+<script type="module">
+// ───────────────────────── Config ─────────────────────────
+const P = new URLSearchParams(location.search);
+const num = (k, d) => (P.has(k) && P.get(k) !== '' && !isNaN(+P.get(k))) ? +P.get(k) : d;
+const MODE = ['detector', 'overlay'].includes(P.get('mode')) ? P.get('mode') : 'all';
+const CFG = {
+  mode:     MODE,
+  gestures: MODE === 'detector' || P.get('gestures') === '1',
+  draw:     MODE !== 'detector',
+  obs:      P.get('obs') || (MODE === 'detector' ? 'ws://localhost:4455' : ''),
+  obspass:  P.get('obspass') || '',
+  debug:    P.get('debug') === '1',
+  demo:     P.get('demo') === '1' || window.BATTLE_DEMO === true,
+  panel:    P.get('panel') === '1' || P.get('demo') === '1' || window.BATTLE_DEMO === true,
+  camname:  (P.get('camname') ?? 'obs').toLowerCase(),
+  cam:      num('cam', 0),
+  rotate:   P.has('rotate') && P.get('rotate') !== 'auto' ? ((num('rotate', 0) % 360) + 360) % 360 : 'auto',
+  mirror:   P.get('mirror') === '1',
+  fit:      P.get('fit') === 'cover' ? 'cover' : 'contain',
+  zone:     num('zone', 0.45),
+  bumpZone: num('bumpzone', 0.75),
+  bumpDist: num('bump', 1.5),
+  bumpHold: num('bumphold', 120),
+  hand:     P.get('hand') || 'any',
+  hold:     num('hold', 700),
+  cooldown: num('cooldown', 2500),
+  sens:     num('sens', 1),
+  off:      (P.get('off') || '').toLowerCase().split(',').filter(Boolean),
+  name:     P.get('name') || '',
+  cy:       num('y', 0.5),
+  size:     num('size', 1),
+  tikfinity: P.get('tikfinity') === '1',
+  relay:    P.get('relay') || '',
+  detSize:  num('detsize', 320),
+};
+if (CFG.debug) document.body.classList.add('debug');
+if (CFG.demo) document.body.classList.add('demo');
+if (CFG.panel) document.body.classList.add('panel');
+const statusEl = document.getElementById('status');
+
+// ───────────────────────── Canvas + utilidades ─────────────────────────
+const cv = document.getElementById('fx'), ctx = cv.getContext('2d');
+const dbg = document.getElementById('dbg'), dctx = dbg.getContext('2d');
+let W = 0, H = 0, U = 1, CX = 0, CY = 0;
+function resize() {
+  W = innerWidth; H = innerHeight;
+  for (const c of [cv, dbg]) { c.width = W; c.height = H; }
+  U = Math.min(W, H * 0.5625) * CFG.size;      // unidad: ancho de un cuadro 9:16
+  CX = W / 2; CY = H * CFG.cy;
+  for (const k in textCache) delete textCache[k];
+  wake();
+}
+
+const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const seg = (t, a, b) => clamp((t - a) / (b - a));           // progreso 0..1 dentro de [a, b]
+const rnd = (a, b) => a + Math.random() * (b - a);
+const E = {
+  outCubic: t => 1 - Math.pow(1 - t, 3),
+  inCubic: t => t * t * t,
+  inQuint: t => t * t * t * t * t,
+  outBack: (t, s = 1.9) => 1 + (s + 1) * Math.pow(t - 1, 3) + s * Math.pow(t - 1, 2),
+  outElastic: t => t === 0 || t === 1 ? t : Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * (2 * Math.PI / 3)) + 1,
+  inOut: t => t < .5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2,
+};
+const life = (t, inEnd, outStart, outEnd) => Math.min(seg(t, 0, inEnd), 1 - seg(t, outStart, outEnd));
+const mk = (w, h) => { const c = document.createElement('canvas'); c.width = Math.ceil(w); c.height = Math.ceil(h); return c; };
+
+const FONT = '"Arial Black", "Arial Bold", Impact, system-ui, sans-serif';
+
+// Paletas: ámbar de válvula de amplificador, rojo distorsión, cian, rosa, oro, verde
+const PAL = {
+  amber: { a: '#fff3c4', b: '#ffb000', c: '#ff6a00', glow: '#ff9500' },
+  red:   { a: '#ffe1d6', b: '#ff4d2e', c: '#b3000c', glow: '#ff2a00' },
+  cyan:  { a: '#e6fdff', b: '#36e4ff', c: '#0077ff', glow: '#00c8ff' },
+  pink:  { a: '#ffe3f3', b: '#ff4fb8', c: '#b0007a', glow: '#ff2fa8' },
+  gold:  { a: '#fffbe0', b: '#ffd23f', c: '#c77d00', glow: '#ffbf00' },
+  green: { a: '#eaffe9', b: '#4dff7a', c: '#00a344', glow: '#22ff66' },
+};
+for (const k in PAL) PAL[k].name = k;
+
+/* ── Texto grande cromado: se dibuja UNA vez en un sprite (con brillo y contorno) y luego solo se copia ── */
+const textCache = {};
+function textSprite(str, size, pal) {
+  const key = str + '|' + Math.round(size) + '|' + pal.name;
+  if (textCache[key]) return textCache[key];
+  const font = `900 italic ${size}px ${FONT}`;
+  const m = mk(4, 4).getContext('2d'); m.font = font;
+  const tw = m.measureText(str).width, pad = size * 0.6;
+  const c = mk(tw + pad * 2 + size * 0.3, size * 1.3 + pad * 2), x = c.getContext('2d');
+  x.translate(c.width / 2, c.height / 2); x.transform(1, 0, -0.12, 1, 0, 0);
+  x.font = font; x.textAlign = 'center'; x.textBaseline = 'middle'; x.lineJoin = 'round';
+  x.shadowColor = pal.glow; x.shadowBlur = size * 0.35;
+  x.lineWidth = size * 0.16; x.strokeStyle = '#140a00'; x.strokeText(str, 0, 0);
+  x.shadowBlur = 0; x.lineWidth = size * 0.06; x.strokeStyle = pal.c; x.strokeText(str, 0, 0);
+  const g = x.createLinearGradient(0, -size * 0.5, 0, size * 0.5);
+  g.addColorStop(0, pal.a); g.addColorStop(0.45, pal.b); g.addColorStop(0.5, pal.c); g.addColorStop(1, pal.b);
+  x.fillStyle = g; x.fillText(str, 0, 0);
+  // brillo diagonal
+  x.globalCompositeOperation = 'source-atop'; x.globalAlpha = 0.25;
+  const sh = x.createLinearGradient(-tw / 2, -size, tw / 2, size); sh.addColorStop(0.35, 'rgba(255,255,255,0)'); sh.addColorStop(0.45, '#fff'); sh.addColorStop(0.55, 'rgba(255,255,255,0)');
+  x.fillStyle = sh; x.fillRect(-c.width, -c.height, c.width * 2, c.height * 2);
+  return (textCache[key] = c);
+}
+// ghost = "eco" de color al golpear (aberración cromática breve)
+function bigText(str, x, y, size, pal, o = {}) {
+  const { alpha = 1, scale = 1, rot = 0, ghost = 0 } = o;
+  if (alpha <= 0.01 || scale <= 0.01) return;
+  const spr = textSprite(str, size, pal);
+  const fit = Math.min(1, (W * 0.9) / spr.width);                // que nunca se corte
+  const s = scale * fit, w = spr.width * s, h = spr.height * s;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot);
+  if (ghost > 0.02) {
+    ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = alpha * ghost * 0.6;
+    const d = U * 0.025 * ghost;
+    ctx.drawImage(spr, -w / 2 - d, -h / 2, w, h); ctx.drawImage(spr, -w / 2 + d, -h / 2 + d * 0.4, w, h);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  ctx.globalAlpha = alpha; ctx.drawImage(spr, -w / 2, -h / 2, w, h);
+  ctx.restore();
+}
+
+/* ── Púa de guitarra (sprite por color) ── */
+function pickPath(c, s) {
+  c.beginPath();
+  c.moveTo(0, s);
+  c.bezierCurveTo(-s * 0.35, s * 0.55, -s * 0.95, -s * 0.05, -s * 0.85, -s * 0.55);
+  c.bezierCurveTo(-s * 0.75, -s * 0.95, s * 0.75, -s * 0.95, s * 0.85, -s * 0.55);
+  c.bezierCurveTo(s * 0.95, -s * 0.05, s * 0.35, s * 0.55, 0, s);
+  c.closePath();
+}
+const pickCache = {};
+function pickSprite(pal) {
+  if (pickCache[pal.name]) return pickCache[pal.name];
+  const S = 100, c = mk(S * 3, S * 3), x = c.getContext('2d');
+  x.translate(S * 1.5, S * 1.5);
+  x.shadowColor = pal.glow; x.shadowBlur = S * 0.4;
+  pickPath(x, S);
+  const g = x.createLinearGradient(-S, -S, S, S); g.addColorStop(0, pal.a); g.addColorStop(0.35, pal.b); g.addColorStop(1, pal.c);
+  x.fillStyle = g; x.fill();
+  x.shadowBlur = 0; x.lineWidth = S * 0.07; x.strokeStyle = '#1a0d00'; x.stroke();
+  x.save(); pickPath(x, S); x.clip();
+  x.globalAlpha = 0.35; x.fillStyle = '#fff'; x.beginPath(); x.ellipse(-S * 0.3, -S * 0.5, S * 0.55, S * 0.18, -0.5, 0, 7); x.fill();
+  x.restore();
+  return (pickCache[pal.name] = c);
+}
+function drawPick(x, y, s, pal, o = {}) {
+  const { rot = 0, alpha = 1, sx = 1 } = o;
+  if (alpha <= 0.01 || s <= 1) return;
+  const spr = pickSprite(pal), k = s / 100;
+  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(x, y); ctx.rotate(rot); ctx.scale(k * sx, k);
+  ctx.drawImage(spr, -150, -150); ctx.restore();
+}
+
+/* ── Explosión de cómic (estrella de picos) ── */
+const burstCache = {};
+function burstSprite(pal) {
+  if (burstCache[pal.name]) return burstCache[pal.name];
+  const R = 200, c = mk(R * 2.2, R * 2.2), x = c.getContext('2d'), n = 14;
+  x.translate(R * 1.1, R * 1.1);
+  const path = (r1, r2) => { x.beginPath(); for (let i = 0; i < n * 2; i++) { const a = i / (n * 2) * Math.PI * 2 + (i % 4 === 1 ? 0.05 : 0), r = i % 2 ? r2 * (0.92 + 0.16 * ((i * 7) % 3) / 2) : r1; x.lineTo(Math.cos(a) * r, Math.sin(a) * r); } x.closePath(); };
+  path(R, R * 0.62);
+  const g = x.createRadialGradient(0, 0, R * 0.1, 0, 0, R); g.addColorStop(0, '#fffbe0'); g.addColorStop(0.35, pal.b); g.addColorStop(1, pal.c);
+  x.fillStyle = g; x.fill(); x.lineWidth = R * 0.035; x.strokeStyle = '#1a0500'; x.stroke();
+  path(R * 0.72, R * 0.45); x.fillStyle = 'rgba(255,255,255,.35)'; x.fill();
+  return (burstCache[pal.name] = c);
+}
+function drawBurst(x, y, r, pal, alpha, rot = 0) {
+  if (alpha <= 0.01 || r <= 1) return;
+  const spr = burstSprite(pal), k = r / 200;
+  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(x, y); ctx.rotate(rot); ctx.scale(k, k); ctx.drawImage(spr, -220, -220); ctx.restore();
+}
+
+/* ── Llama / brasa (sprite) ── */
+const flameSpr = (() => {
+  const c = mk(64, 64), x = c.getContext('2d'), g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, '#fff6c0'); g.addColorStop(0.3, '#ffb000'); g.addColorStop(0.6, '#ff5a00'); g.addColorStop(1, 'rgba(180,0,0,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 64, 64); return c;
+})();
+/* ── Corazón (sprite) ── */
+const heartSpr = (() => {
+  const c = mk(120, 120), x = c.getContext('2d');
+  x.translate(60, 64); x.shadowColor = '#ff2fa8'; x.shadowBlur = 14;
+  x.beginPath(); x.moveTo(0, 34); x.bezierCurveTo(-56, -4, -34, -52, 0, -22); x.bezierCurveTo(34, -52, 56, -4, 0, 34); x.closePath();
+  const g = x.createLinearGradient(0, -40, 0, 34); g.addColorStop(0, '#ffb3dd'); g.addColorStop(0.5, '#ff4fb8'); g.addColorStop(1, '#b0007a');
+  x.fillStyle = g; x.fill(); x.shadowBlur = 0; x.lineWidth = 4; x.strokeStyle = '#3a0024'; x.stroke();
+  x.fillStyle = 'rgba(255,255,255,.55)'; x.beginPath(); x.ellipse(-16, -16, 9, 5, -0.6, 0, 7); x.fill();
+  return c;
+})();
+
+/* ── Guante de box (dibujado con código, mirando a la derecha). Puño ≈ 300 px de alto en el sprite. ── */
+const gloveSpr = (() => {
+  const c = mk(560, 420), x = c.getContext('2d');
+  x.translate(40, 30);
+  x.lineJoin = 'round'; x.lineCap = 'round';
+  const OUT = '#2a0006';
+  const fist = () => {
+    x.beginPath();
+    x.moveTo(160, 110);
+    x.bezierCurveTo(220, 40, 380, 30, 450, 85);          // arriba
+    x.bezierCurveTo(510, 135, 505, 285, 445, 330);       // frente (nudillos)
+    x.bezierCurveTo(385, 375, 240, 370, 170, 330);       // abajo
+    x.bezierCurveTo(140, 300, 135, 150, 160, 110);       // atrás (hacia la muñeca)
+    x.closePath();
+  };
+  x.save(); x.shadowColor = 'rgba(0,0,0,.45)'; x.shadowBlur = 24; x.shadowOffsetY = 10; fist(); x.fillStyle = '#7a0008'; x.fill(); x.restore();
+  fist();
+  let g = x.createRadialGradient(330, 120, 20, 330, 210, 270);
+  g.addColorStop(0, '#ff8f7e'); g.addColorStop(0.3, '#f22430'); g.addColorStop(0.75, '#a3000f'); g.addColorStop(1, '#560005');
+  x.fillStyle = g; x.fill(); x.lineWidth = 9; x.strokeStyle = OUT; x.stroke();
+  // costura de arriba
+  x.save(); x.setLineDash([10, 9]); x.lineWidth = 3; x.strokeStyle = 'rgba(255,210,200,.55)';
+  x.beginPath(); x.moveTo(180, 112); x.bezierCurveTo(235, 62, 375, 55, 440, 102); x.stroke(); x.restore();
+  // pliegues de los dedos (verticales, en el frente)
+  x.strokeStyle = 'rgba(70,0,10,.75)'; x.lineWidth = 6;
+  for (const [x0, y0, y1] of [[452, 150, 205], [462, 212, 262], [452, 268, 312]]) { x.beginPath(); x.moveTo(x0 - 18, y0); x.quadraticCurveTo(x0 + 10, (y0 + y1) / 2, x0 - 18, y1); x.stroke(); }
+  // pulgar: banda gruesa que sube en diagonal hacia el frente
+  const thumb = () => {
+    x.beginPath();
+    x.moveTo(185, 238); x.bezierCurveTo(230, 182, 330, 150, 395, 150);
+    x.bezierCurveTo(432, 150, 442, 192, 405, 205);
+    x.bezierCurveTo(342, 214, 262, 242, 216, 288);
+    x.bezierCurveTo(194, 302, 172, 266, 185, 238); x.closePath();
+  };
+  x.save(); x.shadowColor = 'rgba(40,0,5,.5)'; x.shadowBlur = 14; x.shadowOffsetY = 6; thumb(); x.fillStyle = '#d0101c'; x.fill(); x.restore();
+  thumb(); g = x.createLinearGradient(0, 150, 0, 290); g.addColorStop(0, '#ff7466'); g.addColorStop(0.5, '#e01422'); g.addColorStop(1, '#9a000c');
+  x.fillStyle = g; x.fill(); x.lineWidth = 7; x.strokeStyle = OUT; x.stroke();
+  x.save(); thumb(); x.clip(); x.globalAlpha = 0.45; x.fillStyle = '#fff';
+  x.beginPath(); x.ellipse(320, 168, 70, 10, -0.2, 0, 7); x.fill(); x.restore();
+  // brillo grande (laca)
+  x.save(); fist(); x.clip();
+  x.globalAlpha = 0.5; x.fillStyle = '#fff';
+  x.beginPath(); x.ellipse(310, 78, 110, 22, -0.08, 0, 7); x.fill();
+  x.globalAlpha = 0.22; x.beginPath(); x.ellipse(478, 215, 10, 55, 0.1, 0, 7); x.fill();
+  x.restore();
+  // manga (muñeca), blanca con franja
+  const cuff = () => { x.beginPath(); x.moveTo(30, 140); x.quadraticCurveTo(95, 112, 168, 124); x.lineTo(176, 344); x.quadraticCurveTo(95, 364, 30, 336); x.closePath(); };
+  cuff();
+  g = x.createLinearGradient(30, 0, 176, 0); g.addColorStop(0, '#cfc6bb'); g.addColorStop(0.45, '#ffffff'); g.addColorStop(1, '#d9d0c4');
+  x.fillStyle = g; x.fill(); x.lineWidth = 9; x.strokeStyle = OUT; x.stroke();
+  x.save(); cuff(); x.clip();
+  x.fillStyle = '#d4101c'; x.fillRect(120, 90, 26, 300);
+  x.fillStyle = '#ffb000'; x.fillRect(112, 90, 6, 300); x.fillRect(148, 90, 6, 300);
+  x.restore();
+  // emblema: púa dorada en la manga
+  x.save(); x.translate(70, 240); x.rotate(-0.12);
+  pickPath(x, 36); g = x.createLinearGradient(-36, -36, 36, 36); g.addColorStop(0, '#fffbe0'); g.addColorStop(0.4, '#ffd23f'); g.addColorStop(1, '#c77d00');
+  x.fillStyle = g; x.fill(); x.lineWidth = 5; x.strokeStyle = OUT; x.stroke();
+  x.restore();
+  return c;
+})();
+// x, y = centro del FRENTE del puño (donde golpea). dir = 1 mira a la derecha, -1 a la izquierda.
+function drawGlove(x, y, h, dir, o = {}) {
+  const { alpha = 1, rot = 0, sx = 1, sy = 1 } = o;
+  if (alpha <= 0.01) return;
+  const k = h / 300;
+  ctx.save(); ctx.globalAlpha = alpha; ctx.translate(x, y); ctx.rotate(rot * dir); ctx.scale(dir * k * sx, k * sy);
+  ctx.drawImage(gloveSpr, -(40 + 492), -(30 + 210));        // el frente del puño queda en (0,0)
+  ctx.restore();
+}
+
+/* ── Corona (sprite) ── */
+const crownSpr = (() => {
+  const c = mk(300, 220), x = c.getContext('2d');
+  x.translate(150, 120); x.lineJoin = 'round';
+  x.shadowColor = '#ffbf00'; x.shadowBlur = 22;
+  x.beginPath(); x.moveTo(-110, 60); x.lineTo(-125, -40); x.lineTo(-60, 10); x.lineTo(0, -75); x.lineTo(60, 10); x.lineTo(125, -40); x.lineTo(110, 60); x.closePath();
+  const g = x.createLinearGradient(0, -75, 0, 60); g.addColorStop(0, '#fffbe0'); g.addColorStop(0.4, '#ffd23f'); g.addColorStop(1, '#b86e00');
+  x.fillStyle = g; x.fill(); x.shadowBlur = 0; x.lineWidth = 8; x.strokeStyle = '#2a1500'; x.stroke();
+  x.fillStyle = '#c77d00'; x.fillRect(-110, 40, 220, 22); x.strokeRect(-110, 40, 220, 22);
+  for (const [gx, gy, col] of [[0, -40, '#ff2a4d'], [-60, 18, '#36e4ff'], [60, 18, '#36e4ff'], [0, 51, '#4dff7a']]) {
+    x.fillStyle = col; x.beginPath(); x.arc(gx, gy, 11, 0, 7); x.fill(); x.lineWidth = 4; x.stroke();
+    x.fillStyle = 'rgba(255,255,255,.7)'; x.beginPath(); x.arc(gx - 3, gy - 3, 3.5, 0, 7); x.fill();
+  }
+  for (const [px, py] of [[-125, -40], [0, -75], [125, -40]]) { x.fillStyle = '#fffbe0'; x.beginPath(); x.arc(px, py, 9, 0, 7); x.fill(); x.lineWidth = 4; x.stroke(); }
+  return c;
+})();
+
+// ───────────────────────── Capas compartidas: cuerdas, partículas, sacudón ─────────────────────────
+// Seis cuerdas que cruzan la pantalla y vibran (onda estacionaria que se apaga)
+const Strings = (() => {
+  const s = Array.from({ length: 6 }, (_, i) => ({ amp: 0, t0: 0, gauge: 1 + (5 - i) * 0.45 }));
+  let alpha = 0, target = 0, pal = PAL.amber;
+  return {
+    get active() { return alpha > 0.01 || target > 0; },
+    show(p) { target = 1; pal = p || pal; },
+    hide() { target = 0; },
+    pluck(i, a) { s[i].amp = Math.max(s[i].amp, a); s[i].t0 = performance.now(); },
+    strum(a = 1, down = true, gap = 35) { for (let k = 0; k < 6; k++) { const i = down ? k : 5 - k; setTimeout(() => this.pluck(i, a * U * 0.05), k * gap); } },
+    draw(now, dt) {
+      alpha += (target - alpha) * Math.min(1, dt / 120);
+      if (alpha < 0.01) { alpha = 0; return; }
+      const spread = U * 0.06, top = CY - spread * 2.5, step = Math.max(8, W / 90);
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      for (let i = 0; i < 6; i++) {
+        const st = s[i]; st.amp *= Math.pow(0.0025, dt / 1000);   // se apaga en ~1 s
+        const y0 = top + i * spread, freq = 26 + i * 6, tt = (now - st.t0) / 1000;
+        ctx.beginPath();
+        for (let x = 0; x <= W + step; x += step) {
+          const env = Math.sin(Math.PI * x / W);
+          const y = y0 + st.amp * env * Math.cos(tt * freq) + st.amp * 0.3 * Math.sin(2 * Math.PI * x / W) * Math.cos(tt * freq * 2.1);
+          x ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        }
+        const vib = clamp(st.amp / (U * 0.03)), lw = st.gauge * (U / 600);
+        if (vib > 0.05) { ctx.globalAlpha = alpha * 0.35 * vib; ctx.strokeStyle = pal.glow; ctx.lineWidth = lw * 5; ctx.stroke(); }   // brillo sin shadowBlur
+        ctx.globalAlpha = alpha * (0.35 + 0.65 * vib); ctx.strokeStyle = vib > 0.05 ? pal.b : '#d8d8d8'; ctx.lineWidth = lw; ctx.stroke();
+      }
+      ctx.restore();
+    },
+  };
+})();
+
+const parts = [];
+function sparks(x, y, n, pal, speed = 1) {
+  for (let i = 0; i < n; i++) {
+    const a = rnd(0, Math.PI * 2), v = rnd(0.4, 1.4) * U * 1.6 * speed;
+    parts.push({ k: 'spark', x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: rnd(0.4, 0.9), age: 0, col: Math.random() < 0.3 ? '#fff' : pal.b, w: rnd(1.5, 3.5) * U / 600 });
+  }
+}
+function ring(x, y, pal, maxR = 0.6, dur = 0.6, width = 0.03) {
+  parts.push({ k: 'ring', x, y, life: dur, age: 0, col: pal.b, glow: pal.glow, maxR: maxR * U, width: width * U });
+}
+function confettiPicks(x, y, n, pals, up = 1) {
+  for (let i = 0; i < n; i++) {
+    const a = rnd(-Math.PI * 0.9, -Math.PI * 0.1), v = rnd(0.6, 1.6) * U * 1.3 * up;
+    parts.push({ k: 'pick', x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: rnd(1.6, 2.6), age: 0,
+      pal: pals[i % pals.length], s: rnd(0.025, 0.05) * U, rot: rnd(0, 6), vr: rnd(-8, 8) });
+  }
+}
+function flames(x, y, n, spread = 0.05, up = 1) {
+  for (let i = 0; i < n; i++) {
+    parts.push({ k: 'flame', x: x + rnd(-spread, spread) * U, y, vx: rnd(-0.08, 0.08) * U, vy: -rnd(1.2, 2.4) * U * up,
+      life: rnd(0.5, 0.9), age: 0, r: rnd(0.03, 0.06) * U });
+  }
+}
+function embers(x, y, n) {
+  for (let i = 0; i < n; i++) parts.push({ k: 'flame', x: x + rnd(-0.15, 0.15) * U, y: y + rnd(-0.05, 0.05) * U, vx: rnd(-0.25, 0.25) * U, vy: -rnd(0.2, 0.7) * U, life: rnd(0.7, 1.4), age: 0, r: rnd(0.008, 0.02) * U });
+}
+function hearts(x, y, n, size = 0.06) {
+  for (let i = 0; i < n; i++) {
+    const a = rnd(-Math.PI, 0), v = rnd(0.3, 0.9) * U;
+    parts.push({ k: 'heart', x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - U * 0.3, life: rnd(0.9, 1.4), age: 0, s: size * U * rnd(0.7, 1.2), rot: rnd(-0.4, 0.4) });
+  }
+}
+function drawParts(dt) {
+  const s = dt / 1000;
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i]; p.age += s;
+    const k = p.age / p.life;
+    if (k >= 1) { parts.splice(i, 1); continue; }
+    if (p.k === 'spark') {
+      p.vx *= 0.94; p.vy = p.vy * 0.94 + U * 2.2 * s; p.x += p.vx * s; p.y += p.vy * s;
+      ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 1 - k;
+      ctx.strokeStyle = p.col; ctx.lineWidth = p.w;
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x - p.vx * 0.03, p.y - p.vy * 0.03); ctx.stroke();
+    } else if (p.k === 'ring') {
+      const r = E.outCubic(k) * p.maxR;
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.globalAlpha = (1 - k) * 0.35; ctx.strokeStyle = p.glow; ctx.lineWidth = (p.width * (1 - k) + 1) * 3.5;   // halo (sin shadowBlur)
+      ctx.beginPath(); ctx.arc(p.x, p.y, r, 0, Math.PI * 2); ctx.stroke();
+      ctx.globalAlpha = (1 - k) * 0.9; ctx.strokeStyle = p.col; ctx.lineWidth = p.width * (1 - k) + 1; ctx.stroke();
+    } else if (p.k === 'pick') {
+      p.vx *= 0.985; p.vy += U * 1.1 * s; p.x += p.vx * s; p.y += p.vy * s; p.rot += p.vr * s;
+      ctx.globalCompositeOperation = 'source-over';
+      drawPick(p.x, p.y, p.s, p.pal, { rot: p.rot, alpha: 1 - seg(k, 0.7, 1), sx: Math.cos(p.rot * 1.3) });   // gira como moneda
+    } else if (p.k === 'flame') {
+      p.x += p.vx * s; p.y += p.vy * s; p.vy *= 0.97;
+      const r = p.r * (1 - k * 0.6);
+      ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = (1 - k) * 0.85;
+      ctx.drawImage(flameSpr, p.x - r, p.y - r, r * 2, r * 2);
+    } else if (p.k === 'heart') {
+      p.vy += U * 0.8 * s; p.x += p.vx * s; p.y += p.vy * s;
+      ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1 - seg(k, 0.6, 1);
+      ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.drawImage(heartSpr, -p.s, -p.s, p.s * 2, p.s * 2); ctx.restore();
+    }
+  }
+  ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+}
+// rayo con desplazamiento de punto medio
+function bolt(x1, y1, x2, y2, disp) {
+  if (disp < U * 0.01) return [[x1, y1], [x2, y2]];
+  const mx = (x1 + x2) / 2 + rnd(-disp, disp), my = (y1 + y2) / 2 + rnd(-disp, disp) * 0.3;
+  const a = bolt(x1, y1, mx, my, disp / 2), b = bolt(mx, my, x2, y2, disp / 2);
+  return a.concat(b.slice(1));
+}
+function drawBolt(pts, pal, alpha, width) {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = alpha; ctx.lineJoin = 'round';
+  ctx.beginPath(); pts.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
+  ctx.strokeStyle = pal.glow; ctx.globalAlpha = alpha * 0.35; ctx.lineWidth = width * 5; ctx.stroke();
+  ctx.globalAlpha = alpha; ctx.lineWidth = width * 2; ctx.stroke();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = width; ctx.stroke();
+  ctx.restore();
+}
+function flash(alpha, col = '#fff') {
+  if (alpha <= 0.01) return;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = alpha * 0.55;
+  const g = ctx.createRadialGradient(CX, CY, 0, CX, CY, Math.max(W, H) * 0.7);
+  g.addColorStop(0, col); g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); ctx.restore();
+}
+function vignette(alpha, col = '0,0,0') {
+  if (alpha <= 0.01) return;
+  ctx.save();
+  const g = ctx.createRadialGradient(CX, CY, U * 0.3, CX, CY, Math.max(W, H) * 0.75);
+  g.addColorStop(0, `rgba(${col},0)`); g.addColorStop(1, `rgba(${col},${0.6 * alpha})`);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); ctx.restore();
+}
+// líneas de velocidad hacia el centro (estilo manga)
+function speedLines(alpha, col = '#fff', n = 34) {
+  if (alpha <= 0.01) return;
+  const R = Math.hypot(W, H) * 0.6;
+  ctx.save(); ctx.globalAlpha = alpha * 0.5; ctx.fillStyle = col;
+  ctx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const a = rnd(0, Math.PI * 2), w = rnd(0.004, 0.012), r1 = U * rnd(0.42, 0.6);
+    ctx.moveTo(CX + Math.cos(a - w) * R, CY + Math.sin(a - w) * R);
+    ctx.lineTo(CX + Math.cos(a) * r1, CY + Math.sin(a) * r1);
+    ctx.lineTo(CX + Math.cos(a + w) * R, CY + Math.sin(a + w) * R);
+  }
+  ctx.fill(); ctx.restore();
+}
+let shakeAmt = 0;
+const shake = (a) => { shakeAmt = Math.max(shakeAmt, a * U * 0.03); };
+
+// ───────────────────────── Las animaciones ─────────────────────────
+/* Cada efecto: { dur (s), start(fx), draw(t, fx) } — t en segundos desde el inicio.
+   `fx.once(key, fn, at)` ejecuta algo una sola vez al llegar a ese segundo (impactos, partículas). */
+const FX = {
+  batalla: {
+    label: '⚔ BATALLA', dur: 3.2,
+    start(fx) { fx.bolts = []; Strings.show(PAL.cyan); },
+    draw(t, fx) {
+      vignette(life(t, 0.3, 2.6, 3.2));
+      speedLines(1 - seg(t, 0.3, 0.9), '#bff6ff');
+      fx.once('b1', () => { fx.bolts = [bolt(CX - U * 0.3, CY - U * 0.9, CX, CY, U * 0.25), bolt(CX + U * 0.35, CY - U * 0.9, CX, CY, U * 0.25)]; shake(1); Strings.strum(1.2); });
+      fx.once('b2', () => { sparks(CX, CY, 70, PAL.cyan, 1.2); ring(CX, CY, PAL.cyan, 0.9); ring(CX, CY, PAL.amber, 0.6, 0.5); }, 0.3);
+      const bA = 1 - seg(t, 0.05, 0.6);
+      if (bA > 0 && Math.random() < 0.85) fx.bolts.forEach(b => drawBolt(b, PAL.cyan, bA, U * 0.006));
+      flash(1 - seg(t, 0.28, 0.7), '#bff6ff');
+      const a = life(t, 0.35, 2.6, 3.1), hit = seg(t, 0.3, 0.75);
+      drawBurst(CX, CY, U * 0.42 * E.outBack(seg(t, 0.3, 0.6), 1.5) * (1 - 0.3 * seg(t, 2.5, 3.1)), PAL.cyan, a * 0.9, t * 0.3);
+      bigText('DUELO DE', CX, CY - U * 0.13, U * 0.09, PAL.cyan, { alpha: a, scale: E.outBack(seg(t, 0.2, 0.55)) });
+      bigText('CUERDAS', CX, CY + U * 0.03, U * 0.19, PAL.amber, { alpha: a, scale: lerp(2.6, 1, E.outBack(hit)) * (1 + 0.025 * Math.sin(t * 9)), ghost: 1 - seg(t, 0.4, 0.9) });
+      if (t > 2.6) Strings.hide();
+    },
+  },
+
+  x2: {
+    label: 'X2', dur: 2.8,
+    start() { Strings.show(PAL.amber); },
+    draw(t, fx) {
+      const hit = 0.42, p = E.inCubic(seg(t, 0, hit));
+      if (t < hit) {           // dos púas llegan girando desde los costados y chocan
+        for (const d of [-1, 1]) {
+          for (let k = 2; k >= 0; k--) {                             // estela
+            const pk = E.inCubic(seg(t - k * 0.035, 0, hit));
+            drawPick(lerp(CX + d * U * 0.62, CX + d * U * 0.11, pk), CY, U * 0.14, PAL.amber, { rot: lerp(d * 4, d * -0.6, pk), alpha: k ? 0.25 / k : 1 });
+          }
+        }
+      }
+      fx.once('hit', () => { shake(1.2); sparks(CX, CY, 90, PAL.amber, 1.3); ring(CX, CY, PAL.amber, 0.8); ring(CX, CY, PAL.red, 0.5, 0.45); Strings.strum(1.3); }, hit);
+      flash(1 - seg(t, hit, hit + 0.35), '#fff2c0');
+      const a = life(t - hit, 0.05, 1.9, 2.35);
+      const s = E.outBack(seg(t, hit, hit + 0.45), 2.4) * (1 + 0.04 * Math.sin((t - hit) * 10));
+      drawBurst(CX, CY, U * 0.4 * E.outElastic(seg(t, hit, hit + 0.9)), PAL.red, a * 0.85, -t * 0.4);
+      drawPick(CX, CY, U * 0.25 * s, PAL.amber, { alpha: a, rot: 0.05 * Math.sin(t * 3) });
+      bigText('x2', CX, CY - U * 0.03, U * 0.24, PAL.red, { alpha: a, scale: s, ghost: 1 - seg(t, hit, hit + 0.5) });
+      if (t > 2.3) Strings.hide();
+    },
+  },
+
+  x3: {
+    label: 'X3', dur: 3.0,
+    start() { Strings.show(PAL.red); },
+    draw(t, fx) {
+      const beats = [0.1, 0.5, 0.9];
+      beats.forEach((b, i) => fx.once('beat' + i, () => {
+        shake(0.6 + i * 0.5); ring(CX, CY, i < 2 ? PAL.amber : PAL.red, 0.5 + i * 0.25, 0.5);
+        sparks(CX, CY, 25 + i * 35, i < 2 ? PAL.amber : PAL.red, 0.8 + i * 0.3); Strings.strum(0.7 + i * 0.4, i % 2 === 0, 18);
+        if (i === 2) { flames(CX - U * 0.42, CY + U * 0.45, 40, 0.05, 0.6); flames(CX + U * 0.42, CY + U * 0.45, 40, 0.05, 0.6); }
+      }, b));
+      // vúmetros a los costados que saltan con cada golpe
+      const lastBeat = Math.max(...beats.filter(b => t >= b), -9), kick = lastBeat > 0 ? Math.exp(-(t - lastBeat) * 5) : 0;
+      const level = clamp(0.25 + kick * (0.45 + 0.2 * beats.indexOf(lastBeat)));
+      const vuA = life(t, 0.1, 2.4, 2.9);
+      ctx.save();
+      for (const side of [-1, 1]) {
+        const x = CX + side * U * 0.42, n = 12;
+        for (let k = 0; k < n; k++) {
+          const on = k / n < level, col = k > 9 ? '#ff2a00' : k > 6 ? '#ffb000' : '#4dff7a', y = CY + U * 0.22 - k * U * 0.04;
+          if (on) { ctx.globalAlpha = vuA * 0.35; ctx.fillStyle = col; ctx.fillRect(x - U * 0.045, y - U * 0.01, U * 0.09, U * 0.048); }
+          ctx.globalAlpha = vuA * (on ? 1 : 0.18); ctx.fillStyle = col; ctx.fillRect(x - U * 0.035, y, U * 0.07, U * 0.028);
+        }
+      }
+      ctx.restore();
+      const stage = t < beats[1] ? 0 : t < beats[2] ? 1 : 2;
+      const pal = [PAL.amber, PAL.amber, PAL.red][stage];
+      const sc = [0.65, 0.85, 1.15][stage] * (1 + 0.25 * kick);
+      const a = life(t, 0.12, 2.5, 3.0);
+      if (stage === 2) drawBurst(CX, CY, U * 0.42 * E.outElastic(seg(t, beats[2], beats[2] + 0.8)), PAL.amber, a * 0.85, t * 0.5);
+      bigText('x3', CX, CY, U * 0.3, pal, { alpha: a, scale: sc * E.outBack(seg(t, 0.1, 0.3)), ghost: kick });
+      flash(stage === 2 ? 1 - seg(t, beats[2], beats[2] + 0.4) : 0, '#ffb39a');
+      if (t > 2.5) Strings.hide();
+    },
+  },
+
+  /* GUANTE: dos guantes de box llegan desde los costados, toman impulso y CHOCAN en el centro (como tu choque de puños) */
+  guante: {
+    label: '🥊 GUANTE', dur: 3.3,
+    start(fx) { Strings.show(PAL.red); fx.cracks = []; fx.rot = rnd(-0.2, 0.2); },
+    draw(t, fx) {
+      const T1 = 0.32, HIT = 0.5, OUT = 2.7, END = 3.25;
+      const gh = U * 0.26;                                        // alto del guante
+      // 1) entrada + impulso hacia atrás (anticipación) · 2) embestida · 3) choque, rebote y quedan juntos · 4) salen
+      let gap, sx = 1, sy = 1, wob = 0;
+      if (t < T1) {
+        const p = E.outCubic(seg(t, 0, T1 * 0.7)), back = Math.sin(Math.PI * seg(t, T1 * 0.55, T1));
+        gap = lerp(U * 0.85, U * 0.2, p) + back * U * 0.09;
+      } else if (t < HIT) {
+        gap = lerp(U * 0.29, 0, E.inQuint(seg(t, T1, HIT))); sx = 1.12; sy = 0.92;    // se estiran por la velocidad
+      } else if (t < OUT) {
+        const k = seg(t, HIT, HIT + 0.9);
+        gap = U * 0.11 * Math.sin(Math.PI * seg(t, HIT, HIT + 0.22)) * (1 - k);         // rebote corto
+        const sq = Math.exp(-(t - HIT) * 9) * Math.cos((t - HIT) * 40);                // aplastado que vibra
+        sx = 1 - 0.18 * sq; sy = 1 + 0.12 * sq;
+        wob = 0.03 * Math.sin(t * 7);
+      } else {
+        const p = E.inCubic(seg(t, OUT, END)); gap = lerp(0, U * 0.9, p);
+      }
+      const ga = t < OUT ? 1 : 1 - seg(t, OUT + 0.25, END);
+      const sh = U * 0.006;                                       // los frentes se tocan en el centro
+      const lift = Math.sin(t * 2.2) * U * 0.008;
+
+      // fondo: oscurecer + líneas de velocidad antes del golpe
+      vignette(life(t, 0.25, OUT, END), '40,0,0');
+      if (t < HIT + 0.05) speedLines(seg(t, 0.1, HIT) * 0.9, '#ffd9cf', 40);
+
+      // golpe
+      fx.once('hit', () => {
+        shake(2.2); sparks(CX, CY, 130, PAL.red, 1.6); sparks(CX, CY, 50, PAL.gold, 1.1);
+        ring(CX, CY, PAL.red, 1.05, 0.65, 0.05); ring(CX, CY, PAL.gold, 0.7, 0.5, 0.03);
+        Strings.strum(1.6, true, 12);
+        for (let i = 0; i < 10; i++) {          // grietas de "vidrio roto" desde el impacto
+          const a = i / 10 * Math.PI * 2 + rnd(-0.2, 0.2), len = rnd(0.35, 0.7) * U;
+          fx.cracks.push(bolt(CX, CY, CX + Math.cos(a) * len, CY + Math.sin(a) * len, U * 0.05));
+        }
+      }, HIT);
+      fx.once('embers', () => embers(CX, CY, 26), HIT + 0.1);
+      fx.once('embers2', () => embers(CX, CY, 18), HIT + 0.7);
+
+      // estrella de cómic detrás del choque
+      const bA = life(t - HIT, 0.04, OUT - HIT - 0.2, OUT - HIT + 0.35);
+      drawBurst(CX, CY, U * 0.46 * E.outElastic(seg(t, HIT, HIT + 0.8)) * (1 + 0.03 * Math.sin(t * 12)), PAL.red, bA * 0.95, fx.rot + t * 0.25);
+      // grietas
+      if (t > HIT) fx.cracks.forEach(c => drawBolt(c, PAL.red, (1 - seg(t, HIT + 0.5, HIT + 1.3)) * 0.8, U * 0.003));
+
+      // guantes (con estela durante la embestida)
+      ctx.save(); ctx.translate(CX, CY + lift); ctx.rotate(fx.rot * 0.3);
+      if (t >= T1 && t < HIT) {
+        for (let k = 3; k >= 1; k--) {
+          const gk = lerp(U * 0.29, 0, E.inQuint(seg(t - k * 0.03, T1, HIT)));
+          for (const d of [-1, 1]) {
+            ctx.save(); ctx.translate(-CX, -CY);
+            drawGlove(CX + d * (gk + sh) * -1, CY, gh, d, { alpha: 0.18 * (4 - k) / 3, sx, sy });
+            ctx.restore();
+          }
+        }
+      }
+      for (const d of [-1, 1]) {                                  // d = 1: guante izquierdo mirando a la derecha
+        ctx.save(); ctx.translate(-CX, -CY);
+        drawGlove(CX - d * (gap + sh), CY, gh, d, { alpha: ga, sx, sy, rot: -0.08 + wob });
+        ctx.restore();
+      }
+      ctx.restore();
+      flash(1 - seg(t, HIT, HIT + 0.3));
+
+      // texto
+      const ta = life(t - HIT, 0.05, OUT - HIT, END - HIT - 0.15);
+      bigText('¡GUANTE!', CX, CY - U * 0.33, U * 0.15, PAL.red, { alpha: ta, scale: lerp(1.9, 1, E.outBack(seg(t, HIT + 0.04, HIT + 0.4), 2.2)) * (1 + 0.02 * Math.sin(t * 10)), ghost: 1 - seg(t, HIT, HIT + 0.55), rot: -0.04 });
+      if (t > OUT) Strings.hide();
+    },
+  },
+
+  snipe: {
+    label: '🎯 SNIPE', dur: 3.2,
+    start() { Strings.show(PAL.cyan); },
+    draw(t, fx) {
+      // afinador de guitarra que se vuelve mira: la aguja oscila y se clava al centro
+      const a = life(t, 0.2, 2.7, 3.2), lock = 1.1;
+      vignette(a, '120,0,0');
+      const R = U * 0.3, cy = CY + U * 0.1;
+      const needle = t < lock ? Math.sin(t * 13) * Math.exp(-t * 1.2) * 0.9 + (1 - t / lock) * 0.3 : 0;
+      const ok = t >= lock, pal = ok ? PAL.green : PAL.cyan;
+      fx.once('lock', () => { shake(1); ring(CX, cy - R * 0.5, PAL.green, 0.7); sparks(CX, cy - R * 0.5, 50, PAL.green); Strings.strum(1); }, lock);
+      ctx.save(); ctx.globalAlpha = a; ctx.translate(CX, cy);
+      const sIn = E.outBack(seg(t, 0, 0.35)); ctx.scale(sIn, sIn);
+      ctx.lineCap = 'round';
+      const arc = (w, col, al) => { ctx.globalAlpha = a * al; ctx.strokeStyle = col; ctx.lineWidth = w; ctx.beginPath(); ctx.arc(0, 0, R, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke(); };
+      arc(U * 0.04, pal.glow, 0.25); arc(U * 0.012, pal.b, 1);
+      for (let k = -5; k <= 5; k++) {               // marcas del afinador
+        const ang = -Math.PI / 2 + k * 0.08 * Math.PI, r1 = R * (k === 0 ? 0.78 : 0.86);
+        ctx.lineWidth = k === 0 ? U * 0.012 : U * 0.006; ctx.strokeStyle = k === 0 ? PAL.green.b : pal.b;
+        ctx.beginPath(); ctx.moveTo(Math.cos(ang) * r1, Math.sin(ang) * r1); ctx.lineTo(Math.cos(ang) * R * 0.97, Math.sin(ang) * R * 0.97); ctx.stroke();
+      }
+      const ang = -Math.PI / 2 + needle * 0.4 * Math.PI;
+      ctx.strokeStyle = ok ? PAL.green.b : '#ff3b3b'; ctx.lineWidth = U * 0.01;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(Math.cos(ang) * R * 0.95, Math.sin(ang) * R * 0.95); ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(0, 0, U * 0.018, 0, 7); ctx.fill();
+      // mira (aparece al afinar) y gira para clavarse
+      const m = E.outCubic(seg(t, lock, lock + 0.35));
+      if (m > 0) {
+        ctx.save(); ctx.translate(0, -R * 0.5); ctx.rotate((1 - m) * 1.2);
+        ctx.strokeStyle = PAL.green.b; ctx.lineWidth = U * 0.006;
+        const r = R * 0.55;
+        ctx.beginPath(); ctx.arc(0, 0, r * (2 - m), 0, 7); ctx.stroke();
+        ctx.beginPath(); ctx.arc(0, 0, r * 0.15, 0, 7); ctx.stroke();
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { ctx.beginPath(); ctx.moveTo(dx * r * 0.4, dy * r * 0.4); ctx.lineTo(dx * r * 1.4 * m, dy * r * 1.4 * m); ctx.stroke(); }
+        ctx.restore();
+      }
+      ctx.restore();
+      bigText('SNIPE', CX, CY - U * 0.36, U * 0.17, PAL.green, { alpha: life(t - lock, 0.05, 1.6, 2.1), scale: lerp(2.2, 1, E.outCubic(seg(t, lock, lock + 0.25))), ghost: 1 - seg(t, lock, lock + 0.5) });
+      if (t > 2.7) Strings.hide();
+    },
+  },
+
+  taptap: {
+    label: '👆 TAP TAP', dur: 3.0,
+    start() { Strings.show(PAL.pink); },
+    draw(t, fx) {
+      const beat = 0.28, n = 6, start = 0.1;
+      for (let i = 0; i < n; i++) fx.once('tap' + i, () => {
+        const x = CX + rnd(-0.32, 0.32) * U, y = CY + rnd(-0.25, 0.3) * U;
+        ring(x, y, PAL.pink, 0.15, 0.4, 0.015); ring(x, y, PAL.pink, 0.08, 0.3, 0.01); hearts(x, y, 3, 0.04);
+        Strings.pluck(Math.floor(rnd(0, 6)), U * 0.03); fx.last = { x, y, t: start + i * beat };
+      }, start + i * beat);
+      const a = life(t, 0.1, 2.5, 3.0);
+      const sinceTap = fx.last ? t - fx.last.t : 9, bounce = Math.exp(-sinceTap * 8);
+      if (fx.last) {                                               // punto de toque que se hunde
+        ctx.save(); ctx.globalAlpha = a * (1 - seg(sinceTap, 0.1, 0.3)); ctx.fillStyle = '#fff';
+        ctx.beginPath(); ctx.arc(fx.last.x, fx.last.y, U * (0.02 + 0.015 * bounce), 0, 7); ctx.fill(); ctx.restore();
+      }
+      const tapIdx = Math.floor((t - start) / beat), side = tapIdx % 2 ? 1 : -1;
+      if (t < start + n * beat) {
+        bigText('TAP', CX + side * U * 0.17, CY, U * 0.15, PAL.pink, { alpha: a, scale: 1 + bounce * 0.4, rot: side * 0.1 });
+      } else {
+        fx.once('final', () => { shake(1); sparks(CX, CY, 60, PAL.pink); hearts(CX, CY, 14, 0.06); Strings.strum(1.2); }, start + n * beat);
+        const s = E.outBack(seg(t, start + n * beat, start + n * beat + 0.35), 2.4);
+        drawBurst(CX, CY, U * 0.36 * s, PAL.pink, a * 0.8, t * 0.4);
+        bigText('TAP TAP', CX, CY, U * 0.15, PAL.pink, { alpha: a, scale: s * (1 + 0.04 * Math.sin(t * 16)), ghost: 1 - seg(t, start + n * beat, start + n * beat + 0.4) });
+      }
+      if (t > 2.5) Strings.hide();
+    },
+  },
+
+  mvp: {
+    label: '👑 MVP', dur: 3.5,
+    start(fx) { Strings.show(PAL.gold); fx.name = CFG.name || topGifter.name || ''; },
+    draw(t, fx) {
+      const a = life(t, 0.3, 2.9, 3.5);
+      // reflectores desde arriba
+      ctx.save(); ctx.globalCompositeOperation = 'lighter';
+      for (const side of [-1, 1]) {
+        const sw = Math.sin(t * 1.6 + side) * 0.15;
+        const g = ctx.createLinearGradient(CX + side * U * 0.6, CY - U * 0.9, CX, CY);
+        g.addColorStop(0, `rgba(255,220,120,${0.35 * a})`); g.addColorStop(1, 'rgba(255,200,80,0)');
+        ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(CX + side * U * 0.55, CY - U * 0.9); ctx.lineTo(CX + side * U * 0.65, CY - U * 0.9);
+        ctx.lineTo(CX + U * (0.2 + sw), CY + U * 0.3); ctx.lineTo(CX - U * (0.2 - sw), CY + U * 0.3); ctx.fill();
+      }
+      ctx.restore();
+      fx.once('in', () => { sparks(CX, CY, 60, PAL.gold); ring(CX, CY, PAL.gold, 0.7); Strings.strum(1, false, 50); }, 0.35);
+      fx.once('crown', () => { shake(0.8); ring(CX, CY - U * 0.2, PAL.gold, 0.4, 0.4); confettiPicks(CX, CY, 36, [PAL.gold, PAL.amber]); }, 0.78);
+      // púa dorada gigante que gira como moneda al entrar
+      const gs = E.outBack(seg(t, 0.15, 0.6), 2), spin = Math.cos(Math.max(0, 1 - seg(t, 0.15, 0.7)) * Math.PI * 3);
+      drawPick(CX, CY - U * 0.02, U * 0.22 * gs, PAL.gold, { alpha: a, sx: spin, rot: 0.04 * Math.sin(t * 2.5) });
+      const cy = lerp(CY - U * 0.75, CY - U * 0.26, E.outBack(seg(t, 0.45, 0.8), 1.4));
+      if (t > 0.45) { const cw = U * 0.3; ctx.save(); ctx.globalAlpha = a; ctx.translate(CX, cy); ctx.rotate(0.08 * Math.sin(t * 3)); ctx.drawImage(crownSpr, -cw / 2, -cw * 0.4, cw, cw * 220 / 300); ctx.restore(); }
+      bigText('MVP', CX, CY + U * 0.0, U * 0.14, PAL.red, { alpha: a, scale: E.outBack(seg(t, 0.6, 0.95), 2.4), ghost: 1 - seg(t, 0.6, 1.0) });
+      if (fx.name) {
+        const ra = life(t - 1, 0.3, 1.8, 2.3), sc = E.outBack(seg(t, 1, 1.35));
+        ctx.save(); ctx.globalAlpha = ra; ctx.font = `900 ${U * 0.055}px ${FONT}`;
+        const w = (ctx.measureText(fx.name).width + U * 0.1) * sc, y = CY + U * 0.3;
+        ctx.fillStyle = '#7a0010'; ctx.fillRect(CX - w / 2, y - U * 0.04, w, U * 0.08);
+        ctx.fillStyle = '#ffd23f'; ctx.fillRect(CX - w / 2, y - U * 0.04, w, U * 0.006); ctx.fillRect(CX - w / 2, y + U * 0.034, w, U * 0.006);
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineWidth = U * 0.012; ctx.lineJoin = 'round';
+        ctx.strokeStyle = 'rgba(0,0,0,.85)'; ctx.strokeText(fx.name, CX, y + U * 0.003); ctx.fillStyle = '#fff'; ctx.fillText(fx.name, CX, y + U * 0.003);
+        ctx.restore();
+      }
+      if (t > 2.9) Strings.hide();
+    },
+  },
+
+  ganamos: {
+    label: '🏆 GANAMOS', dur: 3.6,
+    start() { Strings.show(PAL.gold); },
+    draw(t, fx) {
+      // pirotecnia en columnas desde abajo
+      if (t > 0.1 && t < 2.4) { flames(CX - U * 0.4, CY + U * 0.55, 2, 0.03, 0.7); flames(CX + U * 0.4, CY + U * 0.55, 2, 0.03, 0.7); }
+      [0.3, 0.75, 1.2].forEach((b, i) => fx.once('s' + i, () => Strings.strum(1.1, i % 2 === 0, 25), b));
+      fx.once('hit', () => { shake(1.6); sparks(CX, CY, 100, PAL.gold, 1.3); ring(CX, CY, PAL.gold, 1, 0.7); confettiPicks(CX, CY, 50, [PAL.gold, PAL.red, PAL.cyan, PAL.pink]); }, 0.3);
+      fx.once('hit2', () => { confettiPicks(CX - U * 0.3, CY + U * 0.2, 20, [PAL.gold, PAL.amber]); confettiPicks(CX + U * 0.3, CY + U * 0.2, 20, [PAL.gold, PAL.amber]); ring(CX, CY, PAL.amber, 0.7, 0.5); }, 1.1);
+      flash(1 - seg(t, 0.3, 0.7), '#fff3c4');
+      const a = life(t, 0.3, 3.0, 3.6);
+      drawBurst(CX, CY, U * 0.48 * E.outElastic(seg(t, 0.3, 1.1)), PAL.gold, a * 0.9, t * 0.3);
+      bigText('¡GANAMOS!', CX, CY, U * 0.17, PAL.red, { alpha: a, scale: lerp(2.5, 1, E.outBack(seg(t, 0.25, 0.6))) * (1 + 0.03 * Math.sin(t * 7)), rot: -0.04, ghost: 1 - seg(t, 0.3, 0.8) });
+      if (t > 3.0) Strings.hide();
+    },
+  },
+};
+const ORDER = ['batalla', 'x2', 'x3', 'guante', 'snipe', 'taptap', 'mvp', 'ganamos'];
+
+// ───────────────────────── Motor: cola de animaciones (duerme cuando no hay nada) ─────────────────────────
+let current = null; const queue = [];
+function play(id) {
+  if (!CFG.draw) return;
+  id = String(id).toLowerCase().replace(/\s/g, '');
+  if (!FX[id]) return console.warn('animación desconocida', id);
+  if (current && current.id === id) { current.t0 = performance.now(); current.t = 0; current.done = {}; FX[id].start(current); return; }   // reinicia
+  if (current) { if (queue.length < 3 && !queue.includes(id)) queue.push(id); return; }
+  current = { id, t0: performance.now(), t: 0, done: {} };
+  current.once = function (key, fn, at = 0) { if (!this.done[key] && this.t >= at) { this.done[key] = 1; fn(); } };
+  FX[id].start(current);
+  wake();
+}
+window.battleFX = play;      // para probar desde la consola: battleFX('guante')
+
+let running = false, lastT = 0;
+const perf = { frames: 0, total: 0, max: 0 };   // ms de dibujo por cuadro (para medir)
+function wake() { if (!running && CFG.draw) { running = true; lastT = performance.now(); requestAnimationFrame(frame); } }
+function frame(now) {
+  const t0 = performance.now();
+  const dt = Math.min(50, now - lastT); lastT = now;
+  ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, W, H);
+  shakeAmt *= Math.pow(0.002, dt / 1000);
+  if (shakeAmt > 0.5) ctx.translate(rnd(-shakeAmt, shakeAmt), rnd(-shakeAmt, shakeAmt));
+  Strings.draw(now, dt);
+  if (current) {
+    current.t = (now - current.t0) / 1000;
+    FX[current.id].draw(current.t, current);
+    ctx.globalAlpha = 1; ctx.globalCompositeOperation = 'source-over';
+    if (current.t >= FX[current.id].dur) { current = null; if (queue.length) setTimeout(() => play(queue.shift()), 150); }
+  }
+  drawParts(dt);
+  const ms = performance.now() - t0; perf.frames++; perf.total += ms; perf.max = Math.max(perf.max, ms);
+  if (current || parts.length || Strings.active || shakeAmt > 0.5 || queue.length) requestAnimationFrame(frame);
+  else { running = false; ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, W, H); }   // sin animación: 0 % de procesador
+}
+addEventListener('resize', resize); resize();
+// pre-dibuja textos y sprites al cargar (así el primer disparo no da un tirón)
+setTimeout(() => {
+  if (!CFG.draw) return;
+  for (const [s, k, p] of [['DUELO DE', 0.09, 'cyan'], ['CUERDAS', 0.19, 'amber'], ['x2', 0.24, 'red'], ['x3', 0.3, 'amber'], ['x3', 0.3, 'red'], ['¡GUANTE!', 0.15, 'red'],
+    ['SNIPE', 0.17, 'green'], ['TAP', 0.15, 'pink'], ['TAP TAP', 0.15, 'pink'], ['MVP', 0.14, 'red'], ['¡GANAMOS!', 0.17, 'red']]) textSprite(s, U * k, PAL[p]);
+  for (const k of ['amber', 'gold', 'red', 'cyan', 'pink']) { pickSprite(PAL[k]); burstSprite(PAL[k]); }
+}, 300);
+
+// ───────────────────────── Disparadores ─────────────────────────
+// send(): lo que dispara un gesto. Dibuja aquí (si esta página dibuja) y/o avisa a OBS.
+const firedLog = [];
+function send(id) {
+  firedLog.push(id);
+  if (CFG.draw) play(id);
+  if (CFG.obs) obsEmit(id);
+  if (relayWs?.readyState === 1 && CFG.mode === 'detector') relayWs.send(JSON.stringify({ battle: id }));
+}
+addEventListener('keydown', (e) => {
+  const i = '12345678'.indexOf(e.key);
+  if (i >= 0) send(ORDER[i]);
+  if (e.key === '0') startDemo();
+});
+const panel = document.getElementById('panel');
+ORDER.forEach((id, i) => { const b = document.createElement('button'); b.textContent = `${i + 1} · ${FX[id].label}`; b.onclick = () => send(id); panel.appendChild(b); });
+
+let demoTimer = null;
+function startDemo() {
+  clearInterval(demoTimer); let i = 0; play(ORDER[i++]);
+  demoTimer = setInterval(() => { if (!current && !queue.length) play(ORDER[i++ % ORDER.length]); }, 600);
+}
+if (CFG.demo) startDemo();
+
+// Dentro de OBS: los avisos llegan como evento de la fuente de navegador (obs-websocket → obs-browser "emit_event")
+addEventListener('battlefx', (e) => { const d = e.detail; play(typeof d === 'string' ? d : d?.battle); });
+
+// relay propio (opcional)
+let relayWs = null;
+function connectRelay() {
+  if (!CFG.relay) return;
+  try { relayWs = new WebSocket(CFG.relay); } catch { return setTimeout(connectRelay, 2000); }
+  relayWs.onmessage = (m) => { if (CFG.mode === 'detector') return; try { const d = JSON.parse(m.data); if (d.battle) play(d.battle); } catch { if (FX[m.data]) play(m.data); } };
+  relayWs.onclose = () => setTimeout(connectRelay, 2000);
+}
+connectRelay();
+
+/* ── Cliente del WebSocket de OBS (v5, el que ya viene con OBS 28+) ──
+   Manda CallVendorRequest → obs-browser → emit_event "battlefx" a TODAS las fuentes de navegador de OBS. */
+let obsWs = null, obsReady = false, obsState = CFG.obs ? 'conectando…' : 'no usado', obsReq = 0;
+async function sha256b64(s) { const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return btoa(String.fromCharCode(...new Uint8Array(h))); }
+function connectObs() {
+  if (!CFG.obs) return;
+  try { obsWs = new WebSocket(CFG.obs); } catch { obsState = 'URL inválida'; return; }
+  obsWs.onmessage = async (m) => {
+    let msg; try { msg = JSON.parse(m.data); } catch { return; }
+    if (msg.op === 0) {                                     // Hello
+      const d = { rpcVersion: 1, eventSubscriptions: 0 }, au = msg.d.authentication;
+      if (au) {
+        if (!CFG.obspass) { obsState = 'OBS pide contraseña: agrega &obspass=… o desactiva la autenticación'; obsWs.close(); return; }
+        d.authentication = await sha256b64(await sha256b64(CFG.obspass + au.salt) + au.challenge);
+      }
+      obsWs.send(JSON.stringify({ op: 1, d }));
+    } else if (msg.op === 2) { obsReady = true; obsState = 'conectado ✓'; }
+    else if (msg.op === 7 && msg.d?.requestStatus && !msg.d.requestStatus.result) { obsState = '⚠ ' + (msg.d.requestStatus.comment || 'error'); }
+  };
+  obsWs.onclose = (e) => { obsReady = false; if (!/contraseña/.test(obsState)) obsState = e.code === 4009 ? 'contraseña incorrecta' : 'desconectado (¿servidor WebSocket activado en OBS?)'; setTimeout(connectObs, 3000); };
+  obsWs.onerror = () => {};
+}
+function obsEmit(id) {
+  if (!obsReady) { console.warn('[battle-fx] OBS no conectado:', obsState); return; }
+  obsWs.send(JSON.stringify({ op: 6, d: { requestType: 'CallVendorRequest', requestId: 'bfx' + (++obsReq),
+    requestData: { vendorName: 'obs-browser', requestType: 'emit_event', requestData: { event_name: 'battlefx', event_data: { battle: id } } } } }));
+}
+connectObs();
+
+// TikFinity: el que más monedas regaló (para el MVP) y, si TikFinity reenvía el evento de batalla, inicio automático
+const topGifter = { name: '', coins: 0 }; const coinsBy = {};
+function connectTikfinity() {
+  const ws = new WebSocket('ws://localhost:21213/');
+  ws.onmessage = (m) => {
+    let msg; try { msg = JSON.parse(m.data); } catch { return; }
+    const d = msg.data || {};
+    if (msg.event === 'gift' && d.repeatEnd !== false) {
+      const who = d.nickname || d.uniqueId || '', c = (d.diamondCount || 0) * (d.repeatCount || 1);
+      coinsBy[who] = (coinsBy[who] || 0) + c;
+      if (coinsBy[who] > topGifter.coins) { topGifter.coins = coinsBy[who]; topGifter.name = who; }
+    }
+    if (/battle/i.test(msg.event || '')) {         // linkMicBattle: type 1 = inicio (no confirmado que TikFinity lo reenvíe)
+      if (CFG.debug) console.log('evento de batalla', msg);
+      if (d.type === 1 || d.battleStatus === 1) { for (const k in coinsBy) delete coinsBy[k]; topGifter.name = ''; topGifter.coins = 0; play('batalla'); }
+    }
+  };
+  ws.onclose = () => setTimeout(connectTikfinity, 3000);
+}
+if (CFG.tikfinity) connectTikfinity();
+
+// ───────────────────────── Gestos con cámara ─────────────────────────
+/* Un dedo cuenta como "extendido" si su punta está bastante más lejos de la muñeca que su articulación media. */
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+function fingerState(L) {
+  const S = CFG.sens, size = dist(L[0], L[9]);
+  const ext = (tip, pip) => dist(L[tip], L[0]) > dist(L[pip], L[0]) * (1.12 / S);
+  const curl = (tip, pip) => dist(L[tip], L[0]) < dist(L[pip], L[0]) * (1.0 * S);
+  const thumbOut = dist(L[4], L[5]) / size > 0.55 / S && dist(L[4], L[17]) > dist(L[3], L[17]) * 1.05;
+  const f = { thumb: thumbOut, index: ext(8, 6), middle: ext(12, 10), ring: ext(16, 14), pinky: ext(20, 18) };
+  const c = { index: curl(8, 6), middle: curl(12, 10), ring: curl(16, 14), pinky: curl(20, 18) };
+  const thumbUp = thumbOut && L[4].y < L[5].y - size * 0.35 && L[4].y < L[2].y;
+  return { f, c, size, thumbUp, fist: c.index && c.middle && c.ring && c.pinky };
+}
+// gestos de UNA mano (el puño solo ya no dispara nada: el guante es con las dos manos)
+function classify(L) {
+  const st = fingerState(L), { f, c, size, thumbUp } = st;
+  if (size < 0.04) return { g: null, ...st };
+  let g = null;
+  if (f.index && f.middle && f.ring && f.pinky && f.thumb) g = 'taptap';                // 🖐
+  else if (f.index && f.middle && f.ring && c.pinky) g = 'x3';                          // 🤟 3 dedos
+  else if (f.index && f.middle && c.ring && c.pinky) g = 'x2';                          // ✌
+  else if (f.index && f.pinky && c.middle && c.ring) g = 'ganamos';                     // 🤘
+  else if (f.thumb && f.pinky && c.index && c.middle && c.ring) g = 'batalla';          // 🤙
+  else if (f.index && c.middle && c.ring && c.pinky && !f.thumb) g = 'snipe';           // ☝
+  else if (st.fist && thumbUp) g = 'mvp';                                               // 👍
+  if (g && CFG.off.includes(g)) g = null;
+  return { g, ...st };
+}
+window.__battle = { classify, fingerState, play, send, FX, CFG, get current() { return current?.id || null; }, get fired() { return firedLog; }, onHands: (h, t) => onHands(h, t ?? performance.now()), perf, get obsState() { return obsState; } };
+
+// Estado: gestos de una mano (sostener `hold` ms en la zona alta) + choque de puños (dos manos)
+const G = { cand: null, since: 0, lastFire: -1e9, armed: true, info: null, bump: { since: 0, armed: true, near: false, d: 0 } };
+const knuckles = L => { let x = 0, y = 0; for (const i of [5, 9, 13, 17]) { x += L[i].x; y += L[i].y; } return { x: x / 4, y: y / 4 }; };
+function onHands(hands, now) {
+  // las coordenadas de MediaPipe van de 0 a 1 en ancho y alto: se pasan a píxeles para medir distancias reales
+  const [fw, fh] = frameSize(), px = p => ({ x: p.x * fw, y: p.y * fh });
+  // ── 1) choque de puños ──
+  const B = G.bump; let bumping = false; B.near = false;
+  if (hands.length >= 2 && !CFG.off.includes('guante')) {
+    const [A, C] = hands, sa = fingerState(A), sc = fingerState(C);
+    const ka = px(knuckles(A)), kc = px(knuckles(C));
+    const size = (Math.hypot(...['x', 'y'].map(k => px(A[0])[k] - px(A[9])[k])) + Math.hypot(...['x', 'y'].map(k => px(C[0])[k] - px(C[9])[k]))) / 2;
+    B.d = Math.hypot(ka.x - kc.x, ka.y - kc.y) / (size || 1);
+    const midY = (ka.y + kc.y) / 2 / fh;
+    B.fists = sa.fist && sc.fist;
+    B.near = B.fists && B.d < CFG.bumpDist && midY < CFG.bumpZone;
+    if (B.near) {
+      bumping = true;
+      if (!B.since) B.since = now;
+      if (B.armed && now - B.since >= CFG.bumpHold && now - G.lastFire >= CFG.cooldown) { send('guante'); G.lastFire = now; B.armed = false; }
+    }
+    if (B.d > CFG.bumpDist * 1.6 || !B.fists) B.armed = true;    // hay que separar los puños para volver a chocar
+  } else B.armed = true;
+  if (!B.near) B.since = 0;
+  // ── 2) gestos de una mano ──
+  let best = null;
+  if (!bumping) for (const L of hands) {
+    const wristY = L[0].y, topY = Math.min(...L.map(p => p.y));
+    if (CFG.hand !== 'any') { const left = L[0].x < 0.5; if ((CFG.hand === 'left') !== left) continue; }
+    if (topY > CFG.zone || wristY > CFG.zone + 0.12) continue;   // fuera de la zona: tocando guitarra
+    const r = classify(L);
+    if (r.g) { best = { ...r, L }; break; }
+    best = best || { ...r, L };
+  }
+  G.info = best;
+  const g = best?.g || null;
+  if (!g) { G.cand = null; G.since = 0; G.armed = true; return; }
+  if (g !== G.cand) { G.cand = g; G.since = now; }
+  if (G.armed && now - G.since >= CFG.hold && now - G.lastFire >= CFG.cooldown) { send(g); G.lastFire = now; G.armed = false; }
+}
+
+// cámara (misma lógica que live-fx: rotación, contain/cover, cámara de OBS por nombre)
+const video = document.getElementById('vid'), camView = document.getElementById('cam');
+const frameCv = document.createElement('canvas'), fctx = frameCv.getContext('2d');
+let ROT = CFG.rotate === 'auto' ? 90 : CFG.rotate;
+const frameSize = () => { const w = video.videoWidth || 1280, h = video.videoHeight || 720; return (ROT === 90 || ROT === 270) ? [h, w] : [w, h]; };
+function grabFrame() {
+  const [fw0, fh0] = frameSize(), sc = Math.min(1, CFG.detSize / Math.max(fw0, fh0));
+  const fw = Math.round(fw0 * sc), fh = Math.round(fh0 * sc);
+  if (frameCv.width !== fw || frameCv.height !== fh) { frameCv.width = fw; frameCv.height = fh; }
+  fctx.setTransform(1, 0, 0, 1, 0, 0); fctx.translate(fw / 2, fh / 2); fctx.rotate(ROT * Math.PI / 180);
+  const vw = ROT === 90 || ROT === 270 ? fh : fw, vh = ROT === 90 || ROT === 270 ? fw : fh;
+  fctx.drawImage(video, -vw / 2, -vh / 2, vw, vh);
+  return frameCv;
+}
+function toScreen(nx, ny) {
+  const [vw, vh] = frameSize(), s = (CFG.fit === 'contain' ? Math.min : Math.max)(W / vw, H / vh), dw = vw * s, dh = vh * s;
+  if (CFG.mirror) nx = 1 - nx;
+  return [(W - dw) / 2 + nx * dw, (H - dh) / 2 + ny * dh];
+}
+function drawDebug(hands, fps) {
+  dctx.clearRect(0, 0, W, H);
+  if (!CFG.debug) return;
+  const line = (ny, col, txt) => {
+    const [, y] = toScreen(0, ny);
+    dctx.setLineDash([10, 8]); dctx.strokeStyle = col; dctx.lineWidth = 2;
+    dctx.beginPath(); dctx.moveTo(0, y); dctx.lineTo(W, y); dctx.stroke(); dctx.setLineDash([]);
+    dctx.fillStyle = col; dctx.font = '14px system-ui'; dctx.fillText(txt, 10, y - 8);
+  };
+  line(CFG.zone, 'rgba(255,210,0,.9)', 'gestos de una mano ↑');
+  line(CFG.bumpZone, 'rgba(255,90,60,.9)', 'choque de puños ↑');
+  for (const L of hands) {
+    const isBest = G.info && G.info.L === L;
+    dctx.fillStyle = G.bump.near ? '#ff5a3c' : isBest && G.info.g ? '#00ff88' : '#ff4dd2';
+    for (const p of L) { const [x, y] = toScreen(p.x, p.y); dctx.beginPath(); dctx.arc(x, y, 4, 0, 7); dctx.fill(); }
+  }
+  const i = G.info, mk2 = (b) => b ? '▲' : '·';
+  const pct = G.cand ? Math.min(1, (performance.now() - G.since) / CFG.hold) : 0;
+  const B = G.bump;
+  statusEl.textContent = [
+    `BATTLE FX · ${CFG.mode}  fps ${fps}  rot ${ROT}°${CFG.rotate === 'auto' ? ' (auto)' : ''}  mano ${CFG.hand}`,
+    `cámara: ${camLabel}`,
+    `OBS: ${obsState}`,
+    hands.length >= 2 ? `choque de puños: ${B.fists ? 'dos puños ✓' : 'falta cerrar los puños'}  distancia ${B.d.toFixed(2)} (≤ ${CFG.bumpDist})${B.near ? '  ¡CHOQUE!' : ''}${B.armed ? '' : '  (separa los puños para repetir)'}`
+      : 'choque de puños: necesito ver las dos manos',
+    i ? `dedos: pulgar ${mk2(i.f?.thumb)} índice ${mk2(i.f?.index)} medio ${mk2(i.f?.middle)} anular ${mk2(i.f?.ring)} meñique ${mk2(i.f?.pinky)}${i.thumbUp ? '  (pulgar arriba)' : ''}`
+      : hands.length ? 'mano fuera de la zona (abajo = tocando guitarra)' : 'no se ve ninguna mano',
+    `gesto: ${G.cand ? FX[G.cand].label : '—'}   ${'█'.repeat(Math.round(pct * 16)).padEnd(16, '·')}${G.armed ? '' : '  (baja la mano para repetir)'}`,
+    '', 'teclas 1-8 · 0 = demo',
+  ].join('\n');
+}
+let camLabel = '?';
+async function openCamera() {
+  const C = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+  const gum = (id) => navigator.mediaDevices.getUserMedia({ video: id ? { ...C, deviceId: { exact: id } } : C });
+  const list = async () => (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === 'videoinput');
+  const pick = (cams) => (CFG.camname && cams.find(c => (c.label || '').toLowerCase().includes(CFG.camname))) || cams[CFG.cam];
+  let cams = await list();
+  if (!cams.some(c => c.label)) { const s = await gum(null); s.getTracks().forEach(t => t.stop()); cams = await list(); }
+  const chosen = pick(cams); if (!chosen) throw new Error('No encontré la cámara');
+  const s = await gum(chosen.deviceId); camLabel = s.getVideoTracks()[0]?.label || '?'; return s;
+}
+async function startGestures() {
+  try {
+    statusEl.textContent = 'cargando modelo de manos…';
+    const base = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+    const { FilesetResolver, HandLandmarker } = await import(`${base}/vision_bundle.mjs`);
+    const fileset = await FilesetResolver.forVisionTasks(`${base}/wasm`);
+    const make = (delegate) => HandLandmarker.createFromOptions(fileset, {
+      baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate },
+      runningMode: 'VIDEO', numHands: 2, minHandDetectionConfidence: 0.55, minHandPresenceConfidence: 0.55, minTrackingConfidence: 0.5 });
+    let model; try { model = await make('GPU'); } catch { model = await make('CPU'); }
+    statusEl.textContent = 'abriendo cámara…';
+    video.srcObject = await openCamera(); await video.play();
+    if (CFG.rotate === 'auto') ROT = video.videoWidth > video.videoHeight ? 90 : 0;   // horizontal → girar · vertical (ya girada en OBS) → no
+    let lastVT = -1, lastT = 0, frames = 0, fps = 0, fpsT = performance.now();
+    const loop = () => {
+      const now = performance.now();
+      if (video.currentTime !== lastVT && video.readyState >= 2 && now - lastT >= 45) {   // ~20 detecciones por segundo bastan
+        lastVT = video.currentTime; lastT = now;
+        const f = grabFrame();
+        if (CFG.debug) { if (camView.width !== f.width) { camView.width = f.width; camView.height = f.height; } camView.getContext('2d').drawImage(f, 0, 0); camView.style.transform = CFG.mirror ? 'scaleX(-1)' : ''; camView.style.objectFit = CFG.fit; }
+        const res = model.detectForVideo(f, now), hands = res.landmarks || [];
+        onHands(hands, now); drawDebug(hands, fps);
+        frames++; if (now - fpsT > 1000) { fps = frames; frames = 0; fpsT = now; }
+      }
+      'requestVideoFrameCallback' in video ? video.requestVideoFrameCallback(loop) : requestAnimationFrame(loop);
+    };
+    loop();
+  } catch (e) {
+    console.error(e); document.body.classList.add('debug');
+    statusEl.textContent = '⚠ ' + e.message + '\n(las teclas 1-8 siguen funcionando)';
+  }
+}
+if (CFG.gestures) startGestures();
+else statusEl.textContent = `BATTLE FX listo (${CFG.mode}) · teclas 1-8 · 0 = demo · ?gestures=1 para cámara`;
+</script>
+</body>
+</html>

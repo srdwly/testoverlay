@@ -9,12 +9,12 @@
     ❤  Corazón coreano con la mano de rasgueo, sostenido ~1 s → corazones desde los dedos
     🎵 Mano de rasgueo por encima del hombro → modo estrella con notas musicales
 
-  Ya trae por defecto tus ajustes: rotate=90, hand=left, fit=contain, corazón sostenido 1 s, sin cartel.
+  Ya trae por defecto tus ajustes: rotate automático (cámara horizontal → 90°, vertical → 0°), hand=left, fit=contain, corazón sostenido 1 s, sin cartel.
   En Live Studio basta con:  live-fx.html      ·  Para calibrar:  live-fx.html?debug=1
 
   PARÁMETROS (todos opcionales):
     debug=1                     cámara, esqueleto, puntos de la mano y estado
-    rotate=90                   rotación de la cámara: 0, 90, 180, 270
+    rotate=90                   rotación de la cámara: 0, 90, 180, 270 (sin poner nada: automático)
     hand=left                   mano de rasgueo: left/right (lado de la imagen) · any
     fit=contain                 contain = imagen completa · cover = llenar recortando
     mirror=1                    voltear horizontalmente
@@ -85,6 +85,7 @@ const CFG = {
   hq:     P.get('hq') === '1',                 // dibujar a resolución completa (más pesado)
   detSize: num('detsize', 320),                // tamaño (px, lado mayor) del cuadro que analiza el detector
 };
+const ROT_AUTO = !P.has('rotate');                 // sin rotate=: se decide al abrir la cámara
 if (!P.has('rotate')) P.set('rotate', '90');
 // corazón
 const HAND = CFG.hand;
@@ -123,7 +124,7 @@ addEventListener('resize', resize); resize();
 const video = document.getElementById('vid');
 const camView = document.getElementById('cam');
 // Rotación de la cámara (si está montada de lado): 0, 90, 180 o 270 grados en sentido horario
-const ROT = ((parseInt(P.get('rotate') || '0', 10) % 360) + 360) % 360;
+let ROT = ((parseInt(P.get('rotate') || '0', 10) % 360) + 360) % 360;
 const frameCv = document.createElement('canvas'), fctx = frameCv.getContext('2d');
 function frameSize() {
   const vw0 = video.videoWidth || 1280, vh0 = video.videoHeight || 720;
@@ -883,6 +884,7 @@ async function start() {
     setStatus('abriendo cámara…');
     video.srcObject = await openCamera();
     await video.play();
+    if (ROT_AUTO) ROT = video.videoHeight > video.videoWidth ? 0 : 90;   // si OBS ya manda la imagen vertical, no se gira
     if (CFG.mirror) camView.style.transform = 'scaleX(-1)';
     camView.style.objectFit = FIT;
 

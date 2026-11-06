@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
 <title>Battle FX · Duelo de Cuerdas</title>
 <!--
   BATTLE FX "DUELO DE CUERDAS" — pack de batalla con tema de guitarra. Todo es código (canvas, fondo transparente).
@@ -24,14 +25,15 @@
     · En TikTok LIVE Studio (fuente de enlace):  battle-fx.html?mode=detector
         mira tu cámara, detecta los gestos y le avisa a OBS (por el WebSocket que ya trae OBS).
         En OBS: Herramientas → Ajustes del servidor WebSocket → "Habilitar servidor WebSocket".
-        Si dejas la autenticación activada, agrega &obspass=TU_CONTRASEÑA_DE_OBS_WEBSOCKET.
+        Si dejas la autenticación activada, agrega al final #obspass=TU_CONTRASEÑA_DE_OBS_WEBSOCKET
+        (con # en vez de &: lo que va después de # nunca se envía a ningún servidor).
     · Para probar todo en un navegador:          battle-fx.html?gestures=1&debug=1
 
   PARÁMETROS (todos opcionales):
     mode=all|detector|overlay   all = detecta y dibuja (por defecto) · detector = solo detecta · overlay = solo dibuja
     gestures=1          activar gestos con cámara (en mode=detector ya vienen activados)
     obs=ws://localhost:4455     servidor WebSocket de OBS (para mode=detector)
-    obspass=            contraseña del WebSocket de OBS (si tiene autenticación)
+    #obspass=           contraseña del WebSocket de OBS, AL FINAL y con # (ej. battle-fx.html?mode=detector#obspass=abc123)
     debug=1             ver cámara, puntos de la mano, gesto detectado y zona
     camname=obs         cámara por nombre (por defecto "obs" → OBS Virtual Camera)
     cam=0               índice de cámara si no hay camname
@@ -96,7 +98,7 @@ const CFG = {
   gestures: MODE === 'detector' || P.get('gestures') === '1',
   draw:     MODE !== 'detector',
   obs:      P.get('obs') || (MODE === 'detector' ? 'ws://localhost:4455' : ''),
-  obspass:  P.get('obspass') || '',
+  obspass:  new URLSearchParams(location.hash.slice(1)).get('obspass') || P.get('obspass') || '',   // mejor con # (no sale de tu PC)
   debug:    P.get('debug') === '1',
   demo:     P.get('demo') === '1' || window.BATTLE_DEMO === true,
   panel:    P.get('panel') === '1' || P.get('demo') === '1' || window.BATTLE_DEMO === true,
@@ -890,7 +892,7 @@ function connectObs() {
     if (msg.op === 0) {                                     // Hello
       const d = { rpcVersion: 1, eventSubscriptions: 0 }, au = msg.d.authentication;
       if (au) {
-        if (!CFG.obspass) { obsState = 'OBS pide contraseña: agrega &obspass=… o desactiva la autenticación'; obsWs.close(); return; }
+        if (!CFG.obspass) { obsState = 'OBS pide contraseña: agrega #obspass=… al final del enlace'; obsWs.close(); return; }
         d.authentication = await sha256b64(await sha256b64(CFG.obspass + au.salt) + au.challenge);
       }
       obsWs.send(JSON.stringify({ op: 1, d }));

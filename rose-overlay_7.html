@@ -23,7 +23,7 @@ const CFG = {
   areaLeft: 0,
   areaRight: 100,
 
-  baseSize: 0.045,        // tamaño de un regalo de 1 moneda (proporción del ancho)
+  baseSize: 0.09,         // tamaño de un regalo de 1 moneda (proporción del ancho) · 2026-11-06: ×2 para OBS 1080×1920 · ?size=0.5 vuelve al de antes
   maxSizeMult: 2.8,       // los regalos caros crecen hasta este múltiplo
   gravity: 1800,          // px/s² (más alto = caen más rápido)
   bounce: 0.25,           // rebote al chocar (0 = nada, 1 = pelota)
@@ -102,7 +102,7 @@ const CFG = {
   if (Q.has('showcam')) CFG.showCam = Q.get('showcam') === '1';
   CFG.floorUp = n('floorup', CFG.floorUp);
   if (Q.has('ficha')) { const f = Q.get('ficha'); CFG.ficha3d = f === 'mano' ? 'mano' : (f === '0' || f === 'off') ? 'off' : 'siempre'; }
-  CFG.maxItems = n('max', CFG.maxItems); }
+  CFG.maxItems = n('max', CFG.maxItems); CFG.baseSize *= n('size', 1); }
 
 /* ════════════════════════════════════════════════════════════════ */
 const canvas = document.getElementById('c');

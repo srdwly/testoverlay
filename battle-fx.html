@@ -28,10 +28,14 @@
         Si dejas la autenticación activada, agrega al final #obspass=TU_CONTRASEÑA_DE_OBS_WEBSOCKET
         (con # en vez de &: lo que va después de # nunca se envía a ningún servidor).
     · Para probar todo en un navegador:          battle-fx.html?gestures=1&debug=1
+    · MÁS LIVIANO (recomendado): abre manos.html en Chrome (un solo detector para todos los overlays) y en OBS usa
+          battle-fx.html?mode=overlay&manos=1
+      así OBS reconoce los gestos con los puntos que manda manos.html y ya NO hace falta el detector en Live Studio.
 
   PARÁMETROS (todos opcionales):
     mode=all|detector|overlay   all = detecta y dibuja (por defecto) · detector = solo detecta · overlay = solo dibuja
     gestures=1          activar gestos con cámara (en mode=detector ya vienen activados)
+    manos=1             gestos con las manos que manda manos.html (no abre la cámara ni carga el modelo aquí)
     obs=ws://localhost:4455     servidor WebSocket de OBS (para mode=detector)
     #obspass=           contraseña del WebSocket de OBS, AL FINAL y con # (ej. battle-fx.html?mode=detector#obspass=abc123)
     debug=1             ver cámara, puntos de la mano, gesto detectado y zona
@@ -94,9 +98,11 @@
 const P = new URLSearchParams(location.search);
 const num = (k, d) => (P.has(k) && P.get(k) !== '' && !isNaN(+P.get(k))) ? +P.get(k) : d;
 const MODE = ['detector', 'overlay'].includes(P.get('mode')) ? P.get('mode') : 'all';
+const MANOS = P.get('manos') === '1';
 const CFG = {
   mode:     MODE,
-  gestures: MODE === 'detector' || P.get('gestures') === '1',
+  manos:    MANOS,
+  gestures: MODE === 'detector' || P.get('gestures') === '1' || MANOS,
   draw:     MODE !== 'detector',
   // detector: avisa a OBS · overlay: también escucha a OBS directamente (respaldo) si le das la contraseña o obs=
   obs:      P.get('obs') || (MODE === 'detector' || (MODE === 'overlay' && /obspass=/.test(location.hash + location.search)) ? 'ws://localhost:4455' : ''),
@@ -921,6 +927,7 @@ function receive(id, n, via) {
 }
 addEventListener('battlefx', (e) => { const d = e.detail; receive(typeof d === 'string' ? d : d?.battle, d?.n, 'fuente de navegador'); });
 function overlayStatus() {
+  if (CFG.manos) return;                                   // con manos=1 el estado lo escribe drawDebug
   if (CFG.mode !== 'overlay' && !(CFG.mode === 'all' && !CFG.gestures)) return;
   statusEl.textContent = [`BATTLE FX · ${CFG.mode}  ${W}×${H}`, `dentro de OBS: ${window.obsstudio ? 'sí ✓' : 'no (¿abierto fuera de OBS?)'}`,
     `WebSocket de OBS (respaldo): ${obsState}`, `avisos recibidos: ${rx.n}   último: ${rx.last}${rx.via ? ' (por ' + rx.via + ')' : ''}`, '', 'teclas 1-8 para probar (clic derecho → Interactuar)'].join('\n');
@@ -1108,7 +1115,8 @@ function drawDebug(hands, fps) {
   const B = G.bump;
   statusEl.textContent = [
     `BATTLE FX · ${CFG.mode}  fps ${fps}  rot ${ROT}°${CFG.rotate === 'auto' ? ' (auto)' : ''}  mano ${CFG.hand}`,
-    `cámara: ${camLabel}  ${video.videoWidth}×${video.videoHeight}`,
+    CFG.manos ? `manos.html: ${manosSt.age < 1000 ? 'recibiendo ✓ por ' + manosSt.via : 'sin datos (¿manos.html abierto?)'}  ${video.videoWidth}×${video.videoHeight}  · WebSocket: ${manosSt.obs}`
+      : `cámara: ${camLabel}  ${video.videoWidth}×${video.videoHeight}`,
     `OBS: ${obsState}   último aviso: ${lastEmit.id} → fuentes ${lastEmit.vendor || '—'} · websocket ${lastEmit.broadcast || '—'}`,
     hands.length >= 2 ? `choque de puños: ${B.fists ? 'dos puños ✓' : 'falta cerrar los puños'}  distancia ${B.d.toFixed(2)} (≤ ${CFG.bumpDist})${B.near ? '  ¡CHOQUE!' : ''}${B.armed ? '' : '  (separa los puños para repetir)'}`
       : 'choque de puños: necesito ver las dos manos',
@@ -1161,7 +1169,71 @@ async function startGestures() {
     statusEl.textContent = '⚠ ' + e.message + '\n(las teclas 1-8 siguen funcionando)';
   }
 }
-if (CFG.gestures) startGestures();
+/* ── manos=1: recibir las manos desde manos.html (UN solo detector, abierto en Chrome, fuera de TikTok) ──
+   Llegan por: evento "manos" de OBS (fuentes de navegador de OBS, sin contraseña) · WebSocket de OBS
+   (Live Studio: agregar #obspass=… al final del enlace) · BroadcastChannel (pestañas del mismo Chrome).
+   Las coordenadas vienen enderezadas (rotate lo hace manos.html); w×h = tamaño del cuadro analizado. */
+function listenManos(onPkt) {
+  const P = new URLSearchParams(location.search), HP = new URLSearchParams(location.hash.slice(1));
+  const pass = HP.get('obspass') || P.get('obspass') || '', url = P.get('obs') || 'ws://localhost:4455';
+  const st = { obs: 'no usado', via: '—', n: 0, age: Infinity, w: 0, h: 0 };
+  let S = '', N = 0, lastAt = 0, stale = true;
+  const pts = (a, k) => { const L = []; for (let i = 0; i < a.length; i += 3) L.push({ x: a[i], y: a[i + 1], [k]: a[i + 2] }); return L; };
+  const take = (d, via) => {
+    if (!d || typeof d !== 'object' || !d.w) return;
+    if (d.s === S && d.n <= N) return;                     // el mismo paquete llega por dos caminos
+    S = d.s; N = d.n; lastAt = performance.now(); stale = false; st.n++; st.via = via; st.w = d.w; st.h = d.h;
+    const pkt = { w: d.w, h: d.h, t: lastAt };
+    if (d.hands) { pkt.hands = d.hands.map(a => pts(a, 'z')); pkt.handedness = (d.hd || []).map(c => [{ categoryName: c }]); }
+    if ('pose' in d) pkt.pose = d.pose ? pts(d.pose, 'visibility') : null;
+    onPkt(pkt);
+  };
+  addEventListener('manos', e => take(e.detail, 'OBS'));
+  try { new BroadcastChannel('manos').onmessage = e => take(e.data, 'Chrome'); } catch {}
+  setInterval(() => {                                       // manos.html se cerró o se trabó: soltar todo
+    st.age = performance.now() - lastAt;
+    if (!stale && st.age > 700) { stale = true; onPkt({ w: st.w, h: st.h, t: performance.now(), hands: [], handedness: [], pose: null, stale: true }); }
+  }, 250);
+  if (window.obsstudio && !pass && !P.get('obs')) { st.obs = 'no hace falta (dentro de OBS)'; return st; }
+  const sha = async s => btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))));
+  const connect = () => {
+    let ws; try { ws = new WebSocket(url); } catch { st.obs = 'dirección inválida'; return; }
+    if (!/contraseña/.test(st.obs)) st.obs = 'conectando…';
+    ws.onmessage = async m => {
+      let msg; try { msg = JSON.parse(m.data); } catch { return; }
+      if (msg.op === 0) {
+        const d = { rpcVersion: 1, eventSubscriptions: 1 }, au = msg.d.authentication;     // 1 = eventos generales (CustomEvent)
+        if (au) { if (!pass) { st.obs = 'OBS pide contraseña: agrega #obspass=… al final del enlace'; ws.close(); return; }
+          d.authentication = await sha(await sha(pass + au.salt) + au.challenge); }
+        ws.send(JSON.stringify({ op: 1, d }));
+      } else if (msg.op === 2) st.obs = 'conectado ✓';
+      else if (msg.op === 5 && msg.d?.eventType === 'CustomEvent' && msg.d.eventData?.manos) take(msg.d.eventData.manos, 'WebSocket');
+    };
+    ws.onclose = e => { if (e.code === 4009) st.obs = 'contraseña incorrecta'; else if (!/contraseña/.test(st.obs)) st.obs = 'sin conexión (¿OBS abierto?)'; setTimeout(connect, 3000); };
+    ws.onerror = () => {};
+  };
+  connect();
+  return st;
+}
+
+let manosSt = { obs: '', via: '', age: Infinity };
+function startManos() {                    // sin cámara ni modelo: los puntos llegan de manos.html
+  ROT = 0; camLabel = 'manos.html';
+  const dims = { w: 0, h: 0 };
+  Object.defineProperty(video, 'videoWidth', { get: () => dims.w || 720 });
+  Object.defineProperty(video, 'videoHeight', { get: () => dims.h || 1280 });
+  let frames = 0, fps = 0, fpsT = performance.now();
+  manosSt = listenManos((pkt) => {
+    if (!pkt.hands) return;                                // paquete solo de cuerpo
+    dims.w = pkt.w; dims.h = pkt.h;
+    onHands(pkt.hands, pkt.t); drawDebug(pkt.hands, fps);
+    frames++; if (pkt.t - fpsT > 1000) { fps = frames; frames = 0; fpsT = pkt.t; }
+  });
+  statusEl.textContent = 'esperando a manos.html…';
+  setInterval(() => { if (CFG.debug && manosSt.age > 1000) drawDebug([], 0); }, 1000);
+}
+if (CFG.manos) startManos();
+else if (CFG.gestures) startGestures();
 else { statusEl.textContent = `BATTLE FX listo (${CFG.mode}) · teclas 1-8 · 0 = demo · ?gestures=1 para cámara`; overlayStatus(); }
 </script>
 </body>

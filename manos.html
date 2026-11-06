@@ -19,11 +19,13 @@
     2. Abre en Chrome:   manos.html#obspass=TU_CONTRASEÑA
        (o escribe la contraseña en la casilla de la página: se guarda en este Chrome).
        Déjala en una ventana aparte (puede quedar detrás de OBS; mejor no minimizarla).
-    3. En los overlays agrega  manos=1 :
-         OBS:          battle-fx.html?mode=overlay&manos=1        (ya no hace falta el detector en Live Studio)
-         Live Studio:  live-fx.html?manos=1#obspass=TU_CONTRASEÑA
-         Live Studio:  rose-overlay_7.html?hands=1&manos=1#obspass=TU_CONTRASEÑA
-       (Dentro de OBS no hace falta la contraseña: OBS les pasa los datos directo.)
+    3. Pon los overlays como fuentes de navegador EN OBS (1080×1920, encima de la cámara) con  manos=1 :
+         battle-fx.html?mode=overlay&manos=1
+         live-fx.html?manos=1
+         rose-overlay_7.html?hands=1&manos=1
+       Dentro de OBS no hace falta la contraseña: OBS les pasa los datos directo. Live Studio solo recibe la
+       Cámara Virtual con todo ya dibujado (Live Studio está muy poco optimizado).
+       Si igual necesitas uno en Live Studio: agrega #obspass=TU_CONTRASEÑA al final de su enlace.
 
   PARÁMETROS (todos opcionales)
     camname=obs       cámara por nombre (por defecto OBS Virtual Camera) · cam=0 índice

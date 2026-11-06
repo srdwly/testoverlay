@@ -52,8 +52,9 @@ const CFG = {
 
   // ── AGARRAR REGALOS CON LA MANO (cámara) ──  se activa con ?hands=1
   // Puño = agarra (primero los grandes que estén en tu mano; si no hay, el más cercano) · mano abierta = suelta / lanza.
-  // MÁS LIVIANO: ?hands=1&manos=1#obspass=TU_CONTRASEÑA → las manos llegan de manos.html (abierto en Chrome),
-  // esta fuente no abre la cámara ni carga el modelo (rotate lo hace manos.html).
+  // MÁS LIVIANO: como fuente de navegador EN OBS (1080×1920, encima de la cámara) con ?hands=1&manos=1 → las manos
+  // llegan de manos.html (abierto en Chrome); no abre la cámara ni carga el modelo (rotate lo hace manos.html).
+  // En Live Studio haría falta además #obspass=TU_CONTRASEÑA al final del enlace.
   hands: false,
   manos: false,
   camname: 'obs',         // cámara por nombre (OBS Virtual Camera); si no la encuentra usa la cámara "cam"

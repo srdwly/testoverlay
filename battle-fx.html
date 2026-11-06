@@ -97,7 +97,8 @@ const CFG = {
   mode:     MODE,
   gestures: MODE === 'detector' || P.get('gestures') === '1',
   draw:     MODE !== 'detector',
-  obs:      P.get('obs') || (MODE === 'detector' ? 'ws://localhost:4455' : ''),
+  // detector: avisa a OBS · overlay: también escucha a OBS directamente (respaldo) si le das la contraseña o obs=
+  obs:      P.get('obs') || (MODE === 'detector' || (MODE === 'overlay' && /obspass=/.test(location.hash + location.search)) ? 'ws://localhost:4455' : ''),
   obspass:  new URLSearchParams(location.hash.slice(1)).get('obspass') || P.get('obspass') || '',   // mejor con # (no sale de tu PC)
   debug:    P.get('debug') === '1',
   demo:     P.get('demo') === '1' || window.BATTLE_DEMO === true,
@@ -849,7 +850,7 @@ const firedLog = [];
 function send(id) {
   firedLog.push(id);
   if (CFG.draw) play(id);
-  if (CFG.obs) obsEmit(id);
+  if (CFG.obs && CFG.mode !== 'overlay') obsEmit(id);
   if (relayWs?.readyState === 1 && CFG.mode === 'detector') relayWs.send(JSON.stringify({ battle: id }));
 }
 addEventListener('keydown', (e) => {
@@ -868,7 +869,21 @@ function startDemo() {
 if (CFG.demo) startDemo();
 
 // Dentro de OBS: los avisos llegan como evento de la fuente de navegador (obs-websocket → obs-browser "emit_event")
-addEventListener('battlefx', (e) => { const d = e.detail; play(typeof d === 'string' ? d : d?.battle); });
+// Cada aviso llega por dos caminos (evento de la fuente de navegador + evento del WebSocket): se reproduce una sola vez
+const seen = new Set(), rx = { n: 0, last: '—', via: '' };
+function receive(id, n, via) {
+  if (!id) return;
+  if (n) { if (seen.has(n)) return; seen.add(n); if (seen.size > 50) seen.delete(seen.values().next().value); }
+  rx.n++; rx.last = id; rx.via = via; overlayStatus();
+  play(id);
+}
+addEventListener('battlefx', (e) => { const d = e.detail; receive(typeof d === 'string' ? d : d?.battle, d?.n, 'fuente de navegador'); });
+function overlayStatus() {
+  if (CFG.mode !== 'overlay' && !(CFG.mode === 'all' && !CFG.gestures)) return;
+  statusEl.textContent = [`BATTLE FX · ${CFG.mode}  ${W}×${H}`, `dentro de OBS: ${window.obsstudio ? 'sí ✓' : 'no (¿abierto fuera de OBS?)'}`,
+    `WebSocket de OBS (respaldo): ${obsState}`, `avisos recibidos: ${rx.n}   último: ${rx.last}${rx.via ? ' (por ' + rx.via + ')' : ''}`, '', 'teclas 1-8 para probar (clic derecho → Interactuar)'].join('\n');
+}
+setInterval(() => CFG.debug && overlayStatus(), 1000);
 
 // relay propio (opcional)
 let relayWs = null;
@@ -890,22 +905,32 @@ function connectObs() {
   obsWs.onmessage = async (m) => {
     let msg; try { msg = JSON.parse(m.data); } catch { return; }
     if (msg.op === 0) {                                     // Hello
-      const d = { rpcVersion: 1, eventSubscriptions: 0 }, au = msg.d.authentication;
+      const d = { rpcVersion: 1, eventSubscriptions: CFG.mode === 'overlay' ? 1 : 0 }, au = msg.d.authentication;   // overlay: escucha eventos generales (CustomEvent)
       if (au) {
         if (!CFG.obspass) { obsState = 'OBS pide contraseña: agrega #obspass=… al final del enlace'; obsWs.close(); return; }
         d.authentication = await sha256b64(await sha256b64(CFG.obspass + au.salt) + au.challenge);
       }
       obsWs.send(JSON.stringify({ op: 1, d }));
     } else if (msg.op === 2) { obsReady = true; obsState = 'conectado ✓'; }
-    else if (msg.op === 7 && msg.d?.requestStatus && !msg.d.requestStatus.result) { obsState = '⚠ ' + (msg.d.requestStatus.comment || 'error'); }
+    else if (msg.op === 7 && msg.d?.requestStatus) {                          // respuesta de OBS a un aviso
+      const ok = msg.d.requestStatus.result;
+      if (msg.d.requestType === 'CallVendorRequest') lastEmit.vendor = ok ? '✓' : '✗ ' + (msg.d.requestStatus.comment || msg.d.requestStatus.code);
+      if (msg.d.requestType === 'BroadcastCustomEvent') lastEmit.broadcast = ok ? '✓' : '✗ ' + (msg.d.requestStatus.comment || msg.d.requestStatus.code);
+    }
+    else if (msg.op === 5 && msg.d?.eventType === 'CustomEvent' && msg.d.eventData?.battlefx) receive(msg.d.eventData.battlefx, msg.d.eventData.n, 'WebSocket');
   };
   obsWs.onclose = (e) => { obsReady = false; if (!/contraseña/.test(obsState)) obsState = e.code === 4009 ? 'contraseña incorrecta' : 'desconectado (¿servidor WebSocket activado en OBS?)'; setTimeout(connectObs, 3000); };
   obsWs.onerror = () => {};
 }
+const lastEmit = { id: '—', vendor: '', broadcast: '' };
 function obsEmit(id) {
-  if (!obsReady) { console.warn('[battle-fx] OBS no conectado:', obsState); return; }
+  if (!obsReady) { console.warn('[battle-fx] OBS no conectado:', obsState); lastEmit.id = id; lastEmit.vendor = '✗ OBS no conectado'; lastEmit.broadcast = ''; return; }
+  const n = Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+  Object.assign(lastEmit, { id, vendor: '…', broadcast: '…' });
+  // 1) evento directo a las fuentes de navegador de OBS · 2) evento del WebSocket (respaldo, si el overlay también se conecta)
   obsWs.send(JSON.stringify({ op: 6, d: { requestType: 'CallVendorRequest', requestId: 'bfx' + (++obsReq),
-    requestData: { vendorName: 'obs-browser', requestType: 'emit_event', requestData: { event_name: 'battlefx', event_data: { battle: id } } } } }));
+    requestData: { vendorName: 'obs-browser', requestType: 'emit_event', requestData: { event_name: 'battlefx', event_data: { battle: id, n } } } } }));
+  obsWs.send(JSON.stringify({ op: 6, d: { requestType: 'BroadcastCustomEvent', requestId: 'bfx' + (++obsReq), requestData: { eventData: { battlefx: id, n } } } }));
 }
 connectObs();
 
@@ -1042,7 +1067,7 @@ function drawDebug(hands, fps) {
   statusEl.textContent = [
     `BATTLE FX · ${CFG.mode}  fps ${fps}  rot ${ROT}°${CFG.rotate === 'auto' ? ' (auto)' : ''}  mano ${CFG.hand}`,
     `cámara: ${camLabel}  ${video.videoWidth}×${video.videoHeight}`,
-    `OBS: ${obsState}`,
+    `OBS: ${obsState}   último aviso: ${lastEmit.id} → fuentes ${lastEmit.vendor || '—'} · websocket ${lastEmit.broadcast || '—'}`,
     hands.length >= 2 ? `choque de puños: ${B.fists ? 'dos puños ✓' : 'falta cerrar los puños'}  distancia ${B.d.toFixed(2)} (≤ ${CFG.bumpDist})${B.near ? '  ¡CHOQUE!' : ''}${B.armed ? '' : '  (separa los puños para repetir)'}`
       : 'choque de puños: necesito ver las dos manos',
     i ? `dedos: pulgar ${mk2(i.f?.thumb)} índice ${mk2(i.f?.index)} medio ${mk2(i.f?.middle)} anular ${mk2(i.f?.ring)} meñique ${mk2(i.f?.pinky)}${i.thumbUp ? '  (pulgar arriba)' : ''}`
@@ -1095,7 +1120,7 @@ async function startGestures() {
   }
 }
 if (CFG.gestures) startGestures();
-else statusEl.textContent = `BATTLE FX listo (${CFG.mode}) · teclas 1-8 · 0 = demo · ?gestures=1 para cámara`;
+else { statusEl.textContent = `BATTLE FX listo (${CFG.mode}) · teclas 1-8 · 0 = demo · ?gestures=1 para cámara`; overlayStatus(); }
 </script>
 </body>
 </html>

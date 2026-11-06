@@ -23,7 +23,7 @@ const CFG = {
   areaLeft: 0,
   areaRight: 100,
 
-  baseSize: 0.045,        // tamaño de un regalo de 1 moneda (proporción del ancho)
+  baseSize: 0.09,         // tamaño de un regalo de 1 moneda (proporción del ancho) · 2026-11-06: ×2 para OBS 1080×1920 · ?size=0.5 vuelve al de antes
   maxSizeMult: 2.8,       // los regalos caros crecen hasta este múltiplo
   gravity: 1800,          // px/s² (más alto = caen más rápido)
   bounce: 0.25,           // rebote al chocar (0 = nada, 1 = pelota)
@@ -52,7 +52,11 @@ const CFG = {
 
   // ── AGARRAR REGALOS CON LA MANO (cámara) ──  se activa con ?hands=1
   // Puño = agarra (primero los grandes que estén en tu mano; si no hay, el más cercano) · mano abierta = suelta / lanza.
+  // MÁS LIVIANO: como fuente de navegador EN OBS (1080×1920, encima de la cámara) con ?hands=1&manos=1 → las manos
+  // llegan de manos.html (abierto en Chrome); no abre la cámara ni carga el modelo (rotate lo hace manos.html).
+  // En Live Studio haría falta además #obspass=TU_CONTRASEÑA al final del enlace.
   hands: false,
+  manos: false,
   camname: 'obs',         // cámara por nombre (OBS Virtual Camera); si no la encuentra usa la cámara "cam"
   camAvoid: '',           // evita cámaras con este nombre (la vista previa evita 'obs' para usar tu webcam)
   obsRotate: 90,          // cámara de OBS horizontal (sin ?rotate=) se gira así; si OBS ya la manda vertical, no se gira
@@ -85,6 +89,7 @@ const CFG = {
   if (Q.has('chain')) CFG.chain = Q.get('chain') !== '0';
   const n = (k, d) => (Q.has(k) && Q.get(k) !== '' && !isNaN(+Q.get(k))) ? +Q.get(k) : d;
   if (Q.has('hands')) CFG.hands = Q.get('hands') === '1';
+  if (Q.has('manos')) CFG.manos = Q.get('manos') === '1';
   if (Q.has('camname')) CFG.camname = Q.get('camname').toLowerCase();
   CFG.rotateSet = Q.has('rotate');
   CFG.cam = n('cam', CFG.cam); CFG.rotate = ((n('rotate', CFG.rotate) % 360) + 360) % 360;
@@ -97,7 +102,7 @@ const CFG = {
   if (Q.has('showcam')) CFG.showCam = Q.get('showcam') === '1';
   CFG.floorUp = n('floorup', CFG.floorUp);
   if (Q.has('ficha')) { const f = Q.get('ficha'); CFG.ficha3d = f === 'mano' ? 'mano' : (f === '0' || f === 'off') ? 'off' : 'siempre'; }
-  CFG.maxItems = n('max', CFG.maxItems); }
+  CFG.maxItems = n('max', CFG.maxItems); CFG.baseSize *= n('size', 1); }
 
 /* ════════════════════════════════════════════════════════════════ */
 const canvas = document.getElementById('c');
@@ -795,7 +800,69 @@ async function startHands() {
     wake();
   }
 }
-if (CFG.hands) startHands();
+/* ── manos=1: recibir las manos desde manos.html (UN solo detector, abierto en Chrome, fuera de TikTok) ──
+   Llegan por: evento "manos" de OBS (fuentes de navegador de OBS, sin contraseña) · WebSocket de OBS
+   (Live Studio: agregar #obspass=… al final del enlace) · BroadcastChannel (pestañas del mismo Chrome).
+   Las coordenadas vienen enderezadas (rotate lo hace manos.html); w×h = tamaño del cuadro analizado. */
+function listenManos(onPkt) {
+  const P = new URLSearchParams(location.search), HP = new URLSearchParams(location.hash.slice(1));
+  const pass = HP.get('obspass') || P.get('obspass') || '', url = P.get('obs') || 'ws://localhost:4455';
+  const st = { obs: 'no usado', via: '—', n: 0, age: Infinity, w: 0, h: 0 };
+  let S = '', N = 0, lastAt = 0, stale = true;
+  const pts = (a, k) => { const L = []; for (let i = 0; i < a.length; i += 3) L.push({ x: a[i], y: a[i + 1], [k]: a[i + 2] }); return L; };
+  const take = (d, via) => {
+    if (!d || typeof d !== 'object' || !d.w) return;
+    if (d.s === S && d.n <= N) return;                     // el mismo paquete llega por dos caminos
+    S = d.s; N = d.n; lastAt = performance.now(); stale = false; st.n++; st.via = via; st.w = d.w; st.h = d.h;
+    const pkt = { w: d.w, h: d.h, t: lastAt };
+    if (d.hands) { pkt.hands = d.hands.map(a => pts(a, 'z')); pkt.handedness = (d.hd || []).map(c => [{ categoryName: c }]); }
+    if ('pose' in d) pkt.pose = d.pose ? pts(d.pose, 'visibility') : null;
+    onPkt(pkt);
+  };
+  addEventListener('manos', e => take(e.detail, 'OBS'));
+  try { new BroadcastChannel('manos').onmessage = e => take(e.data, 'Chrome'); } catch {}
+  setInterval(() => {                                       // manos.html se cerró o se trabó: soltar todo
+    st.age = performance.now() - lastAt;
+    if (!stale && st.age > 700) { stale = true; onPkt({ w: st.w, h: st.h, t: performance.now(), hands: [], handedness: [], pose: null, stale: true }); }
+  }, 250);
+  if (window.obsstudio && !pass && !P.get('obs')) { st.obs = 'no hace falta (dentro de OBS)'; return st; }
+  const sha = async s => btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))));
+  const connect = () => {
+    let ws; try { ws = new WebSocket(url); } catch { st.obs = 'dirección inválida'; return; }
+    if (!/contraseña/.test(st.obs)) st.obs = 'conectando…';
+    ws.onmessage = async m => {
+      let msg; try { msg = JSON.parse(m.data); } catch { return; }
+      if (msg.op === 0) {
+        const d = { rpcVersion: 1, eventSubscriptions: 1 }, au = msg.d.authentication;     // 1 = eventos generales (CustomEvent)
+        if (au) { if (!pass) { st.obs = 'OBS pide contraseña: agrega #obspass=… al final del enlace'; ws.close(); return; }
+          d.authentication = await sha(await sha(pass + au.salt) + au.challenge); }
+        ws.send(JSON.stringify({ op: 1, d }));
+      } else if (msg.op === 2) st.obs = 'conectado ✓';
+      else if (msg.op === 5 && msg.d?.eventType === 'CustomEvent' && msg.d.eventData?.manos) take(msg.d.eventData.manos, 'WebSocket');
+    };
+    ws.onclose = e => { if (e.code === 4009) st.obs = 'contraseña incorrecta'; else if (!/contraseña/.test(st.obs)) st.obs = 'sin conexión (¿OBS abierto?)'; setTimeout(connect, 3000); };
+    ws.onerror = () => {};
+  };
+  connect();
+  return st;
+}
+
+function startManos() {                    // sin cámara ni modelo: los puntos llegan de manos.html
+  CFG.rotate = 0; HANDS.label = 'manos.html';
+  const dims = { w: 0, h: 0 };
+  Object.defineProperty(video, 'videoWidth', { get: () => dims.w || 720 });
+  Object.defineProperty(video, 'videoHeight', { get: () => dims.h || 1280 });
+  let frames = 0, fpsT = now();
+  const st = listenManos(pkt => {
+    if (!pkt.hands) return;                                // paquete solo de cuerpo
+    dims.w = pkt.w; dims.h = pkt.h;
+    updateHands(pkt.hands.map(handFromLandmarks), now());
+    frames++; const t = now(); if (t - fpsT > 1000) { HANDS.fps = frames; frames = 0; fpsT = t; }
+  });
+  setInterval(() => { HANDS.status = st.age < 1000 ? `manos.html ✓ (por ${st.via})` : `esperando a manos.html… · WebSocket: ${st.obs}`; if (CFG.debug) wake(); }, 500);
+}
+if (CFG.hands && CFG.manos) startManos();
+else if (CFG.hands) startHands();
 if (CFG.mouse) startMouse();
 function startMouse() {                    // prueba con el mouse: mantener clic = puño
   let mx = -1, my = -1, down = false, yaw = 0, roll = 0;

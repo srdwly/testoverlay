@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Manos · detector único</title>
+<!--
+  MANOS — UN SOLO detector de manos (y cuerpo) para todos los overlays, FUERA de TikTok LIVE Studio.
+
+  Antes: battle-fx, rose-overlay_7 y live-fx abrían cada uno la cámara y su propio modelo de manos
+  dentro de Live Studio / OBS → tres detectores sobre la misma imagen = muy pesado.
+  Ahora: esta página (abierta en Chrome) mira la cámara UNA vez y reparte los puntos de la mano.
+  Los overlays solo dibujan (agregarles &manos=1).
+
+  CÓMO SE USA
+    1. En OBS: Herramientas → Ajustes del servidor WebSocket → Habilitar (ya lo tienes para battle-fx).
+       Activa también la Cámara Virtual (Iniciar cámara virtual).
+    2. Abre en Chrome:   manos.html#obspass=TU_CONTRASEÑA
+       (o escribe la contraseña en la casilla de la página: se guarda en este Chrome).
+       Déjala en una ventana aparte (puede quedar detrás de OBS; mejor no minimizarla).
+    3. Pon los overlays como fuentes de navegador EN OBS (1080×1920, encima de la cámara) con  manos=1 :
+         battle-fx.html?mode=overlay&manos=1
+         live-fx.html?manos=1
+         rose-overlay_7.html?hands=1&manos=1
+       Dentro de OBS no hace falta la contraseña: OBS les pasa los datos directo. Live Studio solo recibe la
+       Cámara Virtual con todo ya dibujado (Live Studio está muy poco optimizado).
+       Si igual necesitas uno en Live Studio: agrega #obspass=TU_CONTRASEÑA al final de su enlace.
+
+  PARÁMETROS (todos opcionales)
+    camname=obs       cámara por nombre (por defecto OBS Virtual Camera) · cam=0 índice
+    rotate=auto       auto = horizontal → 90°, vertical → 0° · 0, 90, 180, 270
+    handfps=25        detecciones de mano por segundo
+    pose=1            detectar también el cuerpo (modo estrella de live-fx) · pose=0 lo apaga (más liviano)
+    posefps=12        detecciones de cuerpo por segundo
+    detsize=320       tamaño del cuadro que se analiza (más chico = más rápido)
+    obs=ws://localhost:4455
+    vista=0           sin vista previa (un poquito más liviano)
+-->
+<style>
+  :root { --bg: #0f0c12; --panel: #1b1620; --line: #3a2f40; --txt: #f3eef5; --dim: #b3a6b8; --ok: #45e08a; --bad: #ff5a5a; --red: #e3262e; --gold: #ffb000; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--txt); font: 14px/1.45 system-ui, sans-serif; }
+  main { max-width: 720px; margin: 0 auto; padding: 14px 16px 24px; }
+  h1 { font-size: 18px; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; }
+  h1 .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--red); box-shadow: 0 0 10px var(--red); }
+  p.sub { margin: 0 0 12px; color: var(--dim); }
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+  @media (max-width: 560px) { .grid { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; min-width: 0; }
+  .row { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; border-bottom: 1px dashed var(--line); }
+  .row:last-child { border-bottom: 0; }
+  .row b { font-weight: 600; color: var(--dim); }
+  .row span { text-align: right; overflow-wrap: anywhere; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--gold); }
+  label { display: block; color: var(--dim); font-size: 12px; margin: 8px 0 3px; }
+  input, select, button { width: 100%; font: inherit; color: var(--txt); background: #120e15; border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; }
+  button { cursor: pointer; background: #2a1d24; border-color: var(--red); margin-top: 8px; }
+  canvas { width: 100%; max-height: 52vh; object-fit: contain; background: #000; border-radius: 10px; border: 1px solid var(--line); display: block; }
+  #hidden { display: none; margin-top: 10px; padding: 8px 10px; border-radius: 8px; background: #3a2a00; color: #ffe08a; }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="dot"></span>Detector de manos</h1>
+  <p class="sub">Deja esta ventana abierta mientras transmites. Los overlays con <code>manos=1</code> usan lo que se ve aquí.</p>
+  <div class="grid">
+    <div><canvas id="vista" width="320" height="568"></canvas></div>
+    <div>
+      <div class="card">
+        <div class="row"><b>Cámara</b><span id="sCam">—</span></div>
+        <div class="row"><b>Motor</b><span id="sEng">cargando…</span></div>
+        <div class="row"><b>Manos</b><span id="sHands">—</span></div>
+        <div class="row"><b>Cuerpo</b><span id="sPose">—</span></div>
+        <div class="row"><b>OBS WebSocket</b><span id="sObs">—</span></div>
+        <div class="row"><b>Enviados</b><span id="sSent">0</span></div>
+      </div>
+      <div class="card" style="margin-top:12px">
+        <label for="cams">Cámara</label>
+        <select id="cams"></select>
+        <label for="pass">Contraseña del WebSocket de OBS (se guarda solo en este Chrome)</label>
+        <input id="pass" type="password" autocomplete="off" placeholder="la de Herramientas → Ajustes del servidor WebSocket">
+        <button id="save">Guardar y reconectar</button>
+      </div>
+      <div id="hidden">Esta ventana está oculta o minimizada: Chrome puede ir más lento. Mejor déjala visible detrás de OBS.</div>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+// ───────────────────────── Config ─────────────────────────
+const P = new URLSearchParams(location.search), HP = new URLSearchParams(location.hash.slice(1));
+const num = (k, d) => (P.has(k) && P.get(k) !== '' && !isNaN(+P.get(k))) ? +P.get(k) : d;
+const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+const CFG = {
+  camname: (P.get('camname') ?? 'obs').toLowerCase(),
+  cam: num('cam', 0),
+  rotate: P.has('rotate') && P.get('rotate') !== 'auto' ? ((num('rotate', 0) % 360) + 360) % 360 : 'auto',
+  handFps: num('handfps', 25),
+  pose: P.get('pose') !== '0',
+  poseFps: num('posefps', 12),
+  detSize: num('detsize', 320),
+  obs: P.get('obs') || 'ws://localhost:4455',
+  vista: P.get('vista') !== '0',
+};
+let obsPass = HP.get('obspass') || P.get('obspass') || store.get('manos-obspass') || '';
+const $ = id => document.getElementById(id);
+const set = (id, txt, cls = '') => { const e = $(id); e.textContent = txt; e.className = cls; };
+$('pass').value = obsPass;
+
+// ───────────────────────── Envío: OBS WebSocket + BroadcastChannel ─────────────────────────
+/* Cada paquete va por:
+   1) CallVendorRequest → obs-browser emit_event "manos": llega a TODAS las fuentes de navegador de OBS (sin contraseña)
+   2) BroadcastCustomEvent: llega a quien esté conectado al WebSocket de OBS (las fuentes de Live Studio)
+   3) BroadcastChannel: otras pestañas de este mismo Chrome (para probar) */
+const SESSION = Math.random().toString(36).slice(2, 8);
+const bc = 'BroadcastChannel' in window ? new BroadcastChannel('manos') : null;
+let obsWs = null, obsReady = false, obsReq = 0, sent = 0, obsTimer = null;
+async function sha256b64(s) { const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return btoa(String.fromCharCode(...new Uint8Array(h))); }
+function connectObs() {
+  clearTimeout(obsTimer);
+  try { obsWs?.close(); } catch {}
+  obsReady = false; set('sObs', 'conectando…', 'warn');
+  let ws; try { ws = obsWs = new WebSocket(CFG.obs); } catch { set('sObs', 'dirección inválida', 'bad'); return; }
+  ws.onmessage = async (m) => {
+    let msg; try { msg = JSON.parse(m.data); } catch { return; }
+    if (msg.op === 0) {
+      const d = { rpcVersion: 1, eventSubscriptions: 0 }, au = msg.d.authentication;
+      if (au) {
+        if (!obsPass) { set('sObs', 'OBS pide contraseña: escríbela abajo', 'bad'); ws.close(); return; }
+        d.authentication = await sha256b64(await sha256b64(obsPass + au.salt) + au.challenge);
+      }
+      ws.send(JSON.stringify({ op: 1, d }));
+    } else if (msg.op === 2) { obsReady = true; set('sObs', 'conectado ✓', 'ok'); }
+  };
+  ws.onclose = (e) => {
+    if (ws !== obsWs) return;
+    obsReady = false;
+    if (e.code === 4009) set('sObs', 'contraseña incorrecta', 'bad');
+    else if (!/contraseña/.test($('sObs').textContent)) set('sObs', 'sin conexión (¿OBS abierto con el WebSocket activado?)', 'bad');
+    obsTimer = setTimeout(connectObs, 3000);
+  };
+  ws.onerror = () => {};
+}
+connectObs();
+$('save').onclick = () => { obsPass = $('pass').value; store.set('manos-obspass', obsPass); connectObs(); };
+
+let seq = 0;
+function publish(pkt) {
+  pkt.s = SESSION; pkt.n = ++seq; pkt.t = Date.now();
+  bc?.postMessage(pkt);
+  if (obsReady && obsWs.readyState === 1) {
+    obsWs.send(JSON.stringify({ op: 6, d: { requestType: 'CallVendorRequest', requestId: 'm' + (++obsReq),
+      requestData: { vendorName: 'obs-browser', requestType: 'emit_event', requestData: { event_name: 'manos', event_data: pkt } } } }));
+    obsWs.send(JSON.stringify({ op: 6, d: { requestType: 'BroadcastCustomEvent', requestId: 'm' + (++obsReq), requestData: { eventData: { manos: pkt } } } }));
+  }
+  sent++;
+}
+
+// ───────────────────────── Cámara ─────────────────────────
+const video = document.createElement('video'); video.muted = true; video.playsInline = true;
+let ROT = 0, camLabel = '';
+const frameCv = document.createElement('canvas'), fctx = frameCv.getContext('2d', { willReadFrequently: false });
+const frameSize = () => { const w = video.videoWidth || 1280, h = video.videoHeight || 720; return (ROT === 90 || ROT === 270) ? [h, w] : [w, h]; };
+function grabFrame() {                     // cuadro enderezado y reducido (igual que en los overlays)
+  const [fw0, fh0] = frameSize(), sc = Math.min(1, CFG.detSize / Math.max(fw0, fh0));
+  const fw = Math.round(fw0 * sc), fh = Math.round(fh0 * sc);
+  if (frameCv.width !== fw || frameCv.height !== fh) { frameCv.width = fw; frameCv.height = fh; }
+  fctx.setTransform(1, 0, 0, 1, 0, 0); fctx.translate(fw / 2, fh / 2); fctx.rotate(ROT * Math.PI / 180);
+  const vw = ROT === 90 || ROT === 270 ? fh : fw, vh = ROT === 90 || ROT === 270 ? fw : fh;
+  fctx.drawImage(video, -vw / 2, -vh / 2, vw, vh);
+  return frameCv;
+}
+const camSel = $('cams');
+async function listCams() { return (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === 'videoinput'); }
+async function openCamera(deviceId) {
+  const C = { width: { ideal: 1280 }, height: { ideal: 1280 }, frameRate: { ideal: 30 }, resizeMode: { ideal: 'none' } };
+  const gum = id => navigator.mediaDevices.getUserMedia({ video: id ? { ...C, deviceId: { exact: id } } : C });
+  let cams = await listCams();
+  if (!cams.some(c => c.label)) {          // primera vez: pedir permiso para ver los nombres
+    const saved = store.get('manos-cam');
+    try { const s = await gum(deviceId || saved || null); s.getTracks().forEach(t => t.stop()); } catch (e) { if (e.name === 'NotAllowedError') throw new Error('permiso de cámara negado'); }
+    cams = await listCams();
+  }
+  camSel.innerHTML = '';
+  cams.forEach((c, i) => { const o = document.createElement('option'); o.value = c.deviceId; o.textContent = c.label || `cámara ${i}`; camSel.appendChild(o); });
+  const chosen = (deviceId && cams.find(c => c.deviceId === deviceId))
+    || (P.has('camname') || P.has('cam') ? null : cams.find(c => c.deviceId === store.get('manos-cam')))
+    || (CFG.camname && cams.find(c => (c.label || '').toLowerCase().includes(CFG.camname)))
+    || cams[CFG.cam] || cams[0];
+  if (!chosen) throw new Error('no encontré ninguna cámara');
+  camSel.value = chosen.deviceId;
+  try { const s = await gum(chosen.deviceId); camLabel = s.getVideoTracks()[0]?.label || chosen.label; store.set('manos-cam', chosen.deviceId); return s; }
+  catch (e) { throw new Error(`no pude abrir "${chosen.label || 'la cámara'}" (${e.name === 'NotReadableError' ? 'la está usando otro programa' : e.message})`); }
+}
+async function useCamera(deviceId) {
+  video.srcObject?.getTracks().forEach(t => t.stop());
+  video.srcObject = await openCamera(deviceId); await video.play();
+  ROT = CFG.rotate === 'auto' ? (video.videoWidth > video.videoHeight ? 90 : 0) : CFG.rotate;
+  set('sCam', `${camLabel} · ${video.videoWidth}×${video.videoHeight}${ROT ? ` · girada ${ROT}°` : ''}`, 'ok');
+}
+camSel.onchange = () => useCamera(camSel.value).catch(e => set('sCam', '⚠ ' + e.message, 'bad'));
+
+// ───────────────────────── Vista previa ─────────────────────────
+const vista = $('vista'), vctx = vista.getContext('2d');
+const BONES = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+const POSE_BONES = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24]];
+let lastHands = [], lastPose = null;
+function drawVista(src) {
+  if (!CFG.vista || document.hidden) return;
+  if (vista.width !== src.width || vista.height !== src.height) { vista.width = src.width; vista.height = src.height; }
+  const w = vista.width, h = vista.height;
+  vctx.drawImage(src, 0, 0);
+  vctx.lineWidth = 2;
+  if (lastPose) {
+    vctx.strokeStyle = 'rgba(255,255,255,.75)';
+    for (const [a, b] of POSE_BONES) { const A = lastPose[a], B = lastPose[b]; if ((A.visibility ?? 1) < .4 || (B.visibility ?? 1) < .4) continue; vctx.beginPath(); vctx.moveTo(A.x * w, A.y * h); vctx.lineTo(B.x * w, B.y * h); vctx.stroke(); }
+  }
+  for (const L of lastHands) {
+    vctx.strokeStyle = '#ffb000';
+    for (const [a, b] of BONES) { vctx.beginPath(); vctx.moveTo(L[a].x * w, L[a].y * h); vctx.lineTo(L[b].x * w, L[b].y * h); vctx.stroke(); }
+    vctx.fillStyle = '#e3262e';
+    for (const p of L) { vctx.beginPath(); vctx.arc(p.x * w, p.y * h, 2.5, 0, 7); vctx.fill(); }
+  }
+}
+
+// ───────────────────────── Modelos + bucle ─────────────────────────
+const r4 = v => Math.round(v * 1e4) / 1e4, r3 = v => Math.round(v * 1e3) / 1e3;
+async function start() {
+  const base = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+  const { FilesetResolver, HandLandmarker, PoseLandmarker } = await import(`${base}/vision_bundle.mjs`);
+  const fileset = await FilesetResolver.forVisionTasks(`${base}/wasm`);
+  let delegate = 'GPU';
+  const withFallback = async (make) => { try { return await make('GPU'); } catch (e) { console.warn('GPU no disponible, CPU', e); delegate = 'CPU (más lento)'; return make('CPU'); } };
+  const handModel = await withFallback(d => HandLandmarker.createFromOptions(fileset, {
+    baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate: d },
+    runningMode: 'VIDEO', numHands: 2, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5 }));
+  const poseModel = CFG.pose ? await withFallback(d => PoseLandmarker.createFromOptions(fileset, {
+    baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task', delegate: d },
+    runningMode: 'VIDEO', numPoses: 1, minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5 })) : null;
+  set('sEng', delegate === 'GPU' ? 'GPU ✓' : delegate, delegate === 'GPU' ? 'ok' : 'warn');
+  if (!poseModel) set('sPose', 'apagado (pose=0)');
+  set('sCam', 'abriendo…', 'warn');
+  await useCamera();
+
+  let lastVT = -1, lastHand = 0, lastPoseT = 0, lastTs = 0;
+  const cnt = { h: 0, p: 0, ms: 0, msN: 0 }; let cntT = performance.now();
+  const tick = () => {
+    const now = performance.now();
+    if (video.readyState < 2 || video.currentTime === lastVT) return;
+    const doHand = now - lastHand >= 1000 / CFG.handFps - 4;
+    const doPose = poseModel && now - lastPoseT >= 1000 / CFG.poseFps - 4;
+    if (!doHand && !doPose) return;
+    lastVT = video.currentTime;
+    const f = grabFrame(), ts = Math.max(now, lastTs + 1); lastTs = ts;   // MediaPipe pide tiempos siempre crecientes
+    const pkt = { w: f.width, h: f.height };
+    const t0 = performance.now();
+    if (doHand) {
+      lastHand = now; cnt.h++;
+      const res = handModel.detectForVideo(f, ts);
+      lastHands = res.landmarks || [];
+      pkt.hands = lastHands.map(L => L.flatMap(p => [r4(p.x), r4(p.y), r4(p.z || 0)]));
+      pkt.hd = (res.handedness || res.handednesses || []).map(h => h?.[0]?.categoryName || '');
+    }
+    if (doPose) {
+      lastPoseT = now; cnt.p++;
+      lastPose = poseModel.detectForVideo(f, ts).landmarks?.[0] || null;
+      pkt.pose = lastPose ? lastPose.slice(0, 25).flatMap(p => [r3(p.x), r3(p.y), r3(p.visibility ?? 1)]) : null;
+    }
+    cnt.ms += performance.now() - t0; cnt.msN++;
+    publish(pkt);
+    drawVista(f);
+    if (now - cntT >= 1000) {
+      const s = (now - cntT) / 1000;
+      set('sHands', `${Math.round(cnt.h / s)} por seg · ${lastHands.length} a la vista · ${(cnt.ms / Math.max(1, cnt.msN)).toFixed(0)} ms`, 'ok');
+      if (poseModel) set('sPose', `${Math.round(cnt.p / s)} por seg · ${lastPose ? 'te veo ✓' : 'no se ve el cuerpo'}`, lastPose ? 'ok' : 'warn');
+      set('sSent', `${sent}${obsReady ? '' : ' (solo a pestañas de este Chrome: OBS sin conectar)'}`, obsReady ? 'ok' : 'warn');
+      cnt.h = cnt.p = cnt.ms = cnt.msN = 0; cntT = now;
+    }
+  };
+  /* El reloj va en un Worker: Chrome frena los temporizadores de las pestañas ocultas, pero no los del Worker,
+     así la detección sigue aunque la ventana quede detrás de OBS. */
+  const worker = new Worker(URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 15)'], { type: 'text/javascript' })));
+  worker.onmessage = () => { try { tick(); } catch (e) { console.error(e); } };
+}
+const hiddenNote = () => { $('hidden').style.display = document.hidden ? 'block' : 'none'; };
+document.addEventListener('visibilitychange', hiddenNote); hiddenNote();
+start().catch(e => { console.error(e); set('sEng', '⚠ ' + e.message, 'bad'); });
+</script>
+</body>
+</html>

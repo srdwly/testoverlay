@@ -13,6 +13,17 @@
   Ahora: esta página (abierta en Chrome) mira la cámara UNA vez y reparte los puntos de la mano.
   Los overlays solo dibujan (agregarles &manos=1).
 
+  IMAGEN LIMPIA (sin overlays) — RECOMENDADO
+    La Cámara Virtual de OBS ya trae los overlays dibujados y eso confunde la detección, y el capturador USB
+    solo deja que lo lea un programa. Solución: manos.html le PIDE A OBS fotos chiquitas de una escena limpia
+    por el WebSocket (no abre ninguna cámara):
+      1. En OBS crea una escena "Camara limpia" y agrega tu cámara con "Agregar existente" (la MISMA fuente,
+         con la misma posición/giro que en tu escena principal). Nada más en esa escena.
+         (Más cómodo: en tu escena principal reemplaza la cámara por la escena "Camara limpia" como fuente,
+          así cualquier cambio de posición queda igual en las dos.)
+      2. En manos.html elige esa escena en "Imagen de OBS" (o ?fuente=Camara%20limpia).
+    Como la foto tiene la forma del lienzo (1080×1920), los puntos calzan exacto con los overlays.
+
   CÓMO SE USA
     1. En OBS: Herramientas → Ajustes del servidor WebSocket → Habilitar (ya lo tienes para battle-fx).
        Activa también la Cámara Virtual (Iniciar cámara virtual).
@@ -28,6 +39,8 @@
        Si igual necesitas uno en Live Studio: agrega #obspass=TU_CONTRASEÑA al final de su enlace.
 
   PARÁMETROS (todos opcionales)
+    fuente=NOMBRE     escena o fuente de OBS de donde tomar la imagen limpia (vacío = leer una cámara de Chrome)
+    jpg=70            calidad de las fotos que manda OBS
     camname=obs       cámara por nombre (por defecto OBS Virtual Camera) · cam=0 índice
     rotate=auto       auto = horizontal → 90°, vertical → 0° · 0, 90, 180, 270
     handfps=25        detecciones de mano por segundo
@@ -76,7 +89,9 @@
         <div class="row"><b>Enviados</b><span id="sSent">0</span></div>
       </div>
       <div class="card" style="margin-top:12px">
-        <label for="cams">Cámara</label>
+        <label for="fuente">Imagen de OBS (limpia, sin overlays)</label>
+        <select id="fuente"><option value="">— no usar: leer una cámara de este Chrome —</option></select>
+        <label for="cams">Cámara de Chrome (solo si arriba dice "no usar")</label>
         <select id="cams"></select>
         <label for="pass">Contraseña del WebSocket de OBS (se guarda solo en este Chrome)</label>
         <input id="pass" type="password" autocomplete="off" placeholder="la de Herramientas → Ajustes del servidor WebSocket">
@@ -101,6 +116,8 @@ const CFG = {
   poseFps: num('posefps', 12),
   detSize: num('detsize', 320),
   obs: P.get('obs') || 'ws://localhost:4455',
+  fuente: P.has('fuente') ? P.get('fuente') : (store.get('manos-fuente') || ''),
+  jpg: num('jpg', 70),
   vista: P.get('vista') !== '0',
 };
 let obsPass = HP.get('obspass') || P.get('obspass') || store.get('manos-obspass') || '';
@@ -116,6 +133,16 @@ $('pass').value = obsPass;
 const SESSION = Math.random().toString(36).slice(2, 8);
 const bc = 'BroadcastChannel' in window ? new BroadcastChannel('manos') : null;
 let obsWs = null, obsReady = false, obsReq = 0, sent = 0, obsTimer = null;
+const pendingReq = new Map();
+function obsCall(requestType, requestData = {}, timeout = 3000) {         // pedido a OBS que espera respuesta
+  return new Promise((res, rej) => {
+    if (!obsReady || obsWs.readyState !== 1) return rej(new Error('OBS sin conectar'));
+    const requestId = 'q' + (++obsReq);
+    const to = setTimeout(() => { pendingReq.delete(requestId); rej(new Error('OBS no respondió')); }, timeout);
+    pendingReq.set(requestId, { res, rej, to });
+    obsWs.send(JSON.stringify({ op: 6, d: { requestType, requestId, requestData } }));
+  });
+}
 async function sha256b64(s) { const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return btoa(String.fromCharCode(...new Uint8Array(h))); }
 function connectObs() {
   clearTimeout(obsTimer);
@@ -131,7 +158,11 @@ function connectObs() {
         d.authentication = await sha256b64(await sha256b64(obsPass + au.salt) + au.challenge);
       }
       ws.send(JSON.stringify({ op: 1, d }));
-    } else if (msg.op === 2) { obsReady = true; set('sObs', 'conectado ✓', 'ok'); }
+    } else if (msg.op === 2) { obsReady = true; set('sObs', 'conectado ✓', 'ok'); listObsSources(); }
+    else if (msg.op === 7 && pendingReq.has(msg.d.requestId)) {
+      const p = pendingReq.get(msg.d.requestId); pendingReq.delete(msg.d.requestId); clearTimeout(p.to);
+      msg.d.requestStatus?.result ? p.res(msg.d.responseData || {}) : p.rej(new Error(msg.d.requestStatus?.comment || 'error ' + msg.d.requestStatus?.code));
+    }
   };
   ws.onclose = (e) => {
     if (ws !== obsWs) return;
@@ -161,16 +192,73 @@ function publish(pkt) {
 const video = document.createElement('video'); video.muted = true; video.playsInline = true;
 let ROT = 0, camLabel = '';
 const frameCv = document.createElement('canvas'), fctx = frameCv.getContext('2d', { willReadFrequently: false });
-const frameSize = () => { const w = video.videoWidth || 1280, h = video.videoHeight || 720; return (ROT === 90 || ROT === 270) ? [h, w] : [w, h]; };
+/* La imagen sale de: la escena/fuente limpia de OBS (fotos por WebSocket) o de una cámara de Chrome */
+const shot = { bmp: null, seq: 0, w: 0, h: 0 };
+const useObsImage = () => !!CFG.fuente;
+const srcW = () => useObsImage() ? shot.w : video.videoWidth, srcH = () => useObsImage() ? shot.h : video.videoHeight;
+const frameSize = () => { const w = srcW() || 1280, h = srcH() || 720; return (ROT === 90 || ROT === 270) ? [h, w] : [w, h]; };
 function grabFrame() {                     // cuadro enderezado y reducido (igual que en los overlays)
   const [fw0, fh0] = frameSize(), sc = Math.min(1, CFG.detSize / Math.max(fw0, fh0));
   const fw = Math.round(fw0 * sc), fh = Math.round(fh0 * sc);
   if (frameCv.width !== fw || frameCv.height !== fh) { frameCv.width = fw; frameCv.height = fh; }
   fctx.setTransform(1, 0, 0, 1, 0, 0); fctx.translate(fw / 2, fh / 2); fctx.rotate(ROT * Math.PI / 180);
   const vw = ROT === 90 || ROT === 270 ? fh : fw, vh = ROT === 90 || ROT === 270 ? fw : fh;
-  fctx.drawImage(video, -vw / 2, -vh / 2, vw, vh);
+  fctx.drawImage(useObsImage() ? shot.bmp : video, -vw / 2, -vh / 2, vw, vh);
   return frameCv;
 }
+// fotos de OBS: una a la vez, las más chicas posibles (el detector no necesita más)
+let shotLoopOn = false, shotSize = null;
+// esperas con reloj de Worker: Chrome frena los setTimeout de ventanas ocultas, los del Worker no
+const sleepW = new Worker(URL.createObjectURL(new Blob(['onmessage = e => setTimeout(() => postMessage(e.data.id), e.data.ms)'], { type: 'text/javascript' })));
+const sleeps = new Map(); let sleepId = 0;
+sleepW.onmessage = e => { sleeps.get(e.data)?.(); sleeps.delete(e.data); };
+const sleep = ms => new Promise(r => { const id = ++sleepId; sleeps.set(id, r); sleepW.postMessage({ id, ms }); });
+async function shotLoop() {
+  if (shotLoopOn) return; shotLoopOn = true;
+  let errShown = '';
+  while (useObsImage()) {
+    const t = performance.now(), name = CFG.fuente;
+    try {
+      if (!obsReady) throw new Error('esperando conexión con OBS');
+      const q = { sourceName: name, imageFormat: 'jpg', imageCompressionQuality: CFG.jpg };
+      if (shotSize?.name === name) { q.imageWidth = shotSize.w; q.imageHeight = shotSize.h; }
+      const r = await obsCall('GetSourceScreenshot', q);
+      const bmp = await createImageBitmap(await (await fetch(r.imageData)).blob());
+      if (name !== CFG.fuente) { bmp.close(); continue; }
+      if (shotSize?.name !== name) {                   // primera foto: tamaño real → se piden más chicas
+        const sc = Math.min(1, CFG.detSize / Math.max(bmp.width, bmp.height));
+        shotSize = { name, w: Math.max(16, Math.round(bmp.width * sc)), h: Math.max(16, Math.round(bmp.height * sc)) };
+      }
+      shot.bmp?.close?.(); shot.bmp = bmp; shot.w = bmp.width; shot.h = bmp.height; shot.seq++;
+      const rot = CFG.rotate === 'auto' ? (bmp.width > bmp.height ? 90 : 0) : CFG.rotate;
+      if (rot !== ROT || errShown !== 'ok') { ROT = rot; set('sCam', `OBS: "${name}" · ${bmp.width}×${bmp.height}${ROT ? ` · girada ${ROT}°` : ''} (imagen limpia)`, 'ok'); errShown = 'ok'; }
+    } catch (e) {
+      const m = /source|fuente|not found|No source/i.test(e.message) ? `no encuentro "${name}" en OBS` : e.message;
+      if (errShown !== m) { set('sCam', '⚠ ' + m, 'bad'); errShown = m; }
+      await sleep(1000);
+    }
+    const wait = 1000 / Math.max(CFG.handFps, CFG.pose ? CFG.poseFps : 0) - (performance.now() - t);
+    if (wait > 0) await sleep(wait);
+  }
+  shotLoopOn = false;
+}
+const fuenteSel = $('fuente');
+async function listObsSources() {
+  try {
+    const [sc, inp] = await Promise.all([obsCall('GetSceneList'), obsCall('GetInputList')]);
+    const names = [...(sc.scenes || []).map(x => ['Escena: ' + x.sceneName, x.sceneName]),
+                   ...(inp.inputs || []).filter(x => !/audio|wasapi|pulse|coreaudio/i.test(x.inputKind || '')).map(x => ['Fuente: ' + x.inputName, x.inputName])];
+    fuenteSel.innerHTML = '<option value="">— no usar: leer una cámara de este Chrome —</option>';
+    for (const [label, v] of names) { const o = document.createElement('option'); o.value = v; o.textContent = label; fuenteSel.appendChild(o); }
+    if (CFG.fuente && !names.some(([, v]) => v === CFG.fuente)) { const o = document.createElement('option'); o.value = CFG.fuente; o.textContent = CFG.fuente + ' (no existe en OBS)'; fuenteSel.appendChild(o); }
+    fuenteSel.value = CFG.fuente;
+  } catch (e) { console.warn('lista de fuentes', e); }
+}
+fuenteSel.onchange = () => {
+  CFG.fuente = fuenteSel.value; store.set('manos-fuente', CFG.fuente); shotSize = null;
+  if (CFG.fuente) { video.srcObject?.getTracks().forEach(t => t.stop()); video.srcObject = null; shotLoop(); }
+  else useCamera(camSel.value || undefined).catch(e => set('sCam', '⚠ ' + e.message, 'bad'));
+};
 const camSel = $('cams');
 async function listCams() { return (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === 'videoinput'); }
 async function openCamera(deviceId) {
@@ -199,7 +287,7 @@ async function useCamera(deviceId) {
   ROT = CFG.rotate === 'auto' ? (video.videoWidth > video.videoHeight ? 90 : 0) : CFG.rotate;
   set('sCam', `${camLabel} · ${video.videoWidth}×${video.videoHeight}${ROT ? ` · girada ${ROT}°` : ''}`, 'ok');
 }
-camSel.onchange = () => useCamera(camSel.value).catch(e => set('sCam', '⚠ ' + e.message, 'bad'));
+camSel.onchange = () => { if (CFG.fuente) { fuenteSel.value = ''; fuenteSel.onchange(); return; } useCamera(camSel.value).catch(e => set('sCam', '⚠ ' + e.message, 'bad')); };
 
 // ───────────────────────── Vista previa ─────────────────────────
 const vista = $('vista'), vctx = vista.getContext('2d');
@@ -241,17 +329,18 @@ async function start() {
   set('sEng', delegate === 'GPU' ? 'GPU ✓' : delegate, delegate === 'GPU' ? 'ok' : 'warn');
   if (!poseModel) set('sPose', 'apagado (pose=0)');
   set('sCam', 'abriendo…', 'warn');
-  await useCamera();
+  if (useObsImage()) shotLoop(); else await useCamera();
 
   let lastVT = -1, lastHand = 0, lastPoseT = 0, lastTs = 0;
   const cnt = { h: 0, p: 0, ms: 0, msN: 0 }; let cntT = performance.now();
   const tick = () => {
     const now = performance.now();
-    if (video.readyState < 2 || video.currentTime === lastVT) return;
+    const fresh = useObsImage() ? (shot.bmp ? shot.seq : -1) : (video.readyState >= 2 ? video.currentTime : -1);
+    if (fresh === -1 || fresh === lastVT) return;
     const doHand = now - lastHand >= 1000 / CFG.handFps - 4;
     const doPose = poseModel && now - lastPoseT >= 1000 / CFG.poseFps - 4;
     if (!doHand && !doPose) return;
-    lastVT = video.currentTime;
+    lastVT = fresh;
     const f = grabFrame(), ts = Math.max(now, lastTs + 1); lastTs = ts;   // MediaPipe pide tiempos siempre crecientes
     const pkt = { w: f.width, h: f.height };
     const t0 = performance.now();

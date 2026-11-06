@@ -54,6 +54,8 @@ const CFG = {
   // Puño = agarra (primero los grandes que estén en tu mano; si no hay, el más cercano) · mano abierta = suelta / lanza.
   hands: false,
   camname: 'obs',         // cámara por nombre (OBS Virtual Camera); si no la encuentra usa la cámara "cam"
+  camAvoid: '',           // evita cámaras con este nombre (la vista previa evita 'obs' para usar tu webcam)
+  obsRotate: 90,          // si se termina usando la cámara de OBS (y no pusiste ?rotate=), se gira así
   cam: 0,
   rotate: 90,             // igual que live-fx: 0, 90, 180, 270
   fit: 'contain',         // contain | cover (igual que tu fuente de cámara)
@@ -84,6 +86,7 @@ const CFG = {
   const n = (k, d) => (Q.has(k) && Q.get(k) !== '' && !isNaN(+Q.get(k))) ? +Q.get(k) : d;
   if (Q.has('hands')) CFG.hands = Q.get('hands') === '1';
   if (Q.has('camname')) CFG.camname = Q.get('camname').toLowerCase();
+  CFG.rotateSet = Q.has('rotate');
   CFG.cam = n('cam', CFG.cam); CFG.rotate = ((n('rotate', CFG.rotate) % 360) + 360) % 360;
   if (Q.has('fit')) CFG.fit = Q.get('fit') === 'cover' ? 'cover' : 'contain';
   if (Q.has('mirror')) CFG.mirror = Q.get('mirror') === '1';
@@ -513,7 +516,7 @@ function loop(t) {
 
   // dibujo
   ctx.clearRect(0, 0, W, H);
-  if ((CFG.debug || CFG.showCam) && HANDS.frame && !(CFG.showCam && CFG.rotate === 0)) { const r = camRect(); ctx.globalAlpha = CFG.showCam ? 1 : 0.35; ctx.drawImage(HANDS.frame, r.x, r.y, r.w, r.h); ctx.globalAlpha = 1; }
+  if (CFG.debug && HANDS.frame && !CFG.showCam) { const r = camRect(); ctx.globalAlpha = 0.35; ctx.drawImage(HANDS.frame, r.x, r.y, r.w, r.h); ctx.globalAlpha = 1; }
   for (const r of rings) {
     const k = r.t / 0.7;
     ctx.globalAlpha = (1 - k) * 0.8; ctx.strokeStyle = '#ffd36b'; ctx.lineWidth = 4 * (1 - k) + 1;
@@ -720,25 +723,41 @@ function drawHandsDebug(tn) {
   ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(6, 6, Math.min(W - 12, ctx.measureText(st).width + 12), 20);
   ctx.fillStyle = '#fff'; ctx.fillText(st, 12, 10, W - 24);
 }
-async function openCamera() {              // misma lógica que live-fx (no abre la webcam física si no hace falta)
+async function openCamera() {              // misma idea que live-fx (no abre la webcam física si no hace falta)
   const C = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
   const gum = id => navigator.mediaDevices.getUserMedia({ video: id ? { ...C, deviceId: { exact: id } } : C });
   const list = async () => (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === 'videoinput');
-  const pick = cams => (CFG.camname && cams.find(c => (c.label || '').toLowerCase().includes(CFG.camname))) || cams[CFG.cam];
-  const KEY = 'regalos-cam-' + (CFG.camname || CFG.cam);
+  const low = c => (c.label || '').toLowerCase();
+  const okLabel = l => (!CFG.camname || l.includes(CFG.camname)) && !(CFG.camAvoid && l.includes(CFG.camAvoid));
+  const pick = cams => cams.find(c => okLabel(low(c)))                                         // la que pediste
+    || (CFG.camAvoid && cams.find(c => !low(c).includes(CFG.camAvoid)))                           // cualquiera que no sea la evitada
+    || cams[CFG.cam] || cams[0];
+  const KEY = 'regalos-cam-' + (CFG.camname || CFG.cam) + (CFG.camAvoid ? '-sin-' + CFG.camAvoid : '');
   const remember = s => { const tr = s.getVideoTracks()[0]; HANDS.label = tr?.label || '?'; try { localStorage.setItem(KEY, tr.getSettings().deviceId || ''); } catch {} return s; };
+  const labelOf = s => (s.getVideoTracks()[0]?.label || '').toLowerCase();
   let cams = await list();
-  if (cams.some(c => c.label)) { const c = pick(cams); if (!c) throw new Error('no hay cámara'); return remember(await gum(c.deviceId)); }
-  let saved = null; try { saved = localStorage.getItem(KEY); } catch {}
-  if (saved) { try { return remember(await gum(saved)); } catch (e) { console.warn('cámara recordada falló', e); } }
-  try {
-    const s = await gum(null), label = (s.getVideoTracks()[0]?.label || '').toLowerCase();
-    if (!CFG.camname || label.includes(CFG.camname)) return remember(s);
-    s.getTracks().forEach(t => t.stop());
-  } catch (e) { if (e.name === 'NotAllowedError') throw e; }
-  cams = await list(); const c = pick(cams); if (!c) throw new Error('no encontré la cámara ' + (CFG.camname || CFG.cam));
-  return remember(await gum(c.deviceId));
+  if (!cams.some(c => c.label)) {          // el navegador aún no muestra los nombres
+    let saved = null; try { saved = localStorage.getItem(KEY); } catch {}
+    if (saved) { try { const s = await gum(saved); if (okLabel(labelOf(s))) return remember(s); s.getTracks().forEach(t => t.stop()); } catch (e) { console.warn('cámara recordada falló', e); } }
+    try {
+      const s = await gum(null);
+      if (okLabel(labelOf(s))) return remember(s);
+      s.getTracks().forEach(t => t.stop());
+    } catch (e) { if (e.name === 'NotAllowedError') throw new Error('permiso de cámara negado'); }
+    cams = await list();
+  }
+  const c = pick(cams); if (!c) throw new Error('no encontré ninguna cámara');
+  try { return remember(await gum(c.deviceId)); }
+  catch (e) { throw new Error(`no pude abrir "${c.label || 'la cámara'}" (${e.name === 'NotReadableError' ? 'la está usando otro programa' : e.message})`); }
 }
+// muestra la cámara de fondo (vista previa), también girada
+function placeVideo() {
+  if (!video.parentNode) return;
+  const rot = CFG.rotate === 90 || CFG.rotate === 270;
+  Object.assign(video.style, { position: 'fixed', left: '50%', top: '50%', width: (rot ? H : W) + 'px', height: (rot ? W : H) + 'px',
+    objectFit: CFG.fit, zIndex: '-1', transform: `translate(-50%,-50%) ${CFG.mirror ? 'scaleX(-1) ' : ''}rotate(${CFG.rotate}deg)` });
+}
+addEventListener('resize', placeVideo);
 async function startHands() {
   try {
     HANDS.status = 'cargando modelo…';
@@ -752,19 +771,16 @@ async function startHands() {
     let model; try { model = await make('GPU'); } catch (e) { console.warn('GPU no disponible, CPU', e); model = await make('CPU'); }
     HANDS.status = 'abriendo cámara…';
     video.srcObject = await openCamera(); await video.play();
-    if (CFG.showCam && CFG.rotate === 0) {   // la cámara de fondo (solo para probar en el navegador)
-      Object.assign(video.style, { position: 'fixed', inset: '0', width: '100%', height: '100%', objectFit: CFG.fit, zIndex: '-1',
-        transform: CFG.mirror ? 'scaleX(-1)' : '' });
-      document.body.style.background = '#111'; document.body.prepend(video);
-    }
-    HANDS.status = HANDS.label;
+    if (HANDS.label.toLowerCase().includes('obs') && !CFG.rotateSet) CFG.rotate = CFG.obsRotate;   // la cámara de OBS viene girada
+    if (CFG.showCam) { document.body.style.background = '#111'; document.body.prepend(video); placeVideo(); }   // cámara de fondo (para probar en el navegador)
+    HANDS.status = HANDS.label + (CFG.rotate ? ` · girada ${CFG.rotate}°` : '');
     console.log('[Regalos] mano lista con cámara:', HANDS.label);
     let lastVT = -1, lastT = 0, frames = 0, fpsT = performance.now();
     const tick = () => {
       const t = performance.now();
       if (video.readyState >= 2 && video.currentTime !== lastVT && t - lastT >= 1000 / CFG.handFps - 4) {
         lastVT = video.currentTime; lastT = t;
-        const f = grabFrame(); if (CFG.debug || CFG.showCam) HANDS.frame = f;
+        const f = grabFrame(); if (CFG.debug) HANDS.frame = f;
         const res = model.detectForVideo(f, t);
         updateHands((res.landmarks || []).map(handFromLandmarks), now());
         frames++; if (t - fpsT > 1000) { HANDS.fps = frames; frames = 0; fpsT = t; }

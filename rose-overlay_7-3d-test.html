@@ -853,7 +853,7 @@ function startManos() {                    // sin cámara ni modelo: los puntos 
   Object.defineProperty(video, 'videoWidth', { get: () => dims.w || 720 });
   Object.defineProperty(video, 'videoHeight', { get: () => dims.h || 1280 });
   let frames = 0, fpsT = now();
-  const st = listenManos(pkt => {
+  const st = window.__manosSt = listenManos(pkt => {
     if (!pkt.hands) return;                                // paquete solo de cuerpo
     dims.w = pkt.w; dims.h = pkt.h;
     updateHands(pkt.hands.map(handFromLandmarks), now());
@@ -926,6 +926,7 @@ connect();
    ════════════════════════════════════════════════════════════════ */
 (() => {
   const Q = new URLSearchParams(location.search), qn = (k, d) => (Q.has(k) && !isNaN(+Q.get(k))) ? +Q.get(k) : d;
+  if (CFG.hands && !Q.has('debug')) { CFG.debug = true; wake(); }      // prueba: círculo de alcance visible
   let rate = qn('rate', 4); const bigEvery = qn('big', 8), auto = Q.get('auto') !== '0', showHud = Q.get('hud') !== '0';
   const hud = document.createElement('div');
   Object.assign(hud.style, { position: 'fixed', left: '24px', top: '24px', zIndex: 10, padding: '16px 20px', borderRadius: '14px',
@@ -964,7 +965,10 @@ connect();
       `trabajo: ${wAvg.toFixed(1)} ms prom · ${wMax.toFixed(0)} ms máx`,
       `regalos en pantalla: ${n} / ${CFG.maxItems}   lanzados: ${spawned}`,
       `3D: ${CFG.ficha3d}   tamaño: ${CFG.baseSize.toFixed(3)}   pantalla: ${W}×${H}`,
-      `peor FPS (con más de 5 regalos): ${worst === Infinity ? '—' : worst}`, '', 'FPS según cantidad:', ...rows,
+      `peor FPS (con más de 5 regalos): ${worst === Infinity ? '—' : worst}`,
+      '', CFG.hands ? `MANO: ${HANDS.status || '—'}` : 'MANO: apagada (agrega ?hands=1&manos=1)',
+      ...(CFG.hands ? [`  ${HANDS.list.length} mano(s) · ${HANDS.fps} por seg` + (CFG.manos ? ` · paquetes ${window.__manosSt ? window.__manosSt.n : 0}` : ''),
+        ...HANDS.list.map(h => `  mano ${h.id}: ${h.held ? 'AGARRANDO ✓' : h.fist ? 'puño (nada al alcance)' : h.armed ? 'abierta' : '…'}  en ${Math.round(h.x)},${Math.round(h.y)}`)] : []), '', 'FPS según cantidad:', ...rows,
       '', 'R reiniciar · espacio pausa · +/− velocidad'].join('\n');
     frames = []; work = [];
   }, 1000);

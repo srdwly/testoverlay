@@ -57,34 +57,34 @@
 <style>
   html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
   canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; }
-  #cam { opacity: 0; object-fit: contain; }
-  body.debug #cam { opacity: .5; }
+  #bfxCam { opacity: 0; object-fit: contain; }
+  body.debug #bfxCam { opacity: .5; }
   body.demo { background: radial-gradient(ellipse at 50% 45%, #2a2233 0%, #0d0b10 70%); }
-  #status {
+  #bfxStatus {
     position: fixed; left: 10px; top: 10px; padding: 6px 10px; border-radius: 6px; z-index: 5;
     font: 12px/1.4 ui-monospace, Consolas, monospace; color: #fff; background: rgba(0,0,0,.7);
     display: none; white-space: pre; pointer-events: none;
   }
-  body.debug #status { display: block; }
-  #panel {
+  body.debug #bfxStatus { display: block; }
+  #bfxPanel {
     position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 6;
     display: none; flex-wrap: wrap; gap: 6px; justify-content: center; max-width: 96vw;
   }
-  body.panel #panel { display: flex; }
-  #panel button {
+  body.panel #bfxPanel { display: flex; }
+  #bfxPanel button {
     font: 700 13px system-ui, sans-serif; color: #fff; background: rgba(20,16,24,.85);
     border: 1px solid rgba(255,176,0,.55); border-radius: 999px; padding: 7px 12px; cursor: pointer;
   }
-  #panel button:hover { background: rgba(255,140,0,.35); }
+  #bfxPanel button:hover { background: rgba(255,140,0,.35); }
 </style>
 </head>
 <body>
-<video id="vid" playsinline muted style="display:none"></video>
-<canvas id="cam"></canvas>
-<canvas id="dbg"></canvas>
-<canvas id="fx"></canvas>
-<div id="status">iniciando…</div>
-<div id="panel"></div>
+<video id="bfxVid" playsinline muted style="display:none"></video>
+<canvas id="bfxCam"></canvas>
+<canvas id="bfxDbg"></canvas>
+<canvas id="bfxFx"></canvas>
+<div id="bfxStatus">iniciando…</div>
+<div id="bfxPanel"></div>
 
 <script type="module">
 // ───────────────────────── Config ─────────────────────────
@@ -124,11 +124,11 @@ const CFG = {
 if (CFG.debug) document.body.classList.add('debug');
 if (CFG.demo) document.body.classList.add('demo');
 if (CFG.panel) document.body.classList.add('panel');
-const statusEl = document.getElementById('status');
+const statusEl = document.getElementById('bfxStatus');
 
 // ───────────────────────── Canvas + utilidades ─────────────────────────
-const cv = document.getElementById('fx'), ctx = cv.getContext('2d');
-const dbg = document.getElementById('dbg'), dctx = dbg.getContext('2d');
+const cv = document.getElementById('bfxFx'), ctx = cv.getContext('2d');
+const dbg = document.getElementById('bfxDbg'), dctx = dbg.getContext('2d');
 let W = 0, H = 0, U = 1, CX = 0, CY = 0;
 function resize() {
   W = innerWidth; H = innerHeight;
@@ -855,7 +855,7 @@ addEventListener('keydown', (e) => {
   if (i >= 0) send(ORDER[i]);
   if (e.key === '0') startDemo();
 });
-const panel = document.getElementById('panel');
+const panel = document.getElementById('bfxPanel');
 ORDER.forEach((id, i) => { const b = document.createElement('button'); b.textContent = `${i + 1} · ${FX[id].label}`; b.onclick = () => send(id); panel.appendChild(b); });
 
 let demoTimer = null;
@@ -1000,7 +1000,7 @@ function onHands(hands, now) {
 }
 
 // cámara (misma lógica que live-fx: rotación, contain/cover, cámara de OBS por nombre)
-const video = document.getElementById('vid'), camView = document.getElementById('cam');
+const video = document.getElementById('bfxVid'), camView = document.getElementById('bfxCam');
 const frameCv = document.createElement('canvas'), fctx = frameCv.getContext('2d');
 let ROT = CFG.rotate === 'auto' ? 90 : CFG.rotate;
 const frameSize = () => { const w = video.videoWidth || 1280, h = video.videoHeight || 720; return (ROT === 90 || ROT === 270) ? [h, w] : [w, h]; };

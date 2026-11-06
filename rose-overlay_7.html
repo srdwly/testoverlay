@@ -29,7 +29,7 @@ const CFG = {
   bounce: 0.25,           // rebote al chocar (0 = nada, 1 = pelota)
   friction: 0.35,         // roce entre regalos
 
-  maxItems: 90,           // máximo de regalos en pantalla (los más viejos se desvanecen)
+  maxItems: 135,          // máximo de regalos en pantalla (los más viejos se desvanecen)
   pileMaxHeight: 0.42,    // si la pila supera esta altura (proporción del alto), se van los más viejos
   lifeSec: 90,            // cada regalo apilado se desvanece después de este tiempo
   maxSpawnPerGift: 60,    // tope de piezas por combo (para combos enormes)
@@ -67,6 +67,15 @@ const CFG = {
   lostMs: 500,            // si no se ve la mano por este tiempo, el regalo se suelta
   debug: false,           // ?debug=1 muestra la cámara, los puntos de la mano y el alcance
   mouse: false,           // ?mouse=1 para probar sin cámara: mantener clic = puño
+  showCam: false,         // ?showcam=1 muestra la cámara detrás de los regalos (para probar en el navegador)
+  // ── FICHAS 3D ──  ?ficha=siempre | mano | 0
+  // 'siempre' = giran en 3D desde que los lanzan y quedan un poco inclinados en la pila
+  // 'mano'    = planos como antes; se vuelven ficha 3D solo al levantarlos con el puño (y vuelven a planos al asentarse)
+  // 'off'     = todo plano (como la versión anterior)
+  ficha3d: 'siempre',
+  fichaGrosor: 0.22,      // grosor de la ficha (proporción del tamaño del regalo)
+  fichaInclina: 28,       // inclinación máxima (grados) con la que quedan en la pila en modo 'siempre'
+  floorUp: 0,             // sube el piso (proporción del alto). Ej.: 0.15 → la pila queda un poco más arriba
 };
 { const Q = new URLSearchParams(location.search);               // interruptores por el enlace: ?kernel=1  ?mode=lluvia
   if (Q.has('kernel')) CFG.kernel = Q.get('kernel') === '1';
@@ -81,7 +90,11 @@ const CFG = {
   CFG.grabRadius = n('grab', CFG.grabRadius); CFG.fistFingers = n('fingers', CFG.fistFingers);
   CFG.throwMult = n('throw', CFG.throwMult); CFG.handFps = n('handfps', CFG.handFps); CFG.detSize = n('detsize', CFG.detSize);
   if (Q.has('debug')) CFG.debug = Q.get('debug') === '1';
-  if (Q.has('mouse')) CFG.mouse = Q.get('mouse') === '1'; }
+  if (Q.has('mouse')) CFG.mouse = Q.get('mouse') === '1';
+  if (Q.has('showcam')) CFG.showCam = Q.get('showcam') === '1';
+  CFG.floorUp = n('floorup', CFG.floorUp);
+  if (Q.has('ficha')) { const f = Q.get('ficha'); CFG.ficha3d = f === 'mano' ? 'mano' : (f === '0' || f === 'off') ? 'off' : 'siempre'; }
+  CFG.maxItems = n('max', CFG.maxItems); }
 
 /* ════════════════════════════════════════════════════════════════ */
 const canvas = document.getElementById('c');
@@ -98,7 +111,31 @@ addEventListener('resize', resize);
 
 const now = () => performance.now();
 const rand = (a, b) => a + Math.random() * (b - a);
+const FLOOR = () => H * (1 - CFG.floorUp);              // altura del piso
 const L = () => W * CFG.areaLeft / 100, R = () => W * CFG.areaRight / 100;
+const F3D = () => CFG.ficha3d !== 'off';
+
+/* ── Matrices 3×3 (por filas) para las fichas 3D ── */
+const mmul = (a, b) => [
+  a[0] * b[0] + a[1] * b[3] + a[2] * b[6], a[0] * b[1] + a[1] * b[4] + a[2] * b[7], a[0] * b[2] + a[1] * b[5] + a[2] * b[8],
+  a[3] * b[0] + a[4] * b[3] + a[5] * b[6], a[3] * b[1] + a[4] * b[4] + a[5] * b[7], a[3] * b[2] + a[4] * b[5] + a[5] * b[8],
+  a[6] * b[0] + a[7] * b[3] + a[8] * b[6], a[6] * b[1] + a[7] * b[4] + a[8] * b[7], a[6] * b[2] + a[7] * b[5] + a[8] * b[8]];
+const mT = m => [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]];
+const IDM = () => [1, 0, 0, 0, 1, 0, 0, 0, 1];
+const rotY = t => { const c = Math.cos(t), s = Math.sin(t); return [c, 0, s, 0, 1, 0, -s, 0, c]; };
+const rotX = t => { const c = Math.cos(t), s = Math.sin(t); return [1, 0, 0, 0, c, -s, 0, s, c]; };
+const rotZ = t => { const c = Math.cos(t), s = Math.sin(t); return [c, -s, 0, s, c, 0, 0, 0, 1]; };
+function rotAxis(x, y, z, t) {                       // rotación de t radianes alrededor del eje (x,y,z) unitario
+  const c = Math.cos(t), s = Math.sin(t), k = 1 - c;
+  return [c + x * x * k, x * y * k - z * s, x * z * k + y * s, y * x * k + z * s, c + y * y * k, y * z * k - x * s, z * x * k - y * s, z * y * k + x * s, c + z * z * k];
+}
+function ortho(m) {                                  // corrige el redondeo (columnas perpendiculares)
+  let ax = m[0], ay = m[3], az = m[6], l = Math.hypot(ax, ay, az) || 1; ax /= l; ay /= l; az /= l;
+  let bx = m[1], by = m[4], bz = m[7]; const d = ax * bx + ay * by + az * bz; bx -= d * ax; by -= d * ay; bz -= d * az;
+  l = Math.hypot(bx, by, bz) || 1; bx /= l; by /= l; bz /= l;
+  return [ax, bx, ay * bz - az * by, ay, by, az * bx - ax * bz, az, bz, ax * by - ay * bx];
+}
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 /* ── Sprites: cada imagen de regalo se pre-dibuja una vez con su sombra ── */
 const sprites = {};                 // url → { canvas, ready }
@@ -126,6 +163,19 @@ function shaded(src, shade) {
   return c;
 }
 const fallbackShades = [0, 1, 2].map(k => shaded(fallback, k));
+// canto y reverso de la ficha (sin sombra, más oscuros) — se pre-dibujan una vez por regalo
+function tint(drawFn, fill) {
+  const c = document.createElement('canvas'); c.width = c.height = SPR;
+  const x = c.getContext('2d'); drawFn(x);
+  x.globalCompositeOperation = 'source-atop'; x.fillStyle = fill; x.fillRect(0, 0, SPR, SPR);
+  return c;
+}
+const tokenParts = draw => ({ edge: tint(draw, 'rgba(45,25,10,.6)'), back: tint(draw, 'rgba(15,8,20,.35)') });
+const fallbackToken = tokenParts(x => {
+  x.font = `${SPR * 0.72}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",serif`;
+  x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('🌹', SPR / 2, SPR / 2 + 4);
+});
+function getToken(url) { return url && sprites[url] && sprites[url].ready ? sprites[url].token : fallbackToken; }
 function getSprite(url, shade = 0) {
   if (!url) return fallbackShades[shade];
   let s = sprites[url];
@@ -133,7 +183,8 @@ function getSprite(url, shade = 0) {
     s = sprites[url] = { shades: null, ready: false };
     const img = new Image();
     img.crossOrigin = 'anonymous';
-    img.onload = () => { const base = makeSprite(x => x.drawImage(img, 10, 8, SPR - 20, SPR - 20)); s.shades = [0, 1, 2].map(k => shaded(base, k)); s.ready = true; wake(); };
+    img.onload = () => { const base = makeSprite(x => x.drawImage(img, 10, 8, SPR - 20, SPR - 20)); s.shades = [0, 1, 2].map(k => shaded(base, k));
+      s.token = tokenParts(x => x.drawImage(img, 10, 8, SPR - 20, SPR - 20)); s.ready = true; wake(); };
     img.src = url;
   }
   return s.ready ? s.shades[shade] : fallbackShades[shade];
@@ -208,6 +259,12 @@ function spawnOne(url, coins) {
     b.throw = { t0: now(), dur: rand(750, 1000), sx, sy: H + r * 3, tx: x, ty: H * rand(0.3, 0.5), spin: rand(-14, 14), popAt: CFG.kernel ? rand(0.32, 0.5) : -1, popped: !CFG.kernel };
     b.x = sx; b.y = H + r * 3;
   }
+  if (CFG.ficha3d === 'siempre') {                                   // ficha 3D desde el lanzamiento: gira como moneda
+    const ang = rand(0, 6.28);
+    b.T = rotAxis(Math.cos(ang), Math.sin(ang), 0, rand(0.2, 1.1));
+    b.wy = rand(CFG.mode === 'lanzado' ? 9 : 5, CFG.mode === 'lanzado' ? 16 : 11) * (Math.random() < 0.5 ? -1 : 1);
+    b.wx = rand(-2.5, 2.5);
+  }
   bodies.push(b);
   wake();
 }
@@ -245,7 +302,7 @@ function step(dt) {
       const tx = h.x + h.vx * 0.04 + b.hx, ty = h.y + h.vy * 0.04 + b.hy;
       b.vx = (tx - b.x) * 22; b.vy = (ty - b.y) * 22;
       b.x += b.vx * dt; b.y += b.vy * dt;
-      b.av = b.av * 0.9 + b.vx / b.r * 0.004; b.a += b.av * dt;
+      if (b.rel) b.av = 0; else { b.av = b.av * 0.9 + b.vx / b.r * 0.004; b.a += b.av * dt; }   // con ficha 3D gira con tu mano
       b.z += (0 - b.z) * Math.min(1, dt * 6);                        // al levantarlo pasa adelante
       continue;
     }
@@ -302,7 +359,7 @@ function step(dt) {
   // piso y paredes
   for (const b of bodies) {
     if (b.sleep || b.fade || b.throw) continue;
-    const floor = H - b.z * H * CFG.depthFloor, k = CFG.overlap;   // los del fondo se apoyan un poco más arriba
+    const floor = FLOOR() - b.z * H * CFG.depthFloor, k = CFG.overlap;   // los del fondo se apoyan un poco más arriba
     if (b.held) {                                                   // en la mano: solo no atravesar el piso ni salir de la pantalla
       b.y = Math.min(b.y, floor - b.r * k); b.x = Math.max(b.r * k, Math.min(W - b.r * k, b.x));
       b.pvy = 0; b.rest = 0; b.contact = false; continue;
@@ -330,6 +387,49 @@ function step(dt) {
   }
 }
 
+/* ── Ficha 3D: giro, asentarse en la pila, seguir la rotación de la mano ── */
+function updateTilt(b, dt) {
+  b.tilting = false;
+  if (b.held) {
+    const h = b.held;
+    if (h.R && b.rel) { const tg = mmul(h.R, b.rel), k = Math.min(1, dt * 14); b.T = ortho(b.T.map((v, i) => v + (tg[i] - v) * k)); b.tilting = true; }
+    return;
+  }
+  if (!b.T) return;
+  const settled = !b.throw && (b.landed || b.hits > 0 || b.sleep || b.rest > 0.1);
+  if (b.wx || b.wy) {
+    b.T = mmul(b.T, rotY(b.wy * dt)); if (b.wx) b.T = mmul(b.T, rotX(b.wx * dt));
+    const damp = b.throw ? 1 : Math.pow(settled ? 0.04 : 0.7, dt);
+    b.wx *= damp; b.wy *= damp; if (Math.abs(b.wx) + Math.abs(b.wy) < 0.08) b.wx = b.wy = 0;
+    b.T = ortho(b.T); b.tilting = true;
+  }
+  if (settled) {                                                     // se asienta mirando a la cámara (con un poco de inclinación)
+    const nx = b.T[2], ny = b.T[5], th = Math.acos(clamp(b.T[8], -1, 1));
+    const lim = CFG.ficha3d === 'siempre' ? CFG.fichaInclina * Math.PI / 180 : 0;
+    if (th > lim + 0.01) {
+      let ax = ny, ay = -nx; const l = Math.hypot(ax, ay); if (l < 1e-4) { ax = 1; ay = 0; } else { ax /= l; ay /= l; }
+      b.T = mmul(rotAxis(ax, ay, 0, Math.min(th - lim, (b.sleep ? 3 : 5) * dt)), b.T); b.tilting = true;
+    } else if (!lim && !b.wx && !b.wy) { b.a += Math.atan2(b.T[3], b.T[0]); b.T = null; }   // plano otra vez: dibujo 2D (más liviano)
+  }
+}
+// dibuja la ficha: capas del canto de atrás hacia adelante y la cara que mira a la cámara al final
+function drawToken(b, spr, sc) {
+  const T = b.T, c = Math.cos(b.a), s = Math.sin(b.a), r = b.r * sc;
+  const e0 = (c * T[0] - s * T[3]) * r, e1 = (s * T[0] + c * T[3]) * r;       // eje x de la ficha en pantalla
+  const f0 = (c * T[1] - s * T[4]) * r, f1 = (s * T[1] + c * T[4]) * r;       // eje y
+  const th = CFG.fichaGrosor * r, front = T[8] >= 0;
+  const dx = (c * T[2] - s * T[5]) * th * (front ? 1 : -1), dy = (s * T[2] + c * T[5]) * th * (front ? 1 : -1);
+  const len = Math.hypot(dx, dy), layers = len < 0.7 ? 0 : Math.min(16, Math.ceil(len / (1.1 + 2 * Math.abs(T[8]))));   // de canto: más capas (sin rayas)
+  const B = ctx.getTransform(), tok = getToken(b.url);
+  for (let i = 0; i <= layers; i++) {
+    const k = layers ? i / layers - 0.5 : 0.5, ox = dx * k, oy = dy * k, last = i === layers;
+    ctx.setTransform(B.a * e0 + B.c * e1, B.b * e0 + B.d * e1, B.a * f0 + B.c * f1, B.b * f0 + B.d * f1,
+                     B.a * ox + B.c * oy + B.e, B.b * ox + B.d * oy + B.f);
+    ctx.drawImage(last ? (front ? spr : tok.back) : tok.edge, -1, -1, 2, 2);
+  }
+  ctx.setTransform(B);
+}
+
 /* ── Impacto de palomita: pop de color + los vecinos saltan ── */
 const hops = [];                                     // saltos programados (la onda avanza con la distancia)
 function impact(b, speed, y) {
@@ -355,6 +455,7 @@ function hop(n, s) {
   n.vy = Math.min(n.vy, -s); n.vx += rand(-1, 1) * s * 0.25; n.av += rand(-8, 8);
   if (CFG.squash) n.sqv -= Math.min(6, s * 0.006);                // se estira al saltar
   n.hits = Math.min(n.hits, 1); n.landed = true;                    // rebota un poco al volver, sin causar otra cadena
+  if (CFG.ficha3d === 'siempre') { n.T = n.T || IDM(); n.wy += rand(-1, 1) * Math.min(9, s * 0.012); n.wx += rand(-2, 2); }
 }
 /* ── Nubecita de color (el "pop") ── */
 function puff(x, y, r, cols, n, kernelPop) {
@@ -393,6 +494,7 @@ function loop(t) {
   const tn = now();
   updateThrows(tn);
   for (let i = hops.length - 1; i >= 0; i--) if (hops[i].at <= tn) { const h = hops.splice(i, 1)[0]; if (bodies.includes(h.n) && !h.n.fade) hop(h.n, h.s); }
+  if (F3D()) for (const b of bodies) updateTilt(b, dt);
   for (const b of bodies) if (b.sq || b.sqv) {                       // resorte del aplastado
     b.sqv += (-170 * b.sq - 11 * b.sqv) * dt; b.sq += b.sqv * dt;
     b.sq = Math.max(-0.35, Math.min(0.4, b.sq));
@@ -400,7 +502,7 @@ function loop(t) {
   }
   for (const b of bodies) if (!b.fade && b.sleep && tn - b.born > CFG.lifeSec * 1000) b.fade = tn;
   for (const b of bodies) { const tl = b.held ? 1 : 0, l = b.lift || 0; if (l !== tl) { b.lift = Math.abs(tl - l) < 0.01 ? tl : l + (tl - l) * Math.min(1, dt * 10); } }
-  if (bodies.some(b => b.sleep && !b.fade && b.y - b.r < H * (1 - CFG.pileMaxHeight))) fadeOldest(2);
+  if (bodies.some(b => b.sleep && !b.fade && b.y - b.r < FLOOR() - H * CFG.pileMaxHeight)) fadeOldest(2);
   bodies = bodies.filter(b => !b.fade || tn - b.fade < 600);
   if (bodies.some(b => b.fade)) bodies.forEach(b => { if (b.sleep && !b.fade) { b.sleep = false; b.rest = 0; } });   // los de arriba se acomodan
 
@@ -411,7 +513,7 @@ function loop(t) {
 
   // dibujo
   ctx.clearRect(0, 0, W, H);
-  if (CFG.debug && HANDS.frame) { const r = camRect(); ctx.globalAlpha = 0.35; ctx.drawImage(HANDS.frame, r.x, r.y, r.w, r.h); ctx.globalAlpha = 1; }
+  if ((CFG.debug || CFG.showCam) && HANDS.frame && !(CFG.showCam && CFG.rotate === 0)) { const r = camRect(); ctx.globalAlpha = CFG.showCam ? 1 : 0.35; ctx.drawImage(HANDS.frame, r.x, r.y, r.w, r.h); ctx.globalAlpha = 1; }
   for (const r of rings) {
     const k = r.t / 0.7;
     ctx.globalAlpha = (1 - k) * 0.8; ctx.strokeStyle = '#ffd36b'; ctx.lineWidth = 4 * (1 - k) + 1;
@@ -422,7 +524,7 @@ function loop(t) {
   // sombras de contacto en el piso (dan volumen)
   for (const b of order) {
     if (b.throw) continue;
-    const floor = H - b.z * H * CFG.depthFloor, gap = floor - (b.y + b.r * CFG.overlap);
+    const floor = FLOOR() - b.z * H * CFG.depthFloor, gap = floor - (b.y + b.r * CFG.overlap);
     if (gap > b.r * 2) continue;
     ctx.globalAlpha = Math.max(0, 1 - gap / (b.r * 2)) * (b.fade ? 0.4 : 0.8);
     ctx.drawImage(shadowSpr, b.x - b.r * 1.1, floor - b.r * 0.22, b.r * 2.2, b.r * 0.55);
@@ -450,8 +552,8 @@ function loop(t) {
     const q = b.sq || 0;
     ctx.save(); ctx.translate(b.x, b.y + b.r * q * 0.6);             // aplastado: se ensancha y baja, sin despegarse del piso
     if (q) ctx.scale(1 + q, 1 - q);
-    ctx.rotate(b.a); ctx.scale(sc * k2, sc * k2);
-    ctx.drawImage(spr, -b.r, -b.r, b.r * 2, b.r * 2);
+    if (b.T && !isKernel) drawToken(b, spr, sc * k2);
+    else { ctx.rotate(b.a); ctx.scale(sc * k2, sc * k2); ctx.drawImage(spr, -b.r, -b.r, b.r * 2, b.r * 2); }
     ctx.restore();
   }
   for (const p of parts) if (p.kind) {                              // nubecitas de color (color real, sin brillo)
@@ -467,7 +569,7 @@ function loop(t) {
   ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
   if (CFG.debug) drawHandsDebug(tn);
 
-  const busy = bodies.some(b => !b.sleep || b.fade || b.sq || b.lift) || parts.length || rings.length || pending > 0 || hops.length || bodies.some(b => b.throw)
+  const busy = bodies.some(b => !b.sleep || b.fade || b.sq || b.lift || b.tilting) || parts.length || rings.length || pending > 0 || hops.length || bodies.some(b => b.throw)
              || (CFG.debug && (CFG.hands || CFG.mouse));
   if (busy) requestAnimationFrame(loop); else running = false;          // sin nada que mover: 0 % de procesador
 }
@@ -524,7 +626,11 @@ function handFromLandmarks(L) {
   const x = palm.reduce((s, i) => s + S[i][0], 0) / 5, y = palm.reduce((s, i) => s + S[i][1], 0) / 5;
   const size = Math.max(d(0, 9), d(5, 17) * 1.3);                // tamaño de la palma (sirve de girada también)
   const curled = FINGERS.filter(([t, p]) => d(t, 0) < d(p, 0)).length;
-  return { x, y, size, fist: curled >= CFG.fistFingers, open: curled <= 1, pts: S };
+  // orientación 3D de la mano (muñeca y nudillos: no cambian al cerrar el puño)
+  const zs = camRect().w, P = i => [S[i][0], S[i][1], -(L[i].z || 0) * zs];
+  const p0 = P(0), p9 = P(9), p5 = P(5), p17 = P(17);
+  const u = [p9[0] - p0[0], p9[1] - p0[1], p9[2] - p0[2]], a = [p5[0] - p17[0], p5[1] - p17[1], p5[2] - p17[2]];
+  return { x, y, size, fist: curled >= CFG.fistFingers, open: curled <= 1, pts: S, u, a };
 }
 // seguimiento de cada mano entre cuadros + estados con confirmación
 function updateHands(found, t) {
@@ -539,6 +645,11 @@ function updateHands(found, t) {
     if (!best) { best = { id: HANDS.nextId++, x: m.x, y: m.y, vx: 0, vy: 0, fist: false, fistN: 0, openN: 0, armed: false, held: null, hist: [] }; HANDS.list.push(best); }
     used.add(best);
     Object.assign(best, { x: m.x, y: m.y, size: m.size, pts: m.pts, seen: t });
+    if (m.R) best.R = m.R;                                           // mouse: rotación con la rueda
+    else if (m.u) {                                                  // cámara: suaviza y arma la orientación de la mano
+      const mix = (o, v) => o ? o.map((q, i) => q + (v[i] - q) * 0.5) : v.slice();
+      best.u = mix(best.u, m.u); best.a = mix(best.a, m.a); best.R = handFrame(best.u, best.a);
+    }
     best.hist.push({ t, x: m.x, y: m.y });
     while (best.hist.length > 2 && t - best.hist[0].t > 160) best.hist.shift();
     const h0 = best.hist[0], dt = (t - h0.t) / 1000;              // velocidad de la mano (para lanzar)
@@ -554,6 +665,13 @@ function updateHands(found, t) {
   }
   if (HANDS.list.some(h => h.held) || CFG.debug) wake();
 }
+function handFrame(u, a) {
+  let l = Math.hypot(u[0], u[1], u[2]) || 1; const ux = u[0] / l, uy = u[1] / l, uz = u[2] / l;
+  let wx = uy * a[2] - uz * a[1], wy = uz * a[0] - ux * a[2], wz = ux * a[1] - uy * a[0];
+  l = Math.hypot(wx, wy, wz); if (l < 1e-6) return null; wx /= l; wy /= l; wz /= l;
+  const ex = uy * wz - uz * wy, ey = uz * wx - ux * wz, ez = ux * wy - uy * wx;
+  return [ex, ux, wx, ey, uy, wy, ez, uz, wz];
+}
 function grabWith(h) {
   const R = h.size * CFG.grabRadius;
   let best = null, bs = -Infinity;
@@ -567,6 +685,10 @@ function grabWith(h) {
   h.lastTry = { t: now(), ok: !!best };
   if (!best) return;
   h.held = best; best.held = h;
+  if (F3D()) {                                                       // pasa a ficha 3D y queda "pegada" a la orientación de tu mano
+    best.T = mmul(rotZ(best.a), best.T || IDM()); best.a = 0; best.av = 0; best.wx = best.wy = 0;
+    best.rel = h.R ? mmul(mT(h.R), best.T) : null;
+  }
   Object.assign(best, { sleep: false, rest: 0, landed: true, hits: 0, shade: 0, hx: best.x - h.x, hy: best.y - h.y });
   best.sqv -= 3;                                                     // se estira un poco al levantarlo
   for (const n of bodies) if (n !== best && Math.hypot(n.x - best.x, n.y - best.y) < best.r * 4) { n.sleep = false; n.rest = 0; }   // la pila se acomoda
@@ -580,6 +702,8 @@ function releaseFrom(h, lost) {
   const sp = Math.hypot(vx, vy), mx = 2600; if (sp > mx) { vx *= mx / sp; vy *= mx / sp; }
   Object.assign(b, { vx, vy, landed: false, hits: 0, sleep: false, rest: 0, born: now(), pvy: vy });
   b.av += vx / b.r * 0.25;
+  b.rel = null;
+  if (F3D() && b.T) { b.av = 0; b.wy = clamp(vx / b.r * 0.05, -14, 14); b.wx = clamp(-vy / b.r * 0.03, -9, 9); }   // al lanzarla sigue girando
   wake();
 }
 function drawHandsDebug(tn) {
@@ -592,8 +716,9 @@ function drawHandsDebug(tn) {
     const txt = h.held ? 'agarrando ' + (h.held.coins >= CFG.bigGiftCoins ? '(grande)' : '') : h.fist ? (h.lastTry && !h.lastTry.ok ? 'puño (nada cerca)' : 'puño') : h.armed ? 'abierta' : '…';
     ctx.fillText(txt, h.x + 8, h.y + h.size * CFG.grabRadius + 4);
   }
-  ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(6, 6, Math.min(W - 12, 330), 20);
-  ctx.fillStyle = '#fff'; ctx.fillText(`manos: ${HANDS.list.length} · ${HANDS.fps} fps · ${HANDS.status}`, 12, 10);
+  const st = `manos: ${HANDS.list.length} · ${HANDS.fps} fps · ${HANDS.status}`;
+  ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(6, 6, Math.min(W - 12, ctx.measureText(st).width + 12), 20);
+  ctx.fillStyle = '#fff'; ctx.fillText(st, 12, 10, W - 24);
 }
 async function openCamera() {              // misma lógica que live-fx (no abre la webcam física si no hace falta)
   const C = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
@@ -623,9 +748,15 @@ async function startHands() {
     const make = delegate => HandLandmarker.createFromOptions(fileset, {
       baseOptions: { modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task', delegate },
       runningMode: 'VIDEO', numHands: 2, minHandDetectionConfidence: 0.5, minHandPresenceConfidence: 0.5, minTrackingConfidence: 0.5 });
+    if (!navigator.mediaDevices?.getUserMedia) throw new Error('este navegador no permite la cámara aquí (abre el archivo en Chrome)');
     let model; try { model = await make('GPU'); } catch (e) { console.warn('GPU no disponible, CPU', e); model = await make('CPU'); }
     HANDS.status = 'abriendo cámara…';
     video.srcObject = await openCamera(); await video.play();
+    if (CFG.showCam && CFG.rotate === 0) {   // la cámara de fondo (solo para probar en el navegador)
+      Object.assign(video.style, { position: 'fixed', inset: '0', width: '100%', height: '100%', objectFit: CFG.fit, zIndex: '-1',
+        transform: CFG.mirror ? 'scaleX(-1)' : '' });
+      document.body.style.background = '#111'; document.body.prepend(video);
+    }
     HANDS.status = HANDS.label;
     console.log('[Regalos] mano lista con cámara:', HANDS.label);
     let lastVT = -1, lastT = 0, frames = 0, fpsT = performance.now();
@@ -633,7 +764,7 @@ async function startHands() {
       const t = performance.now();
       if (video.readyState >= 2 && video.currentTime !== lastVT && t - lastT >= 1000 / CFG.handFps - 4) {
         lastVT = video.currentTime; lastT = t;
-        const f = grabFrame(); if (CFG.debug) HANDS.frame = f;
+        const f = grabFrame(); if (CFG.debug || CFG.showCam) HANDS.frame = f;
         const res = model.detectForVideo(f, t);
         updateHands((res.landmarks || []).map(handFromLandmarks), now());
         frames++; if (t - fpsT > 1000) { HANDS.fps = frames; frames = 0; fpsT = t; }
@@ -642,18 +773,22 @@ async function startHands() {
     };
     tick();
   } catch (e) {
-    console.error('[Regalos] mano:', e); HANDS.status = '⚠ ' + e.message; CFG.debug = true; wake();
+    console.error('[Regalos] mano:', e); HANDS.status = '⚠ ' + e.message; CFG.debug = true;
+    if (!CFG.mouse) { CFG.mouse = true; startMouse(); HANDS.status += ' · prueba con el mouse'; }
+    wake();
   }
 }
 if (CFG.hands) startHands();
-if (CFG.mouse) {                           // prueba con el mouse: mantener clic = puño
-  let mx = -1, my = -1, down = false;
+if (CFG.mouse) startMouse();
+function startMouse() {                    // prueba con el mouse: mantener clic = puño
+  let mx = -1, my = -1, down = false, yaw = 0, roll = 0;
+  addEventListener('wheel', e => { if (e.shiftKey) roll += e.deltaY * 0.004; else yaw += e.deltaY * 0.004; }, { passive: true });   // rueda = girar la "mano"
   addEventListener('pointermove', e => { mx = e.clientX; my = e.clientY; });
   addEventListener('pointerdown', e => { mx = e.clientX; my = e.clientY; down = true; });
   addEventListener('pointerup', () => { down = false; });
   document.documentElement.style.cursor = 'crosshair';
-  setInterval(() => { if (mx >= 0) updateHands([{ x: mx, y: my, size: W * 0.07, fist: down, open: !down }], now()); }, 33);
-  HANDS.status = 'mouse: mantén clic para agarrar';
+  setInterval(() => { if (mx >= 0) updateHands([{ x: mx, y: my, size: W * 0.07, fist: down, open: !down, R: mmul(rotZ(roll), rotY(yaw)) }], now()); }, 33);
+  if (!CFG.hands) HANDS.status = 'mouse: mantén clic para agarrar · rueda = girar (Shift = inclinar)';
 }
 window.__hands = { feed: (list) => updateHands(list, now()), fromLandmarks: handFromLandmarks, get list() { return HANDS.list; } };   // para pruebas
 

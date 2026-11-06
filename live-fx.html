@@ -726,7 +726,7 @@ function drawDebug() {
   if (!CFG.debug) return;
   const { hands, strumIdx, pose: L, fps } = dbgState;
   const lines = [`modo: ${CFG.mode}${CFG.mirror ? ' (espejo)' : ''}  rot: ${ROT}°  mano: ${HAND}  fps: ${fps}  relay: ${relayState}`,
-                 `cámara: ${camLabel}`,
+                 `cámara: ${camLabel}  ${video.videoWidth}×${video.videoHeight}`,
                  `motor: ${perf.delegate}  ·  cuerpo ${perf.pose.toFixed(0)} ms  ·  mano ${perf.hand.toFixed(0)} ms  ·  análisis ${CFG.detSize}px`];
 
   // — modo estrella —
@@ -814,7 +814,7 @@ if (CFG.tikfinity) connectTikfinity();
    2) si recuerda la cámara que funcionó la última vez, la abre directo;
    3) solo si no sabe nada, pide permiso una vez (y si falla, vuelve a buscar por nombre). */
 async function openCamera() {
-  const C = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+  const C = { width: { ideal: 1280 }, height: { ideal: 1280 }, frameRate: { ideal: 30 }, resizeMode: { ideal: 'none' } };   // sin recortar: respeta la cámara vertical de OBS
   const gum = (id) => navigator.mediaDevices.getUserMedia({ video: id ? { ...C, deviceId: { exact: id } } : C });
   const list = async () => (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === 'videoinput');
   const pick = (cams) => CFG.camname ? cams.find(c => (c.label || '').toLowerCase().includes(CFG.camname)) : cams[CFG.cam];

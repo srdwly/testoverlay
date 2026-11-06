@@ -1041,7 +1041,7 @@ function drawDebug(hands, fps) {
   const B = G.bump;
   statusEl.textContent = [
     `BATTLE FX · ${CFG.mode}  fps ${fps}  rot ${ROT}°${CFG.rotate === 'auto' ? ' (auto)' : ''}  mano ${CFG.hand}`,
-    `cámara: ${camLabel}`,
+    `cámara: ${camLabel}  ${video.videoWidth}×${video.videoHeight}`,
     `OBS: ${obsState}`,
     hands.length >= 2 ? `choque de puños: ${B.fists ? 'dos puños ✓' : 'falta cerrar los puños'}  distancia ${B.d.toFixed(2)} (≤ ${CFG.bumpDist})${B.near ? '  ¡CHOQUE!' : ''}${B.armed ? '' : '  (separa los puños para repetir)'}`
       : 'choque de puños: necesito ver las dos manos',
@@ -1053,7 +1053,7 @@ function drawDebug(hands, fps) {
 }
 let camLabel = '?';
 async function openCamera() {
-  const C = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+  const C = { width: { ideal: 1280 }, height: { ideal: 1280 }, frameRate: { ideal: 30 }, resizeMode: { ideal: 'none' } };   // sin recortar: respeta la cámara vertical de OBS
   const gum = (id) => navigator.mediaDevices.getUserMedia({ video: id ? { ...C, deviceId: { exact: id } } : C });
   const list = async () => (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === 'videoinput');
   const pick = (cams) => (CFG.camname && cams.find(c => (c.label || '').toLowerCase().includes(CFG.camname))) || cams[CFG.cam];

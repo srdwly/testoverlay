@@ -724,7 +724,7 @@ function drawHandsDebug(tn) {
   ctx.fillStyle = '#fff'; ctx.fillText(st, 12, 10, W - 24);
 }
 async function openCamera() {              // misma idea que live-fx (no abre la webcam física si no hace falta)
-  const C = { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } };
+  const C = { width: { ideal: 1280 }, height: { ideal: 1280 }, frameRate: { ideal: 30 }, resizeMode: { ideal: 'none' } };   // sin recortar: respeta la cámara vertical de OBS
   const gum = id => navigator.mediaDevices.getUserMedia({ video: id ? { ...C, deviceId: { exact: id } } : C });
   const list = async () => (await navigator.mediaDevices.enumerateDevices()).filter(x => x.kind === 'videoinput');
   const low = c => (c.label || '').toLowerCase();
@@ -774,7 +774,7 @@ async function startHands() {
     if (HANDS.label.toLowerCase().includes('obs') && !CFG.rotateSet)                               // cámara de OBS: horizontal → se gira · vertical (ya girada en OBS) → no
       CFG.rotate = video.videoWidth > video.videoHeight ? CFG.obsRotate : 0;
     if (CFG.showCam) { document.body.style.background = '#111'; document.body.prepend(video); placeVideo(); }   // cámara de fondo (para probar en el navegador)
-    HANDS.status = HANDS.label + (CFG.rotate ? ` · girada ${CFG.rotate}°` : '');
+    HANDS.status = `${HANDS.label} ${video.videoWidth}×${video.videoHeight}` + (CFG.rotate ? ` · girada ${CFG.rotate}°` : '');
     console.log('[Regalos] mano lista con cámara:', HANDS.label);
     let lastVT = -1, lastT = 0, frames = 0, fpsT = performance.now();
     const tick = () => {

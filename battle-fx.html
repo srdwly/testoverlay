@@ -1180,6 +1180,8 @@ function listenManos(onPkt) {
   let S = '', N = 0, lastAt = 0, stale = true;
   const pts = (a, k) => { const L = []; for (let i = 0; i < a.length; i += 3) L.push({ x: a[i], y: a[i + 1], [k]: a[i + 2] }); return L; };
   const take = (d, via) => {
+    if (typeof d === 'string') { try { d = JSON.parse(d); } catch { return; } }
+    if (d && typeof d.j === 'string') { try { d = JSON.parse(d.j); } catch { return; } }   // manos.html lo manda como texto
     if (!d || typeof d !== 'object' || !d.w) return;
     if (d.s === S && d.n <= N) return;                     // el mismo paquete llega por dos caminos
     S = d.s; N = d.n; lastAt = performance.now(); stale = false; st.n++; st.via = via; st.w = d.w; st.h = d.h;

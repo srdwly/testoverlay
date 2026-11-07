@@ -285,7 +285,8 @@ async function useCamera(deviceId) {
   video.srcObject?.getTracks().forEach(t => t.stop());
   video.srcObject = await openCamera(deviceId); await video.play();
   ROT = CFG.rotate === 'auto' ? (video.videoWidth > video.videoHeight ? 90 : 0) : CFG.rotate;
-  set('sCam', `${camLabel} · ${video.videoWidth}×${video.videoHeight}${ROT ? ` · girada ${ROT}°` : ''}`, 'ok');
+  const dirty = /obs/i.test(camLabel);                 // la Cámara Virtual ya trae los overlays dibujados
+  set('sCam', `${camLabel} · ${video.videoWidth}×${video.videoHeight}${ROT ? ` · girada ${ROT}°` : ''}` + (dirty ? '  ⚠ trae los overlays: elige "Escena: Camara limpia" en Imagen de OBS' : ''), dirty ? 'bad' : 'ok');
 }
 camSel.onchange = () => { if (CFG.fuente) { fuenteSel.value = ''; fuenteSel.onchange(); return; } useCamera(camSel.value).catch(e => set('sCam', '⚠ ' + e.message, 'bad')); };
 

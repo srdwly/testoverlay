@@ -181,9 +181,11 @@ function publish(pkt) {
   pkt.s = SESSION; pkt.n = ++seq; pkt.t = Date.now();
   bc?.postMessage(pkt);
   if (obsReady && obsWs.readyState === 1) {
+    // como TEXTO: OBS pasa event_data por obs_data, que borra las listas de números (los puntos llegaban vacíos)
+    const txt = JSON.stringify(pkt);
     obsWs.send(JSON.stringify({ op: 6, d: { requestType: 'CallVendorRequest', requestId: 'm' + (++obsReq),
-      requestData: { vendorName: 'obs-browser', requestType: 'emit_event', requestData: { event_name: 'manos', event_data: pkt } } } }));
-    obsWs.send(JSON.stringify({ op: 6, d: { requestType: 'BroadcastCustomEvent', requestId: 'm' + (++obsReq), requestData: { eventData: { manos: pkt } } } }));
+      requestData: { vendorName: 'obs-browser', requestType: 'emit_event', requestData: { event_name: 'manos', event_data: { j: txt } } } } }));
+    obsWs.send(JSON.stringify({ op: 6, d: { requestType: 'BroadcastCustomEvent', requestId: 'm' + (++obsReq), requestData: { eventData: { manos: { j: txt } } } } }));
   }
   sent++;
 }

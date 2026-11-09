@@ -14,9 +14,9 @@
    · Se guarda en el navegador de OBS: si reinicias el live o OBS,
      el ranking sigue. Solo empieza un live nuevo si pasan más de
      `newLiveAfterMin` minutos sin regalos ni taps, o si lo reinicias tú.
-   · El "día" cambia a la hora `dayStartHour` (6 = 6 de la mañana), así
+   · El "día" cambia a la hora `dayStartHour` (3 = 3 de la mañana), así
      un live que pasa la medianoche cuenta para el mismo día. Y el día nunca
-     cambia en medio de un live: si sigue después de las 6, todo suma al día
+     cambia en medio de un live: si sigue después de las 3, todo suma al día
      en que empezó; el cambio se hace al empezar el siguiente live.
 
    ENLACES (fuente de navegador en OBS):
@@ -42,7 +42,7 @@ const CFG = {
   wsUrl: 'ws://localhost:21213/',            // TikFinity
   owners: ['rodrigovelizguitar'],            // quién puede usar !nuevolive / !borrardia
   newLiveAfterMin: 60,                       // sin regalos ni taps por más de 60 min → live nuevo
-  dayStartHour: 6,                           // el día empieza a las 6:00
+  dayStartHour: 3,                           // el día empieza a las 3:00 (hora de la PC de OBS)
   coinsTop: 3,
   tapsTop: 10,
   comboTimeoutSec: 20,                       // si un combo no avisa que terminó, se guarda igual a los 20 s
@@ -189,13 +189,12 @@ const CFG = {
   /* ── Estilo PÚA (?estilo=pua): la lista con la marca del canal ── */
   body.pua .head { display: none; }
   body.pua .row, body.pua #p-taps .row { position: relative; padding: 4px 18px 4px 4px; gap: 12px;
-    background: linear-gradient(90deg, rgba(10,0,4,.78) 0%, rgba(40,0,8,.55) 55%, rgba(0,0,0,0) 100%);
-    border-left: 4px solid var(--red); border-radius: 4px 0 0 4px; }
+    background: none; border-left: 4px solid var(--red); border-radius: 0; }
   body.pua .row + .row { margin-top: 5px; }
-  body.pua .row.r1, body.pua #p-taps .row.r1 { border-left-color: var(--gold); background: linear-gradient(90deg, rgba(90,60,0,.70) 0%, rgba(60,0,10,.55) 55%, rgba(0,0,0,0) 100%); }
+  body.pua .row.r1, body.pua #p-taps .row.r1 { border-left-color: var(--gold); }
   body.pua .row.r2, body.pua #p-taps .row.r2 { border-left-color: #cfd6e0; }
   body.pua .row.r3, body.pua #p-taps .row.r3 { border-left-color: #c8773a; }
-  body.pua .row.flash { background: linear-gradient(90deg, rgba(227,18,43,.75), rgba(0,0,0,0)); }
+  body.pua .row.flash { background: none; }
   body.pua .pos, body.pua #p-taps .pos { position: relative; width: 44px; height: 48px; display: flex; align-items: center; justify-content: center; }
   body.pua .pick { position: absolute; inset: 0; width: 100%; height: 100%; filter: drop-shadow(0 2px 2px rgba(0,0,0,.8)); }
   body.pua .pick path { fill: #140a0c; stroke: var(--red); stroke-width: 7; }
@@ -211,7 +210,7 @@ const CFG = {
   body.pua .val, body.pua #p-taps .val { color: var(--gold); }
   body.pua .ic-heart { color: var(--red); text-shadow: 0 0 2px #000; }
   body.pua .king { padding: 30px 18px 8px 8px; border-left: 4px solid var(--gold);
-    background: linear-gradient(90deg, rgba(110,75,0,.75) 0%, rgba(90,0,14,.6) 55%, rgba(0,0,0,0) 100%); border-radius: 4px 0 0 4px; }
+    background: none; border-radius: 0; }
   body.pua .king .av { border-color: var(--gold); box-shadow: 0 0 0 1.5px #000, 0 3px 8px rgba(0,0,0,.8); }
   body.pua .king .name { color: var(--gold-lt); }
   body.pua .tag { background: linear-gradient(180deg, #fff0b8, #f6c544 55%, #b8860b); color: #000; border-color: #000; box-shadow: none; text-shadow: none; }
@@ -283,7 +282,7 @@ function rollover() {
   const t = NOW();
   let changed = false;
   if (S.last && t - S.last > CFG.newLiveAfterMin * 60e3) { newLive(); changed = true; }
-  // El día solo cambia ENTRE lives: si un live pasa de las 6:00, sigue sumando al día en que empezó.
+  // El día solo cambia ENTRE lives: si un live pasa de las 3:00, sigue sumando al día en que empezó.
   const liveActive = S.last && t - S.last <= CFG.newLiveAfterMin * 60e3;
   if (!liveActive && S.day !== dayKey(t)) { newDay(); changed = true; }
   return changed;

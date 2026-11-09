@@ -27,6 +27,7 @@
      ?nuevo=90  minutos sin actividad para empezar live nuevo
      ?taps=5   cuántos puestos de taps mostrar (por defecto 10)
      ?estilo=panel  cuadros rojos en vez de la lista estilo TikFinity
+     ?estilo=pua    lista con la marca del canal (púas rojas, dorado, borde negro)
 
    REINICIAR A MANO:
      · En el chat (solo dueños):  !nuevolive   → borra monedas y taps del live
@@ -44,9 +45,10 @@ const CFG = {
   tapsTop: 10,
   comboTimeoutSec: 20,                       // si un combo no avisa que terminó, se guarda igual a los 20 s
   // Posición de cada panel en el lienzo 1080×1920 (si usas la fuente completa)
-  estilo: 'lista',                           // 'lista' = como el ranking de TikFinity (sin cuadro) · 'panel' = cuadros rojos (?estilo=panel)
+  estilo: 'lista',                           // 'lista' = como el ranking de TikFinity (sin cuadro) · 'pua' = lista con púas rojas y dorado · 'panel' = cuadros rojos
   pos: { monedas: [24, 300], taps: [24, 660], dia: [24, 120] },          // estilo panel
   posLista: { dia: [40, 450], monedas: [40, 580], taps: [40, 820] },     // estilo lista (lado izquierdo)
+  posPua: { dia: [40, 420], monedas: [40, 570], taps: [40, 880] },       // estilo púa
 };
 </script>
 
@@ -181,6 +183,36 @@ const CFG = {
   body.lista .king .val { font-size: 24px; }
   .tag { display: inline-block; font: 900 16px "Segoe UI", Arial, sans-serif; letter-spacing: .05em; color: #2a0006;
     background: linear-gradient(180deg, #ffe7a1, #f6c544 55%, #b8860b); border: 2px solid #000; border-radius: 8px; padding: 1px 8px; margin-bottom: 3px; text-shadow: none; }
+
+  /* ── Estilo PÚA (?estilo=pua): la lista con la marca del canal ── */
+  body.pua .head { display: inline-flex; gap: 8px; width: auto; padding: 4px 14px 4px 10px; margin: 0 0 22px 4px; font-size: 19px; letter-spacing: .08em;
+    border: 2.5px solid #000; border-radius: 10px 22px 22px 10px; box-shadow: 0 0 0 1.5px var(--gold), 0 3px 6px rgba(0,0,0,.6); }
+  body.pua .head .ico { font-size: 20px; }
+  body.pua .head .sub { display: none; }
+  body.pua #p-dia .head { display: none; }
+  body.pua .row, body.pua #p-taps .row { position: relative; padding: 4px 18px 4px 4px; gap: 12px;
+    background: linear-gradient(90deg, rgba(10,0,4,.78) 0%, rgba(40,0,8,.55) 55%, rgba(0,0,0,0) 100%);
+    border-left: 4px solid var(--red); border-radius: 4px 0 0 4px; }
+  body.pua .row + .row { margin-top: 5px; }
+  body.pua .row.r1 { border-left-color: var(--gold); background: linear-gradient(90deg, rgba(90,60,0,.70) 0%, rgba(60,0,10,.55) 55%, rgba(0,0,0,0) 100%); }
+  body.pua .row.flash { background: linear-gradient(90deg, rgba(227,18,43,.75), rgba(0,0,0,0)); }
+  body.pua .pos, body.pua #p-taps .pos { position: relative; width: 44px; height: 48px; display: flex; align-items: center; justify-content: center; }
+  body.pua .pick { position: absolute; inset: 0; width: 100%; height: 100%; filter: drop-shadow(0 2px 2px rgba(0,0,0,.8)); }
+  body.pua .pick path { fill: #1a0a0d; stroke: var(--red); stroke-width: 7; }
+  body.pua .r2 .pick path, body.pua .r3 .pick path { fill: var(--red); stroke: #000; }
+  body.pua .r1 .pick path { fill: url(#gold); stroke: #000; }
+  body.pua .pos b { position: relative; margin-top: -6px; font: 900 22px "Arial Black", "Segoe UI", Arial, sans-serif; color: #fff; text-shadow: 0 2px 0 #000; }
+  body.pua .r1 .pos b { color: #3a0008; text-shadow: 0 1px 0 rgba(255,255,255,.5); }
+  body.pua .r2 .pos b, body.pua .r3 .pos b { color: var(--gold-lt); }
+  body.pua .av, body.pua #p-taps .av { border: 3px solid var(--red); box-shadow: 0 0 0 2px #000, 0 0 0 3.5px var(--gold), 0 3px 6px rgba(0,0,0,.7); }
+  body.pua .r1 .av { border-color: var(--gold); }
+  body.pua .val, body.pua #p-taps .val { color: var(--gold); }
+  body.pua .ic-heart { color: var(--red); text-shadow: 0 0 2px #000; }
+  body.pua .king { padding: 30px 18px 8px 8px; border-left: 4px solid var(--gold);
+    background: linear-gradient(90deg, rgba(110,75,0,.75) 0%, rgba(90,0,14,.6) 55%, rgba(0,0,0,0) 100%); border-radius: 4px 0 0 4px; }
+  body.pua .king .av { border-color: var(--gold); box-shadow: 0 0 0 2px #000, 0 0 0 4px var(--red), 0 3px 8px rgba(0,0,0,.8); }
+  body.pua .king .name { color: var(--gold-lt); }
+  body.pua .tag { background: linear-gradient(180deg, var(--red), var(--red-dk)); color: var(--gold-lt); border-color: #000; box-shadow: 0 0 0 1.5px var(--gold); text-shadow: 0 1px 0 #000; }
 </style>
 </head>
 <body>
@@ -202,6 +234,7 @@ const CFG = {
   </div>
 </div>
 <div id="toast"></div>
+<svg width="0" height="0" style="position:absolute"><defs><linearGradient id="gold" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff0b8"/><stop offset=".5" stop-color="#f6c544"/><stop offset="1" stop-color="#a8740c"/></linearGradient></defs></svg>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -213,10 +246,13 @@ if (DEMO) CFG.owners.push('demo_host');
 const OWNERS = CFG.owners.map(o => o.toLowerCase().replace(/^@/, ''));
 const VER = (Q.get('ver') || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
 const SINGLE = VER.length > 0;
-const LISTA = (Q.get('estilo') || CFG.estilo).toLowerCase() !== 'panel';
+const ESTILO = (Q.get('estilo') || CFG.estilo).toLowerCase();
+const LISTA = ESTILO !== 'panel';
+const PUA = ESTILO === 'pua';
 if (LISTA) document.body.classList.add('lista');
+if (PUA) document.body.classList.add('pua');
 const KEY = 'rv_ranking_v1' + (DEMO ? '_demo' : '');
-const POS_KEY = 'rv_ranking_pos_v1' + (LISTA ? '_lista' : '');
+const POS_KEY = 'rv_ranking_pos_v1' + (PUA ? '_pua' : LISTA ? '_lista' : '');
 const LOCK_KEY = KEY + '_lock';
 const ME = Math.random().toString(36).slice(2);
 const NOW = () => (window.__now ? window.__now() : Date.now());
@@ -333,10 +369,11 @@ function avatar(u, extra = '') {
   return `<div class="av"${style}>${u.pic ? '' : esc((u.name || '?').trim().charAt(0).toUpperCase())}${extra}</div>`;
 }
 const MEDALS = ['🥇', '🥈', '🥉'];
+const PICK = n => `<svg viewBox="0 0 100 110" class="pick"><path d="M50 5C80 5 96 17 96 38C96 64 68 95 50 105C32 95 4 64 4 38C4 17 20 5 50 5Z"/></svg><b>${n}</b>`;
 function rowsHtml(list, unit) {
   if (LISTA) return list.map(([uid, u], i) =>
     `<div class="row r${i + 1}${flashes.has(uid) ? ' flash' : ''}" data-uid="${esc(uid)}">
-       <div class="pos${i < 3 ? ' medal' : ''}">${i < 3 ? MEDALS[i] : (i + 1) + '.'}</div>${avatar(u, i === 0 ? '<span class="crown">👑</span>' : '')}
+       <div class="pos${PUA ? '' : i < 3 ? ' medal' : ''}">${PUA ? PICK(i + 1) : i < 3 ? MEDALS[i] : (i + 1) + '.'}</div>${avatar(u, i === 0 ? '<span class="crown">👑</span>' : '')}
        <div class="txt"><div class="name">${esc(u.name)}</div>
        <div class="val">${unit ? '<span class="ic-coin"></span>' : '<span class="ic-heart">❤</span>'}${fmt(u.n)}${u.live ? '<span class="live-dot">⏳</span>' : ''}</div></div>
      </div>`).join('');
@@ -368,7 +405,7 @@ function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add
 
 /* ── Paneles, posición y escala ─────────────────────────── */
 const PANELS = ['dia', 'monedas', 'taps'];
-let POS = JSON.parse(JSON.stringify(LISTA ? CFG.posLista : CFG.pos));
+let POS = JSON.parse(JSON.stringify(PUA ? CFG.posPua : LISTA ? CFG.posLista : CFG.pos));
 try { Object.assign(POS, JSON.parse(localStorage.getItem(POS_KEY)) || {}); } catch (e) {}
 function layout() {
   const stage = $('#stage');

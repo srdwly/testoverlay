@@ -26,6 +26,7 @@
      ?demo=1  simula regalos y taps (no toca tu ranking real)
      ?nuevo=90  minutos sin actividad para empezar live nuevo
      ?taps=5   cuántos puestos de taps mostrar (por defecto 10)
+     ?estilo=panel  cuadros rojos en vez de la lista estilo TikFinity
 
    REINICIAR A MANO:
      · En el chat (solo dueños):  !nuevolive   → borra monedas y taps del live
@@ -43,7 +44,9 @@ const CFG = {
   tapsTop: 10,
   comboTimeoutSec: 20,                       // si un combo no avisa que terminó, se guarda igual a los 20 s
   // Posición de cada panel en el lienzo 1080×1920 (si usas la fuente completa)
-  pos: { monedas: [24, 300], taps: [24, 660], dia: [24, 120] },
+  estilo: 'lista',                           // 'lista' = como el ranking de TikFinity (sin cuadro) · 'panel' = cuadros rojos (?estilo=panel)
+  pos: { monedas: [24, 300], taps: [24, 660], dia: [24, 120] },          // estilo panel
+  posLista: { dia: [40, 450], monedas: [40, 580], taps: [40, 820] },     // estilo lista (lado izquierdo)
 };
 </script>
 
@@ -152,6 +155,32 @@ const CFG = {
     opacity: 0; transition: opacity .3s; pointer-events: none;
   }
   #toast.on { opacity: 1; }
+
+  /* ── Estilo LISTA (como el ranking de TikFinity: sin cuadro, sobre la cámara) ── */
+  body.lista .panel { width: 520px; background: none; border: none; outline: none; box-shadow: none; overflow: visible; border-radius: 0; }
+  body.lista .head { display: none; }
+  body.lista .rows { padding: 0; }
+  body.lista .row, body.lista #p-taps .row { gap: 12px; padding: 4px 0; background: none; border-radius: 0; }
+  body.lista .row + .row, body.lista #p-taps .row + .row { margin-top: 2px; }
+  body.lista .row.flash .name { color: var(--gold-lt); }
+  body.lista .pos, body.lista #p-taps .pos { width: 46px; font-size: 27px; font-weight: 800; color: #fff; text-shadow: 0 0 3px #000, 0 2px 3px #000; }
+  body.lista .pos.medal, body.lista #p-taps .pos.medal { font-size: 36px; text-shadow: none; filter: drop-shadow(0 2px 2px rgba(0,0,0,.7)); }
+  body.lista .av, body.lista #p-taps .av { width: 58px; height: 58px; border: 2px solid rgba(255,255,255,.9); font-size: 24px; position: relative; overflow: visible; box-shadow: 0 2px 5px rgba(0,0,0,.6); }
+  body.lista .av .crown { position: absolute; top: -27px; left: 50%; transform: translateX(-50%) rotate(-6deg); font-size: 30px; filter: drop-shadow(0 2px 1px #000); }
+  body.lista .txt { flex: 1 1 auto; min-width: 0; }
+  body.lista .name, body.lista #p-taps .name { display: block; font-size: 25px; font-weight: 700; color: #fff; text-shadow: 0 0 3px #000, 0 2px 3px #000; }
+  body.lista .val, body.lista #p-taps .val { display: block; font-size: 23px; font-weight: 800; color: #fff; text-shadow: 0 0 3px #000, 0 2px 3px #000; margin-top: 1px; }
+  .ic-coin { display: inline-block; width: 19px; height: 19px; border-radius: 50%; vertical-align: -2px; margin-right: 7px;
+    background: radial-gradient(circle at 35% 35%, #fff3b0 0%, #f6c544 45%, #b8860b 100%); box-shadow: 0 0 0 1.5px #7a5500, 0 1px 2px #000; }
+  .ic-heart { color: #ff2d55; margin-right: 6px; font-size: 21px; }
+  body.lista .empty { display: none; }
+  body.lista .king { padding: 26px 0 4px; gap: 12px; }
+  body.lista .king .av { width: 72px; height: 72px; border: 3px solid var(--gold); }
+  body.lista .king .crown { top: -30px; font-size: 34px; }
+  body.lista .king .name { font-size: 28px; }
+  body.lista .king .val { font-size: 24px; }
+  .tag { display: inline-block; font: 900 16px "Segoe UI", Arial, sans-serif; letter-spacing: .05em; color: #2a0006;
+    background: linear-gradient(180deg, #ffe7a1, #f6c544 55%, #b8860b); border: 2px solid #000; border-radius: 8px; padding: 1px 8px; margin-bottom: 3px; text-shadow: none; }
 </style>
 </head>
 <body>
@@ -184,8 +213,10 @@ if (DEMO) CFG.owners.push('demo_host');
 const OWNERS = CFG.owners.map(o => o.toLowerCase().replace(/^@/, ''));
 const VER = (Q.get('ver') || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
 const SINGLE = VER.length > 0;
+const LISTA = (Q.get('estilo') || CFG.estilo).toLowerCase() !== 'panel';
+if (LISTA) document.body.classList.add('lista');
 const KEY = 'rv_ranking_v1' + (DEMO ? '_demo' : '');
-const POS_KEY = 'rv_ranking_pos_v1';
+const POS_KEY = 'rv_ranking_pos_v1' + (LISTA ? '_lista' : '');
 const LOCK_KEY = KEY + '_lock';
 const ME = Math.random().toString(36).slice(2);
 const NOW = () => (window.__now ? window.__now() : Date.now());
@@ -301,7 +332,14 @@ function avatar(u, extra = '') {
   const style = u.pic ? ` style="background-image:url('${esc(u.pic)}')"` : '';
   return `<div class="av"${style}>${u.pic ? '' : esc((u.name || '?').trim().charAt(0).toUpperCase())}${extra}</div>`;
 }
+const MEDALS = ['🥇', '🥈', '🥉'];
 function rowsHtml(list, unit) {
+  if (LISTA) return list.map(([uid, u], i) =>
+    `<div class="row r${i + 1}${flashes.has(uid) ? ' flash' : ''}" data-uid="${esc(uid)}">
+       <div class="pos${i < 3 ? ' medal' : ''}">${i < 3 ? MEDALS[i] : (i + 1) + '.'}</div>${avatar(u, i === 0 ? '<span class="crown">👑</span>' : '')}
+       <div class="txt"><div class="name">${esc(u.name)}</div>
+       <div class="val">${unit ? '<span class="ic-coin"></span>' : '<span class="ic-heart">❤</span>'}${fmt(u.n)}${u.live ? '<span class="live-dot">⏳</span>' : ''}</div></div>
+     </div>`).join('');
   return list.map(([uid, u], i) =>
     `<div class="row r${i + 1}${flashes.has(uid) ? ' flash' : ''}" data-uid="${esc(uid)}">
        <div class="pos">${i + 1}</div>${avatar(u)}
@@ -318,7 +356,7 @@ function render() {
   setBody('p-taps', taps.length ? `<div class="rows">${rowsHtml(taps, '')}</div>` : `<div class="empty">¡Toca la pantalla! 👆</div>`);
   const king = topN(withPending(S.dayCoins), 1)[0];
   setBody('p-dia', king
-    ? `<div class="king">${avatar(king[1], '<span class="crown">👑</span>')}<div class="txt"><div class="name">${esc(king[1].name)}</div><div class="val">${fmt(king[1].n)}<small>🪙 hoy</small></div></div></div>`
+    ? `<div class="king">${avatar(king[1], '<span class="crown">👑</span>')}<div class="txt">${LISTA ? '<span class="tag">TOP DEL DÍA</span>' : ''}<div class="name">${esc(king[1].name)}</div><div class="val">${LISTA ? '<span class="ic-coin"></span>' + fmt(king[1].n) : fmt(king[1].n) + '<small>🪙 hoy</small>'}</div></div></div>`
     : `<div class="empty">Todavía nadie hoy 👑</div>`);
   if (flashes.size) { const f = [...flashes]; flashes.clear(); setTimeout(() => f.forEach(uid => document.querySelectorAll(`.row[data-uid="${CSS.escape(uid)}"]`).forEach(r => r.classList.remove('flash'))), 700); }
 }
@@ -330,7 +368,7 @@ function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add
 
 /* ── Paneles, posición y escala ─────────────────────────── */
 const PANELS = ['dia', 'monedas', 'taps'];
-let POS = JSON.parse(JSON.stringify(CFG.pos));
+let POS = JSON.parse(JSON.stringify(LISTA ? CFG.posLista : CFG.pos));
 try { Object.assign(POS, JSON.parse(localStorage.getItem(POS_KEY)) || {}); } catch (e) {}
 function layout() {
   const stage = $('#stage');
@@ -339,8 +377,9 @@ function layout() {
     const order = VER.map(v => v.startsWith('mon') ? 'monedas' : v.startsWith('tap') ? 'taps' : v.startsWith('d') || v.startsWith('sup') ? 'dia' : '').filter(Boolean);
     PANELS.forEach(k => $('#p-' + k).classList.toggle('hidden', !order.includes(k)));
     order.forEach(k => stage.appendChild($('#p-' + k)));          // orden de la URL
-    stage.style.width = '420px';
-    const s = innerWidth / 440;
+    const pw = LISTA ? 520 : 420;
+    stage.style.width = pw + 'px';
+    const s = innerWidth / (pw + 20);
     stage.style.transform = `scale(${s})`;
     stage.style.padding = '5px';
   } else {

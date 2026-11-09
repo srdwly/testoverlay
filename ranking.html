@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ranking de monedas y taps</title>
+
+<script>
+/* ════════════════════════════════════════════════════════════════
+   RANKING PROPIO — monedas (top 3 del live), taps (top 10 del live)
+   y SUPER TOP 1 del día (monedas sumadas de todos los lives del día).
+
+   · Los nombres NO desaparecen cuando el donador sale del live.
+   · Se guarda en el navegador de OBS: si reinicias el live o OBS,
+     el ranking sigue. Solo empieza un live nuevo si pasan más de
+     `newLiveAfterMin` minutos sin regalos ni taps, o si lo reinicias tú.
+   · El "día" cambia a la hora `dayStartHour` (6 = 6 de la mañana), así
+     un live que pasa la medianoche cuenta para el mismo día.
+
+   ENLACES (fuente de navegador en OBS):
+     ranking.html                 → los 3 paneles en un lienzo 1080×1920
+     ranking.html?ver=monedas     → solo top 3 monedas  (fuente 460×330)
+     ranking.html?ver=taps        → solo top 10 taps    (fuente 460×560)
+     ranking.html?ver=dia         → solo super top 1    (fuente 460×190)
+     ranking.html?ver=monedas,dia → varios paneles en columna
+     ?demo=1  simula regalos y taps (no toca tu ranking real)
+     ?nuevo=90  minutos sin actividad para empezar live nuevo
+     ?taps=5   cuántos puestos de taps mostrar (por defecto 10)
+
+   REINICIAR A MANO:
+     · En el chat (solo dueños):  !nuevolive   → borra monedas y taps del live
+                                  !borrardia   → borra también el super top 1
+     · En OBS: clic derecho en la fuente → Interactuar → pasa el mouse por
+       el panel y aparecen los botones. En el lienzo 1080×1920 también puedes
+       ARRASTRAR los paneles para moverlos (se guarda la posición).
+   ════════════════════════════════════════════════════════════════ */
+const CFG = {
+  wsUrl: 'ws://localhost:21213/',            // TikFinity
+  owners: ['rodrigovelizguitar'],            // quién puede usar !nuevolive / !borrardia
+  newLiveAfterMin: 60,                       // sin regalos ni taps por más de 60 min → live nuevo
+  dayStartHour: 6,                           // el día empieza a las 6:00
+  coinsTop: 3,
+  tapsTop: 10,
+  comboTimeoutSec: 20,                       // si un combo no avisa que terminó, se guarda igual a los 20 s
+  // Posición de cada panel en el lienzo 1080×1920 (si usas la fuente completa)
+  pos: { monedas: [24, 300], taps: [24, 660], dia: [24, 120] },
+};
+</script>
+
+<style>
+  :root {
+    --red: #e3122b;
+    --red-dk: #7a0614;
+    --gold: #f6c544;
+    --gold-lt: #ffe7a1;
+    --silver: #d9dde6;
+    --bronze: #e09a5a;
+    --dark: rgba(12,8,12,0.82);
+    --text: #fbf6ee;
+    --muted: #cdbfb4;
+  }
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  #stage {
+    position: absolute; left: 0; top: 0; width: 1080px; height: 1920px;
+    transform-origin: 0 0;
+    font-family: "Segoe UI", "Helvetica Neue", Arial, system-ui, sans-serif;
+    color: var(--text);
+  }
+  .single #stage { height: auto; }
+  .single .panel { position: relative !important; left: 0 !important; top: 0 !important; margin-bottom: 14px; }
+
+  .panel {
+    position: absolute; width: 420px;
+    background: var(--dark);
+    border: 3px solid #000;
+    outline: 2px solid rgba(246,197,68,0.55);
+    border-radius: 18px;
+    box-shadow: 0 6px 18px rgba(0,0,0,0.55);
+    overflow: hidden;
+  }
+  .panel.hidden { display: none; }
+  .head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 14px 8px;
+    background: linear-gradient(180deg, var(--red) 0%, var(--red-dk) 100%);
+    border-bottom: 2px solid var(--gold);
+    font-weight: 900; font-size: 25px; letter-spacing: .04em;
+    color: var(--gold-lt); text-shadow: 0 2px 0 #000;
+  }
+  .head .ico { font-size: 26px; filter: drop-shadow(0 2px 0 #000); }
+  .head .sub { margin-left: auto; font-size: 15px; font-weight: 700; color: #ffd9de; letter-spacing: .02em; }
+
+  .rows { padding: 8px 10px 10px; }
+  .row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 5px 6px; border-radius: 12px;
+    transition: background .4s;
+  }
+  .row + .row { margin-top: 4px; }
+  .row.flash { background: rgba(246,197,68,0.28); }
+  .pos { flex: 0 0 auto; width: 40px; text-align: center; font-weight: 900; font-size: 24px; color: var(--muted); text-shadow: 0 2px 0 #000; }
+  .av {
+    flex: 0 0 auto; width: 52px; height: 52px; border-radius: 50%;
+    background: #2a1a1f center/cover no-repeat;
+    border: 3px solid var(--muted);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 900; font-size: 22px; color: #fff;
+  }
+  .name { flex: 1 1 auto; min-width: 0; font-weight: 800; font-size: 24px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 2px 0 #000; }
+  .val { flex: 0 0 auto; font-weight: 900; font-size: 24px; color: var(--gold); text-shadow: 0 2px 0 #000; font-variant-numeric: tabular-nums; }
+  .val small { font-size: 15px; font-weight: 700; color: var(--gold-lt); margin-left: 3px; }
+  .live-dot { display: inline-block; font-size: 13px; color: #ffd9de; margin-left: 4px; }
+
+  .r1 .pos { color: var(--gold); }   .r1 .av { border-color: var(--gold); }
+  .r2 .pos { color: var(--silver); } .r2 .av { border-color: var(--silver); }
+  .r3 .pos { color: var(--bronze); } .r3 .av { border-color: var(--bronze); }
+  .r1 { background: linear-gradient(90deg, rgba(246,197,68,0.20), rgba(246,197,68,0)); }
+
+  /* Taps: filas más bajas para que entren 10 */
+  #p-taps .row { padding: 2px 6px; }
+  #p-taps .row + .row { margin-top: 1px; }
+  #p-taps .pos { width: 34px; font-size: 20px; }
+  #p-taps .av { width: 34px; height: 34px; border-width: 2px; font-size: 15px; }
+  #p-taps .name, #p-taps .val { font-size: 20px; }
+
+  .empty { padding: 12px 10px; text-align: center; color: var(--muted); font-size: 19px; font-weight: 700; }
+
+  /* Super top 1 del día */
+  #p-dia { outline-color: var(--gold); }
+  #p-dia .head { background: linear-gradient(180deg, #f6c544 0%, #a8740c 100%); color: #2a0006; text-shadow: 0 1px 0 rgba(255,255,255,.4); border-bottom-color: #000; }
+  #p-dia .head .sub { color: #3d0a0a; }
+  .king { display: flex; align-items: center; gap: 14px; padding: 24px 16px 14px; }
+  .king .av { width: 74px; height: 74px; border: 4px solid var(--gold); font-size: 30px; position: relative; overflow: visible; }
+  .king .crown { position: absolute; top: -22px; left: 50%; transform: translateX(-50%) rotate(-8deg); font-size: 26px; filter: drop-shadow(0 2px 0 #000); }
+  .king .name { font-size: 30px; }
+  .king .val { font-size: 28px; }
+  .king .txt { flex: 1 1 auto; min-width: 0; }
+
+  /* Botones (solo se ven al pasar el mouse en "Interactuar" de OBS) */
+  .tools { display: none; gap: 6px; padding: 0 10px 10px; flex-wrap: wrap; }
+  .panel:hover .tools { display: flex; }
+  .tools button {
+    font: 700 15px "Segoe UI", Arial, sans-serif; color: #fff; cursor: pointer;
+    background: #3a0a12; border: 2px solid var(--gold); border-radius: 9px; padding: 6px 10px;
+  }
+  .full .panel:hover { outline: 2px dashed var(--gold); cursor: move; }
+
+  #toast {
+    position: fixed; left: 50%; top: 20px; transform: translateX(-50%);
+    background: rgba(0,0,0,.85); color: #fff; font: 700 18px "Segoe UI", Arial, sans-serif;
+    padding: 8px 16px; border-radius: 10px; border: 2px solid var(--gold);
+    opacity: 0; transition: opacity .3s; pointer-events: none;
+  }
+  #toast.on { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="panel" id="p-dia" data-k="dia">
+    <div class="head"><span class="ico">👑</span>SUPER TOP 1<span class="sub">HOY</span></div>
+    <div class="body"></div>
+    <div class="tools"><button data-act="dia">Borrar día</button></div>
+  </div>
+  <div class="panel" id="p-monedas" data-k="monedas">
+    <div class="head"><span class="ico">🪙</span>TOP MONEDAS<span class="sub">ESTE LIVE</span></div>
+    <div class="body"></div>
+    <div class="tools"><button data-act="live">Nuevo live</button><button data-act="dia">Borrar día</button></div>
+  </div>
+  <div class="panel" id="p-taps" data-k="taps">
+    <div class="head"><span class="ico">👆</span>TOP TAPS<span class="sub">ESTE LIVE</span></div>
+    <div class="body"></div>
+    <div class="tools"><button data-act="live">Nuevo live</button></div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const Q = new URLSearchParams(location.search);
+const DEMO = Q.get('demo') === '1';
+if (Q.get('nuevo')) CFG.newLiveAfterMin = Math.max(1, +Q.get('nuevo') || CFG.newLiveAfterMin);
+if (Q.get('taps')) CFG.tapsTop = Math.max(1, Math.min(20, +Q.get('taps') || CFG.tapsTop));
+if (DEMO) CFG.owners.push('demo_host');
+const OWNERS = CFG.owners.map(o => o.toLowerCase().replace(/^@/, ''));
+const VER = (Q.get('ver') || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
+const SINGLE = VER.length > 0;
+const KEY = 'rv_ranking_v1' + (DEMO ? '_demo' : '');
+const POS_KEY = 'rv_ranking_pos_v1';
+const LOCK_KEY = KEY + '_lock';
+const ME = Math.random().toString(36).slice(2);
+const NOW = () => (window.__now ? window.__now() : Date.now());
+
+/* ── Estado ─────────────────────────────────────────────── */
+function dayKey(t) {
+  const d = new Date(t - CFG.dayStartHour * 3600e3);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+function fresh() {
+  const t = NOW();
+  return { v: 1, liveStart: t, last: 0, day: dayKey(t), coins: {}, taps: {}, dayCoins: {}, pend: {} };
+}
+let S = fresh();
+function load() {
+  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.v === 1) S = Object.assign(fresh(), s); } catch (e) {}
+}
+let saveTimer = null;
+function saveNow() { saveTimer = null; try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
+function save() { if (!saveTimer) saveTimer = setTimeout(saveNow, 400); }
+
+/* Live nuevo / día nuevo */
+function newLive(why) { S.coins = {}; S.taps = {}; S.pend = {}; S.liveStart = NOW(); S.last = 0; toast('Ranking del live reiniciado' + (why ? ' (' + why + ')' : '')); }
+function newDay() { S.dayCoins = {}; S.day = dayKey(NOW()); }
+function rollover() {
+  const t = NOW();
+  let changed = false;
+  if (S.last && t - S.last > CFG.newLiveAfterMin * 60e3) { newLive(); changed = true; }
+  if (S.day !== dayKey(t)) { newDay(); changed = true; }
+  return changed;
+}
+
+/* ── Sumar ──────────────────────────────────────────────── */
+function bump(map, uid, name, pic, n) {
+  const u = map[uid] || (map[uid] = { name, pic: '', n: 0 });
+  if (name) u.name = name;
+  if (pic) u.pic = pic;
+  u.n += n;
+}
+const flashes = new Set();
+function addCoins(uid, name, pic, n) {
+  if (!n) return;
+  rollover();
+  bump(S.coins, uid, name, pic, n);
+  bump(S.dayCoins, uid, name, pic, n);
+  S.last = NOW();
+  flashes.add(uid); save(); renderSoon();
+}
+function addTaps(uid, name, pic, n) {
+  if (!n) return;
+  rollover();
+  bump(S.taps, uid, name, pic, n);
+  S.last = NOW();
+  save(); renderSoon();
+}
+
+/* Combos: mientras alguien manda una racha de regalos se muestra en vivo
+   (pendiente) y al terminar el combo se guarda el total. */
+function onGift(d) {
+  const uid = d.uniqueId || d.userId || '';
+  if (!uid) return;
+  const name = d.nickname || d.uniqueId || 'anónimo';
+  const pic = d.profilePictureUrl || '';
+  const coins = parseInt(d.diamondCount ?? d.gift?.diamond_count ?? 0, 10) || 0;
+  const count = parseInt(d.repeatCount || d.gift?.repeat_count || 1, 10) || 1;
+  const key = uid + '|' + (d.giftId ?? d.gift?.gift_id ?? d.giftName ?? '?') + '|' + (d.groupId || '');
+  if (!coins) return;
+  rollover();
+  if (d.repeatEnd === false) {                         // combo en curso
+    S.pend[key] = { uid, name, pic, n: coins * count, t: NOW() };
+    S.last = NOW();
+    flashes.add(uid); save(); renderSoon();
+    return;
+  }
+  delete S.pend[key];                                  // combo terminado (o regalo suelto)
+  addCoins(uid, name, pic, coins * count);
+}
+function flushPending() {
+  const t = NOW();
+  for (const [k, p] of Object.entries(S.pend)) {
+    if (t - p.t > CFG.comboTimeoutSec * 1000) { delete S.pend[k]; addCoins(p.uid, p.name, p.pic, p.n); }
+  }
+}
+
+/* Comandos del dueño */
+function onChat(d) {
+  const uid = (d.uniqueId || '').toLowerCase();
+  const txt = (d.comment || '').trim().toLowerCase();
+  if (!txt.startsWith('!') || !OWNERS.includes(uid)) return;
+  if (txt === '!nuevolive' || txt === '!reiniciar' || txt === '!resetranking') act('live');
+  else if (txt === '!borrardia') act('dia');
+}
+function act(what) {
+  if (what === 'live') newLive('a mano');
+  if (what === 'dia') { newLive('a mano'); newDay(); toast('Super top 1 del día borrado'); }
+  saveNow(); render();
+}
+
+/* ── Dibujar ────────────────────────────────────────────── */
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fmt = n => Math.round(n).toLocaleString('es-ES');
+function withPending(map) {
+  const out = {};
+  for (const [uid, u] of Object.entries(map)) out[uid] = { ...u, live: false };
+  for (const p of Object.values(S.pend)) {
+    const u = out[p.uid] || (out[p.uid] = { name: p.name, pic: p.pic, n: 0 });
+    u.n += p.n; u.live = true; if (!u.pic) u.pic = p.pic;
+  }
+  return out;
+}
+function topN(map, n) { return Object.entries(map).sort((a, b) => b[1].n - a[1].n).slice(0, n); }
+function avatar(u, extra = '') {
+  const style = u.pic ? ` style="background-image:url('${esc(u.pic)}')"` : '';
+  return `<div class="av"${style}>${u.pic ? '' : esc((u.name || '?').trim().charAt(0).toUpperCase())}${extra}</div>`;
+}
+function rowsHtml(list, unit) {
+  return list.map(([uid, u], i) =>
+    `<div class="row r${i + 1}${flashes.has(uid) ? ' flash' : ''}" data-uid="${esc(uid)}">
+       <div class="pos">${i + 1}</div>${avatar(u)}
+       <div class="name">${esc(u.name)}</div>
+       <div class="val">${fmt(u.n)}${unit ? `<small>${unit}</small>` : ''}${u.live ? '<span class="live-dot">⏳</span>' : ''}</div>
+     </div>`).join('');
+}
+let lastHtml = {};
+function setBody(id, html) { if (lastHtml[id] !== html) { lastHtml[id] = html; $('#' + id + ' .body').innerHTML = html; } }
+function render() {
+  const coins = topN(withPending(S.coins), CFG.coinsTop);
+  setBody('p-monedas', coins.length ? `<div class="rows">${rowsHtml(coins, '🪙')}</div>` : `<div class="empty">Sé el primero en apoyar 🎸</div>`);
+  const taps = topN(S.taps, CFG.tapsTop);
+  setBody('p-taps', taps.length ? `<div class="rows">${rowsHtml(taps, '')}</div>` : `<div class="empty">¡Toca la pantalla! 👆</div>`);
+  const king = topN(withPending(S.dayCoins), 1)[0];
+  setBody('p-dia', king
+    ? `<div class="king">${avatar(king[1], '<span class="crown">👑</span>')}<div class="txt"><div class="name">${esc(king[1].name)}</div><div class="val">${fmt(king[1].n)}<small>🪙 hoy</small></div></div></div>`
+    : `<div class="empty">Todavía nadie hoy 👑</div>`);
+  if (flashes.size) { const f = [...flashes]; flashes.clear(); setTimeout(() => f.forEach(uid => document.querySelectorAll(`.row[data-uid="${CSS.escape(uid)}"]`).forEach(r => r.classList.remove('flash'))), 700); }
+}
+let renderTimer = null;
+function renderSoon() { if (!renderTimer) renderTimer = setTimeout(() => { renderTimer = null; render(); }, 250); }
+
+let toastTimer;
+function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('on'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('on'), 2500); }
+
+/* ── Paneles, posición y escala ─────────────────────────── */
+const PANELS = ['dia', 'monedas', 'taps'];
+let POS = JSON.parse(JSON.stringify(CFG.pos));
+try { Object.assign(POS, JSON.parse(localStorage.getItem(POS_KEY)) || {}); } catch (e) {}
+function layout() {
+  const stage = $('#stage');
+  if (SINGLE) {
+    document.body.classList.add('single');
+    const order = VER.map(v => v.startsWith('mon') ? 'monedas' : v.startsWith('tap') ? 'taps' : v.startsWith('d') || v.startsWith('sup') ? 'dia' : '').filter(Boolean);
+    PANELS.forEach(k => $('#p-' + k).classList.toggle('hidden', !order.includes(k)));
+    order.forEach(k => stage.appendChild($('#p-' + k)));          // orden de la URL
+    stage.style.width = '420px';
+    const s = innerWidth / 440;
+    stage.style.transform = `scale(${s})`;
+    stage.style.padding = '5px';
+  } else {
+    document.body.classList.add('full');
+    PANELS.forEach(k => { const p = $('#p-' + k); p.style.left = POS[k][0] + 'px'; p.style.top = POS[k][1] + 'px'; });
+    stage.style.transform = `scale(${innerWidth / 1080})`;
+  }
+}
+addEventListener('resize', layout);
+
+/* Arrastrar paneles (OBS → Interactuar) en el lienzo completo */
+function enableDrag() {
+  if (SINGLE) return;
+  let drag = null;
+  document.querySelectorAll('.panel').forEach(p => p.addEventListener('pointerdown', e => {
+    if (e.target.closest('button')) return;
+    const s = innerWidth / 1080, k = p.dataset.k;
+    drag = { p, k, sx: e.clientX, sy: e.clientY, x: POS[k][0], y: POS[k][1], s };
+    p.setPointerCapture(e.pointerId);
+  }));
+  addEventListener('pointermove', e => {
+    if (!drag) return;
+    const x = Math.round(drag.x + (e.clientX - drag.sx) / drag.s), y = Math.round(drag.y + (e.clientY - drag.sy) / drag.s);
+    POS[drag.k] = [Math.max(0, Math.min(1080 - 100, x)), Math.max(0, Math.min(1920 - 60, y))];
+    drag.p.style.left = POS[drag.k][0] + 'px'; drag.p.style.top = POS[drag.k][1] + 'px';
+  });
+  addEventListener('pointerup', () => { if (drag) { try { localStorage.setItem(POS_KEY, JSON.stringify(POS)); } catch (e) {} drag = null; } });
+}
+document.querySelectorAll('.tools button').forEach(b => b.addEventListener('click', e => {
+  e.stopPropagation();
+  const what = b.dataset.act;
+  if (!confirm(what === 'dia' ? '¿Borrar el ranking del día y del live?' : '¿Empezar un live nuevo (borra monedas y taps del live)?')) return;
+  if (!leader) { try { localStorage.setItem(KEY + '_cmd', JSON.stringify({ what, t: NOW(), id: ME })); } catch (e) {} return; }
+  act(what);
+}));
+
+/* ── Varias fuentes a la vez: solo UNA cuenta, las demás leen ──
+   Si pones ?ver=monedas y ?ver=taps como fuentes separadas, todas leen el
+   mismo guardado; una sola se conecta a TikFinity para no sumar doble. */
+let leader = false;
+function heartbeat() {
+  let lock = null;
+  try { lock = JSON.parse(localStorage.getItem(LOCK_KEY)); } catch (e) {}
+  const t = Date.now();
+  if (!lock || lock.id === ME || t - lock.t > 5000) {
+    try { localStorage.setItem(LOCK_KEY, JSON.stringify({ id: ME, t })); } catch (e) {}
+    try { lock = JSON.parse(localStorage.getItem(LOCK_KEY)); } catch (e) {}
+  }
+  const was = leader;
+  leader = !!lock && lock.id === ME;
+  if (leader && !was) { load(); if (rollover()) saveNow(); render(); if (DEMO) startDemo(); else connect(); }
+  if (!leader && was) { stopDemo(); try { ws && ws.close(); } catch (e) {} }
+  if (leader) {
+    let cmd = null;
+    try { cmd = JSON.parse(localStorage.getItem(KEY + '_cmd')); } catch (e) {}
+    if (cmd && cmd.t > (window.__lastCmd || 0)) { window.__lastCmd = cmd.t; act(cmd.what); }
+    flushPending();
+    if (rollover()) { saveNow(); render(); }
+  } else {
+    const raw = localStorage.getItem(KEY);
+    if (raw && raw !== window.__lastRaw) { window.__lastRaw = raw; load(); render(); }
+  }
+}
+addEventListener('beforeunload', () => {
+  if (leader) { saveNow(); try { localStorage.removeItem(LOCK_KEY); } catch (e) {} }
+});
+
+/* ── TikFinity ──────────────────────────────────────────── */
+let ws, reconnectTimer;
+const seen = new Set();
+function connect() {
+  if (!leader) return;
+  try { ws = new WebSocket(CFG.wsUrl); } catch (e) { return scheduleReconnect(); }
+  ws.onopen = () => { clearTimeout(reconnectTimer); console.log('[Ranking] Conectado a TikFinity'); };
+  ws.onmessage = evt => {
+    let msg; try { msg = JSON.parse(evt.data); } catch { return; }
+    const d = msg.data || {};
+    if (d.msgId) { if (seen.has(d.msgId)) return; seen.add(d.msgId); if (seen.size > 3000) seen.clear(); }
+    handle(msg.event, d);
+  };
+  ws.onerror = () => {};
+  ws.onclose = () => { if (leader) scheduleReconnect(); };
+}
+function scheduleReconnect() { clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connect, 5000); }
+function handle(ev, d) {
+  if (ev === 'gift') onGift(d);
+  else if (ev === 'like') addTaps(d.uniqueId || d.userId || '', d.nickname || d.uniqueId || 'anónimo', d.profilePictureUrl || '', parseInt(d.likeCount || 1, 10) || 1);
+  else if (ev === 'chat') onChat(d);
+}
+window.__ranking = { handle, get state() { return S; }, act, render };   // para pruebas
+
+/* ── Demo ───────────────────────────────────────────────── */
+let demoTimer = null;
+function startDemo() {
+  const names = ['Andrea', 'Lokito', 'Sumo', 'Luz', 'Marco', 'Kathy', 'Rolo', 'Vale', 'Pancho', 'Mery', 'Tito', 'Juanca', 'Nico', 'Flor'];
+  const gifts = [[1, 'Rose', 5605, true], [5, 'Finger Heart', 5487, true], [99, 'Hat and Mustache', 6427, false], [199, 'Sunglasses', 6430, false], [1000, 'Galaxy', 11046, false]];
+  const combos = {};
+  demoTimer = setInterval(() => {
+    const nm = names[Math.floor(Math.random() * names.length)];
+    const base = { uniqueId: nm.toLowerCase(), nickname: nm };
+    const r = Math.random();
+    if (r < 0.65) handle('like', { ...base, likeCount: 5 + Math.floor(Math.random() * 60) });
+    else if (r < 0.97) {
+      const g = gifts[Math.random() < 0.85 ? Math.floor(Math.random() * 2) : 2 + Math.floor(Math.random() * 3)];
+      if (g[3]) {                                       // combo: varias señales y luego fin
+        const k = nm + g[1]; if (combos[k]) return;
+        let c = 0; const total = 3 + Math.floor(Math.random() * 12);
+        combos[k] = setInterval(() => {
+          c++; handle('gift', { ...base, giftName: g[1], giftId: g[2], diamondCount: g[0], repeatCount: c, repeatEnd: c >= total, giftType: 1 });
+          if (c >= total) { clearInterval(combos[k]); delete combos[k]; }
+        }, 300);
+      } else handle('gift', { ...base, giftName: g[1], giftId: g[2], diamondCount: g[0], repeatCount: 1, giftType: 2 });
+    }
+  }, 700);
+}
+function stopDemo() { clearInterval(demoTimer); demoTimer = null; }
+
+/* ── Inicio ─────────────────────────────────────────────── */
+load();
+if (rollover()) saveNow();
+layout(); enableDrag(); render();
+heartbeat();
+setInterval(heartbeat, 1000);
+</script>
+</body>
+</html>

@@ -7,8 +7,8 @@
 
 <script>
 /* ════════════════════════════════════════════════════════════════
-   RANKING PROPIO — monedas (top 3 del live), taps (top 10 del live)
-   y SUPER TOP 1 del día (monedas sumadas de todos los lives del día).
+   RANKING PROPIO — top 3 de monedas ACUMULADO DEL DÍA (todos los lives
+   del día) y top 10 de taps del live.
 
    · Los nombres NO desaparecen cuando el donador sale del live.
    · Se guarda en el navegador de OBS: si reinicias el live o OBS,
@@ -20,7 +20,7 @@
      en que empezó; el cambio se hace al empezar el siguiente live.
 
    ENLACES (fuente de navegador en OBS):
-     ranking.html                 → los 3 paneles en un lienzo 1080×1920
+     ranking.html                 → monedas y taps en un lienzo 1080×1920
      ranking.html?ver=monedas     → solo top 3 monedas  (fuente 460×330)
      ranking.html?ver=taps        → solo top 10 taps    (fuente 460×560)
      ranking.html?ver=dia         → solo super top 1    (fuente 460×190)
@@ -28,12 +28,13 @@
      ?demo=1  simula regalos y taps (no toca tu ranking real)
      ?nuevo=90  minutos sin actividad para empezar live nuevo
      ?taps=5   cuántos puestos de taps mostrar (por defecto 10)
+     ?monedas=live  top de monedas solo de este live (vuelve a mostrar el bloque TOP DEL DÍA)
      ?estilo=panel  cuadros rojos en vez de la lista estilo TikFinity
      ?estilo=pua    lista con la marca del canal (púas oro/plata/cobre, borde negro)
 
    REINICIAR A MANO:
-     · En el chat (solo dueños):  !nuevolive   → borra monedas y taps del live
-                                  !borrardia   → borra también el super top 1
+     · En el chat (solo dueños):  !nuevolive   → borra los taps del live
+                                  !borrardia   → borra también las monedas del día
      · En OBS: clic derecho en la fuente → Interactuar → pasa el mouse por
        el panel y aparecen los botones. En el lienzo 1080×1920 también puedes
        ARRASTRAR los paneles para moverlos (se guarda la posición).
@@ -44,6 +45,8 @@ const CFG = {
   newLiveAfterMin: 60,                       // sin regalos ni taps por más de 60 min → live nuevo
   dayStartHour: 3,                           // el día empieza a las 3:00 (hora de la PC de OBS)
   coinsTop: 3,
+  coinsDaily: true,                          // top 3 de monedas = acumulado del DÍA (todos los lives). false = solo este live
+  showDayBlock: false,                       // bloque "TOP DEL DÍA" aparte (oculto: con coinsDaily repetiría el #1). ?ver=dia lo muestra igual
   tapsTop: 10,
   comboTimeoutSec: 20,                       // si un combo no avisa que terminó, se guarda igual a los 20 s
   // Posición de cada panel en el lienzo 1080×1920 (si usas la fuente completa)
@@ -242,6 +245,7 @@ const $ = s => document.querySelector(s);
 const Q = new URLSearchParams(location.search);
 const DEMO = Q.get('demo') === '1';
 if (Q.get('nuevo')) CFG.newLiveAfterMin = Math.max(1, +Q.get('nuevo') || CFG.newLiveAfterMin);
+if (Q.get('monedas') === 'live') CFG.coinsDaily = false;      // ?monedas=live → top de monedas solo de este live
 if (Q.get('taps')) CFG.tapsTop = Math.max(1, Math.min(20, +Q.get('taps') || CFG.tapsTop));
 if (DEMO) CFG.owners.push('demo_host');
 const OWNERS = CFG.owners.map(o => o.toLowerCase().replace(/^@/, ''));
@@ -390,7 +394,7 @@ function rowsHtml(list, unit) {
 let lastHtml = {};
 function setBody(id, html) { if (lastHtml[id] !== html) { lastHtml[id] = html; $('#' + id + ' .body').innerHTML = html; } }
 function render() {
-  const coins = topN(withPending(S.coins), CFG.coinsTop);
+  const coins = topN(withPending(CFG.coinsDaily ? S.dayCoins : S.coins), CFG.coinsTop);
   setBody('p-monedas', coins.length ? `<div class="rows">${rowsHtml(coins, '🪙')}</div>` : `<div class="empty">Sé el primero en apoyar 🎸</div>`);
   const taps = topN(S.taps, CFG.tapsTop);
   setBody('p-taps', taps.length ? `<div class="rows">${rowsHtml(taps, '')}</div>` : `<div class="empty">¡Toca la pantalla! 👆</div>`);
@@ -424,6 +428,7 @@ function layout() {
     stage.style.padding = '5px';
   } else {
     document.body.classList.add('full');
+    if (!CFG.showDayBlock && CFG.coinsDaily) $('#p-dia').classList.add('hidden');
     PANELS.forEach(k => { const p = $('#p-' + k); p.style.left = POS[k][0] + 'px'; p.style.top = POS[k][1] + 'px'; });
     stage.style.transform = `scale(${innerWidth / 1080})`;
   }
@@ -540,6 +545,7 @@ function stopDemo() { clearInterval(demoTimer); demoTimer = null; }
 /* ── Inicio ─────────────────────────────────────────────── */
 load();
 if (rollover()) saveNow();
+if (CFG.coinsDaily) $('#p-monedas .sub').textContent = 'HOY';
 layout(); enableDrag(); render();
 heartbeat();
 setInterval(heartbeat, 1000);

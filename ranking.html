@@ -13,7 +13,7 @@
    · Los nombres NO desaparecen cuando el donador sale del live.
    · Se guarda en el navegador de OBS: si reinicias el live o OBS,
      el ranking sigue. Solo empieza un live nuevo si pasan más de
-     `newLiveAfterMin` minutos sin regalos ni taps, o si lo reinicias tú.
+     `newLiveAfterMin` (10) minutos sin regalos ni taps, o si lo reinicias tú.
    · El "día" cambia a la hora `dayStartHour` (3 = 3 de la mañana), así
      un live que pasa la medianoche cuenta para el mismo día. Y el día nunca
      cambia en medio de un live: si sigue después de las 3, todo suma al día
@@ -42,7 +42,8 @@
 const CFG = {
   wsUrl: 'ws://localhost:21213/',            // TikFinity
   owners: ['rodrigovelizguitar'],            // quién puede usar !nuevolive / !borrardia
-  newLiveAfterMin: 60,                       // sin regalos ni taps por más de 60 min → live nuevo
+  newLiveAfterMin: 10,                       // sin regalos ni taps por más de 10 min → live nuevo (los taps empiezan de cero)
+  dayGapMin: 60,                             // el día solo cambia si hubo más de 60 min sin actividad (nunca en medio de un live)
   dayStartHour: 3,                           // el día empieza a las 3:00 (hora de la PC de OBS)
   coinsTop: 3,
   coinsDaily: true,                          // top 3 de monedas = acumulado del DÍA (todos los lives). false = solo este live
@@ -281,7 +282,7 @@ function fresh() {
 }
 let S = fresh();
 function load() {
-  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.v === 1) S = Object.assign(fresh(), s); } catch (e) {}
+  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.v === 1) { S = Object.assign(fresh(), s); if (!S.act) S.act = S.last || 0; } } catch (e) {}
 }
 let saveTimer = null;
 function saveNow() { saveTimer = null; try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
@@ -295,7 +296,7 @@ function rollover() {
   let changed = false;
   if (S.last && t - S.last > CFG.newLiveAfterMin * 60e3) { newLive(); changed = true; }
   // El día solo cambia ENTRE lives: si un live pasa de las 3:00, sigue sumando al día en que empezó.
-  const liveActive = S.last && t - S.last <= CFG.newLiveAfterMin * 60e3;
+  const liveActive = S.act && t - S.act <= CFG.dayGapMin * 60e3;
   if (!liveActive && S.day !== dayKey(t)) { newDay(); changed = true; }
   return changed;
 }
@@ -313,14 +314,14 @@ function addCoins(uid, name, pic, n) {
   rollover();
   bump(S.coins, uid, name, pic, n);
   bump(S.dayCoins, uid, name, pic, n);
-  S.last = NOW();
+  S.last = S.act = NOW();
   flashes.add(uid); save(); renderSoon();
 }
 function addTaps(uid, name, pic, n) {
   if (!n) return;
   rollover();
   bump(S.taps, uid, name, pic, n);
-  S.last = NOW();
+  S.last = S.act = NOW();
   save(); renderSoon();
 }
 
@@ -338,7 +339,7 @@ function onGift(d) {
   rollover();
   if (d.repeatEnd === false) {                         // combo en curso
     S.pend[key] = { uid, name, pic, n: coins * count, t: NOW() };
-    S.last = NOW();
+    S.last = S.act = NOW();
     flashes.add(uid); save(); renderSoon();
     return;
   }
@@ -519,18 +520,33 @@ addEventListener('beforeunload', () => {
 /* ── TikFinity ──────────────────────────────────────────── */
 let ws, reconnectTimer;
 const seen = new Set();
+/* ?diag=1 → línea de diagnóstico arriba a la izquierda */
+const stat = { conn: false, n: 0, t: 0, ev: '' };
+if (Q.get('diag') === '1') {
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;left:6px;top:6px;z-index:9;font:700 14px Arial;color:#fff;background:rgba(0,0,0,.75);padding:4px 8px;border-radius:6px;white-space:pre';
+  document.body.appendChild(el);
+  setInterval(() => {
+    const ago = stat.t ? Math.round((Date.now() - stat.t) / 1000) + ' s' : '—';
+    const act = S.act ? Math.round((NOW() - S.act) / 60000) + ' min' : '—';
+    el.textContent = `Ranking · ${leader ? 'CUENTA (esta fuente)' : 'solo muestra (otra fuente cuenta)'} · TikFinity ${leader ? (stat.conn ? '✓' : '✗') : '-'}\nEventos: ${stat.n} · último: ${stat.ev} hace ${ago} · sin actividad: ${act} · día ${S.day}`;
+  }, 1000);
+}
 function connect() {
   if (!leader) return;
   try { ws = new WebSocket(CFG.wsUrl); } catch (e) { return scheduleReconnect(); }
-  ws.onopen = () => { clearTimeout(reconnectTimer); console.log('[Ranking] Conectado a TikFinity'); };
+  ws.onopen = () => { stat.conn = true; clearTimeout(reconnectTimer); console.log('[Ranking] Conectado a TikFinity'); };
   ws.onmessage = evt => {
     let msg; try { msg = JSON.parse(evt.data); } catch { return; }
     const d = msg.data || {};
-    if (d.msgId) { if (seen.has(d.msgId)) return; seen.add(d.msgId); if (seen.size > 3000) seen.clear(); }
+    // Filtro de repetidos: solo si llega EXACTAMENTE el mismo mensaje (mismo id, usuario y cantidad)
+    if (d.msgId) { const k = msg.event + '|' + d.msgId + '|' + (d.uniqueId || '') + '|' + (d.likeCount || '') + '|' + (d.repeatCount || '') + '|' + d.repeatEnd;
+      if (seen.has(k)) return; seen.add(k); if (seen.size > 3000) seen.clear(); }
+    stat.n++; stat.t = Date.now(); stat.ev = msg.event;
     handle(msg.event, d);
   };
   ws.onerror = () => {};
-  ws.onclose = () => { if (leader) scheduleReconnect(); };
+  ws.onclose = () => { stat.conn = false; if (leader) scheduleReconnect(); };
 }
 function scheduleReconnect() { clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connect, 5000); }
 function handle(ev, d) {

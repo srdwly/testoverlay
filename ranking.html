@@ -47,7 +47,9 @@ const CFG = {
   coinsTop: 3,
   coinsDaily: true,                          // top 3 de monedas = acumulado del DÍA (todos los lives). false = solo este live
   showDayBlock: false,                       // bloque "TOP DEL DÍA" aparte (oculto: con coinsDaily repetiría el #1). ?ver=dia lo muestra igual
-  tapsTop: 10,
+  tapsTop: 7,
+  size: 0.9,                                 // tamaño de los rankings (0.9 = 10% más chico)
+  shiftX: 15,                                // mover todo N px a la derecha (en el lienzo 1080×1920)
   comboTimeoutSec: 20,                       // si un combo no avisa que terminó, se guarda igual a los 20 s
   // Posición de cada panel en el lienzo 1080×1920 (si usas la fuente completa)
   estilo: 'lista',                           // 'lista' = como el ranking de TikFinity (sin cuadro) · 'pua' = lista con púas rojas y dorado · 'panel' = cuadros rojos
@@ -423,13 +425,23 @@ function layout() {
     order.forEach(k => stage.appendChild($('#p-' + k)));          // orden de la URL
     const pw = LISTA ? 520 : 420;
     stage.style.width = pw + 'px';
-    const s = innerWidth / (pw + 20);
+    const s = innerWidth / (pw + 20) * CFG.size;
     stage.style.transform = `scale(${s})`;
     stage.style.padding = '5px';
   } else {
     document.body.classList.add('full');
     if (!CFG.showDayBlock && CFG.coinsDaily) $('#p-dia').classList.add('hidden');
-    PANELS.forEach(k => { const p = $('#p-' + k); p.style.left = POS[k][0] + 'px'; p.style.top = POS[k][1] + 'px'; });
+    // Achicar sin separar los paneles: se escala cada uno desde su esquina y
+    // las distancias verticales se acercan con el mismo factor (ancla = el panel más alto).
+    const vis = PANELS.filter(k => !$('#p-' + k).classList.contains('hidden'));
+    const y0 = Math.min(...vis.map(k => POS[k][1]));
+    PANELS.forEach(k => {
+      const p = $('#p-' + k);
+      p.style.transformOrigin = '0 0';
+      p.style.transform = CFG.size !== 1 ? `scale(${CFG.size})` : '';
+      p.style.left = (POS[k][0] + CFG.shiftX) + 'px';
+      p.style.top = Math.round(y0 + (POS[k][1] - y0) * CFG.size) + 'px';
+    });
     stage.style.transform = `scale(${innerWidth / 1080})`;
   }
 }
@@ -449,7 +461,7 @@ function enableDrag() {
     if (!drag) return;
     const x = Math.round(drag.x + (e.clientX - drag.sx) / drag.s), y = Math.round(drag.y + (e.clientY - drag.sy) / drag.s);
     POS[drag.k] = [Math.max(0, Math.min(1080 - 100, x)), Math.max(0, Math.min(1920 - 60, y))];
-    drag.p.style.left = POS[drag.k][0] + 'px'; drag.p.style.top = POS[drag.k][1] + 'px';
+    layout();
   });
   addEventListener('pointerup', () => { if (drag) { try { localStorage.setItem(POS_KEY, JSON.stringify(POS)); } catch (e) {} drag = null; } });
 }

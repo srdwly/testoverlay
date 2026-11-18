@@ -219,6 +219,12 @@ const CFG = {
   body.pua .king .av { border-color: var(--gold); box-shadow: 0 0 0 1.5px #000, 0 3px 8px rgba(0,0,0,.8); }
   body.pua .king .name { color: var(--gold-lt); }
   body.pua .tag { background: linear-gradient(180deg, #fff0b8, #f6c544 55%, #b8860b); color: #000; border-color: #000; box-shadow: none; text-shadow: none; }
+
+  /* Top de monedas: nombres 20% más angostos; si no entran, pasan a 2 líneas (y luego "…") */
+  body.lista #p-monedas .row .name {
+    max-width: 290px; white-space: normal; overflow-wrap: anywhere; line-height: 1.1;
+    display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; text-overflow: ellipsis;
+  }
 </style>
 </head>
 <body>
@@ -394,7 +400,7 @@ function rowsHtml(list, unit) {
      </div>`).join('');
 }
 let lastHtml = {};
-function setBody(id, html) { if (lastHtml[id] !== html) { lastHtml[id] = html; $('#' + id + ' .body').innerHTML = html; } }
+function setBody(id, html) { if (lastHtml[id] !== html) { lastHtml[id] = html; $('#' + id + ' .body').innerHTML = html; if (id === 'p-monedas' && typeof layout === 'function' && !SINGLE) layout(); } }
 function render() {
   const coins = topN(withPending(CFG.coinsDaily ? S.dayCoins : S.coins), CFG.coinsTop);
   setBody('p-monedas', coins.length ? `<div class="rows">${rowsHtml(coins, '🪙')}</div>` : `<div class="empty">Sé el primero en apoyar 🎸</div>`);
@@ -442,6 +448,12 @@ function layout() {
       p.style.left = (POS[k][0] + CFG.shiftX) + 'px';
       p.style.top = Math.round(y0 + (POS[k][1] - y0) * CFG.size) + 'px';
     });
+    // Si el top de monedas crece (nombres en 2 líneas), el de taps baja para no taparse
+    const pm = $('#p-monedas'), pt = $('#p-taps');
+    if (!pm.classList.contains('hidden') && !pt.classList.contains('hidden') && POS.taps[1] > POS.monedas[1]) {
+      const bottom = parseFloat(pm.style.top) + pm.offsetHeight * CFG.size + 28;
+      if (parseFloat(pt.style.top) < bottom) pt.style.top = Math.round(bottom) + 'px';
+    }
     stage.style.transform = `scale(${innerWidth / 1080})`;
   }
 }

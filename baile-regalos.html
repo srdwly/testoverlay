@@ -383,7 +383,15 @@ function arrange() {
     if (d.drop > 0.9) d.x = x;                                         // recién llegado: cae directo a su lugar
   }
   // nombres en dos alturas para que no se pisen
-  live.slice().sort((a, b) => a.tx - b.tx).forEach((d, i) => d.tagUp = i % 2);
+  // cada fila tiene su propio carril de nombres (atrás va más arriba); dentro de la fila,
+  // si un nombre choca con el de al lado sube a un segundo carril
+  for (const r of [0, 1]) { const lanes = [[], []], gapX = 8 * SC;
+    const fits = (k, l, rr) => lanes[k].every(([a, c]) => rr + gapX <= a || l >= c + gapX);
+    const put = (d, k) => { const w = tagFor(d).width; d.tagUp = k; lanes[k].push([d.tx - w / 2, d.tx + w / 2]); };
+    const rowD = live.filter(d => d.row === r).sort((a, b) => a.tx - b.tx);
+    rowD.filter(d => d.leader).forEach(d => put(d, 1));              // el líder (más alto, con corona) va en el carril de arriba
+    rowD.filter(d => !d.leader).forEach(d => { const w = tagFor(d).width, l = d.tx - w / 2, rr = d.tx + w / 2;
+      put(d, fits(0, l, rr) ? 0 : fits(1, l, rr) ? 1 : (lanes[0].length <= lanes[1].length ? 0 : 1)); }); }
 }
 
 /* ── Etiqueta de nombre (se dibuja una sola vez y se reusa) ── */
@@ -590,9 +598,9 @@ function drawFloor(t, b, fiesta, active) {
    (pila bajita para no taparlos). Al caer, los bailarines de al lado rebotan; un regalo
    grande hace saltar a todos.                                                          */
 const GC = {
-  size: 32 * SC * num('regalo', 1),   // radio de un regalo de 1 moneda (px) · ?regalo=1.3 los agranda
+  size: 42 * SC * num('regalo', 1),   // radio de un regalo de 1 moneda (px) · ?regalo=1.3 los agranda
   maxMult: 2.6, gravity: 1800, bounce: 0.25, friction: 0.35, overlap: 0.62, popBounce: 0.55,
-  max: Math.round(num('maxregalos', 60)), life: num('vida', 90), pileMax: 150 * SC,
+  max: Math.round(num('maxregalos', 60)), life: num('vida', 90), pileMax: 185 * SC,
   maxPerGift: 30, gapMs: 90, bigCoins: 100,
   ficha: Q.get('ficha') === '0' ? 'off' : Q.get('ficha') === 'siempre' ? 'siempre' : 'vuelo',   // 3D solo en el vuelo (por defecto)
   grosor: 0.22, inclina: 28,
@@ -855,7 +863,9 @@ function render(t) {
   // nombres + energía
   for (const d of order) {
     const inf = info.get(d), tag = tagFor(d);
-    const ty = Math.min(inf.floor - 205 * inf.sc, inf.top - 26 * inf.sc) - (d.leader ? 18 * inf.sc : 0) - (d.tagUp ? 38 * SC : 0);
+    // carriles fijos: adelante 2 alturas, atrás 2 alturas más arriba (no se mueven con los saltos, así no se pisan)
+    const ty = FLOOR - (d.row ? 314 : 205) * SC - (d.tagUp ? 50 * SC : 0);
+    d.tagY = ty - tag.height;
     ctx.globalAlpha = d.alpha;
     ctx.drawImage(tag, Math.round(d.x - tag.width / 2), Math.round(ty - tag.height));
     const bw = 84 * inf.sc, e = clamp(d.energy / 120, 0, 1);            // barra llena = 2 min o más (celeste si tiene más de 10 min)
@@ -872,7 +882,7 @@ function render(t) {
   // textos flotantes
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
   for (const f of floats) { const q = (t - f.t0) / f.life;
-    const x = f.d ? f.d.x : f.x, y = f.d ? (info.get(f.d) ? info.get(f.d).floor - 290 * SC : FLOOR - 290 * SC) - q * 70 * SC : f.y;
+    const x = f.d ? f.d.x : f.x, y = f.d ? (f.d.tagY != null ? f.d.tagY - 24 * SC : FLOOR - 290 * SC) - q * 70 * SC : f.y;
     const fs = Math.round((f.big >= 1 ? 92 : f.big ? 40 : 32) * SC * (f.big >= 1 ? 1 + 0.08 * Math.sin(b * TAU) : 1));
     ctx.globalAlpha = q < 0.8 ? 1 : (1 - q) / 0.2;
     ctx.font = `900 ${fs}px "Segoe UI", Arial, sans-serif`; ctx.lineWidth = fs / 6; ctx.strokeStyle = 'rgba(0,0,0,0.85)';

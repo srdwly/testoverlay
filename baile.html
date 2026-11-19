@@ -11,12 +11,17 @@
    CÓMO SE JUEGA
    · ❤️ QUIÉREME → tu bailarín FIJO, con tu nombre, color y foto de cabeza. Queda
                   guardado para siempre (también en otros lives): si se queda sin
-                  energía se sienta a descansar, pero no se va.
+                  energía se sienta a descansar, pero no se va. Si ya es del club de
+                  fans (mandó su Quiéreme otro día) también cuenta como fijo.
    · 👆 TAPS    → energía para tu bailarín. Si no tienes bailarín, entras como
                   INVITADO gris (si hay lugar); sin energía el invitado se va.
-   · 🎁 REGALOS → mucha energía (1 moneda = 6 s) y NIVEL:
-                  Nv2 10 monedas (bandana) · Nv3 50 (lentes) · Nv4 200 (sombrero)
-                  · Nv5 1000 (capa). El que más monedas dio está al centro con CORONA.
+   · 🎁 REGALOS → siempre entras a la pista (aunque esté llena), mucha energía
+                  (1 moneda = 6 s) y NIVEL según monedas acumuladas:
+                  Nv2 10 bandana · Nv3 50 lentes · Nv4 200 sombrero · Nv5 1000 capa
+                  · Nv6 2500 cadena de oro con púa · Nv7 5000 fuego en los pies
+                  · Nv8 10000 alas · Nv9 20000 cuerpo dorado y aureola
+                  · Nv10 50000 LEYENDA (arcoíris y foco propio).
+                  El que más monedas dio está al centro con CORONA.
                   Un regalo de 500+ arma una FIESTA (luces y confeti 15 s).
    · 💃🕺🎸🔥🤸👏 o "baila" en el chat → paso especial (+2 s).
 
@@ -30,7 +35,7 @@
      ?bpm=100    velocidad del baile (también !bpm 120 en el chat, solo dueños)
      ?fan=Heart Me  nombre del regalo que da bailarín fijo (por defecto Quiéreme / Heart Me)
      ?invitados=0  sin invitados gratis · ?fotos=0 cabeza dibujada en vez de foto
-     ?luces=0    sin piso de luces · ?ayuda=0 sin el texto de cómo jugar
+     ?luces=0    sin piso de luces · ?ayuda=1 muestra un cartel con las reglas
      ?fps=30     limita cuadros por segundo (por defecto sigue a OBS)
    COMANDOS (dueños): !bpm N · !fiesta · !limpiar
    ════════════════════════════════════════════════════════════════ */
@@ -46,7 +51,7 @@ const CFG = {
   guests: Q.get('invitados') !== '0',
   photos: Q.get('fotos') !== '0',
   lights: Q.get('luces') !== '0',
-  help: Q.get('ayuda') !== '0',
+  help: Q.get('ayuda') === '1',
   fps: num('fps', 0),
   energyMax: 120,        // segundos de baile como máximo
   secPerCoin: 6,         // 1 moneda = 6 s
@@ -56,7 +61,7 @@ const CFG = {
   fanGift: Q.get('fan') || '', fanGiftId: 7934,
   emojiSec: 2, emojiCooldown: 4,
   tiredSec: 8,
-  levels: [0, 10, 50, 200, 1000],
+  levels: [0, 10, 50, 200, 1000, 2500, 5000, 10000, 20000, 50000],
   fiestaSec: 15, fiestaCoins: 500,
 };
 </script>
@@ -110,7 +115,15 @@ if (Q.has('test') || Q.has('demo')) FANS = {};
 function saveFans() { if (Q.has('test') || Q.has('demo')) return; try { localStorage.setItem(FKEY, JSON.stringify(FANS)); } catch (e) {} }
 const isFanGift = (name, id) => CFG.fanGift ? String(name || '').toLowerCase() === CFG.fanGift.toLowerCase()
   : (/heart\s*me|qui[eé]reme/i.test(name || '') || +id === CFG.fanGiftId);
-function hueOf(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % 360; }
+// ¿ya es del club de fans? (TikTok manda el nivel del club en cada evento)
+function clubFan(d) { if ((+d.teamMemberLevel || 0) > 0 || (+d.fansClubLevel || 0) > 0) return true;
+  return Array.isArray(d.userBadges) && d.userBadges.some(b => /fan/i.test((b && (b.name || b.type || b.badgeSceneType || '')) + '')); }
+function markFan(uid, name, pic) {
+  if (!FANS[uid]) { FANS[uid] = { name: String(name || uid).slice(0, 13), pic: pic || '', coins: 0 }; saveFans(); }
+  const x = byId.get(uid); if (x && x.guest) { x.guest = false; if (!x.lvl) x.lvl = 1; x.tag = null;
+    floatText(x, '❤️ ¡Bailarín fijo!', '#ff6b8a', 1); burst(x.x, FLOOR - 120 * SC, 30, 345, 'chispa'); lastRank = 0; wake(); }
+}
+function hueOf(s) { let h = 2166136261; for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619); h ^= h >>> 13; h = Math.imul(h, 0x5bd1e995); h ^= h >>> 15; return (h >>> 0) % 360; }
 function levelOf(coins) { let l = 1; CFG.levels.forEach((c, i) => { if (coins >= c) l = i + 1; }); return l; }
 const beats = t => (t - beat0) * bpm / 60;
 const inFiesta = t => t < fiestaUntil;
@@ -201,8 +214,9 @@ const SPECIAL = {
   guitarrazo: { len: 4, f(q) { return MOVES.guitarra(q * 4); } },
 };
 // Pasos disponibles por nivel
-const UNLOCK = [['aplauso', 'brazos', 'cumbia'], ['aplauso', 'brazos', 'disco', 'cumbia'], ['brazos', 'disco', 'floss', 'cumbia', 'robot'],
-  ['disco', 'floss', 'correr', 'guitarra', 'cumbia', 'robot'], ['disco', 'floss', 'correr', 'guitarra', 'cumbia', 'robot', 'brazos']];
+// Todos rotan por todos los pasos (cada 8 tiempos); con más nivel hacen especiales solos más seguido
+const ROTA = ['aplauso', 'cumbia', 'brazos', 'disco', 'robot', 'floss', 'correr', 'guitarra'];
+const AUTO_SP = lvl => lvl >= 5 ? ['mortal', 'split', 'giro', 'salto', 'guitarrazo', 'dab'] : lvl >= 3 ? ['giro', 'salto', 'dab', 'aplausos'] : ['salto', 'aplausos'];
 const FIESTA_SEQ = ['brazos', 'disco', 'cumbia', 'correr'];
 // Emojis / palabras del chat → paso especial
 const EMOJI = [[/🤸|mortal|flip/i, 'mortal'], [/🎸|🤘|guitarra|rock/i, 'guitarrazo'], [/🔥|salta|jump/i, 'salto'],
@@ -263,6 +277,8 @@ function getOrSpawn(uid, name, pic, prio) {
   if (dancers.filter(x => !x.leaving).length >= CFG.max) {
     const pool = dancers.filter(x => !x.leaving && !x.leader && (x.energy <= 0 || (prio >= 2 && x.guest)))
       .sort((a, b) => ((a.energy > 0) - (b.energy > 0)) || (b.guest - a.guest) || (a.energy - b.energy));
+    // el que regala SIEMPRE entra: si no hay nadie descansando, sale el que tiene menos energía (vuelve cuando haga tap)
+    if (!pool[0] && prio >= 3) pool.push(...dancers.filter(x => !x.leaving && !x.leader).sort((a, b) => (b.guest - a.guest) || (a.energy - b.energy)));
     if (!pool[0]) return null;
     leave(pool[0], true);
   }
@@ -281,7 +297,7 @@ function addEnergy(d, sec) {
 function onGiftCoins(uid, name, pic, coins, giftName, giftId) {
   const t = now(), fanGift = isFanGift(giftName, giftId);
   if (fanGift && !FANS[uid]) { FANS[uid] = { name: String(name || uid).slice(0, 13), pic, coins: 0 }; saveFans(); }
-  const d = getOrSpawn(uid, name, pic, 2);
+  const d = getOrSpawn(uid, name, pic, 3);
   if (!d) return;
   const lvl0 = d.lvl, wasGuest = d.guest;
   d.coins += coins; d.lvl = levelOf(d.coins);
@@ -417,12 +433,17 @@ function drawDancer(d, p, t) {
   };
   const [LK, LF] = leg(p.lfx, p.lfy, -1), [RK, RF] = leg(p.rfx, p.rfy, 1);
 
+  if (d.lvl >= 10) { ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.35 * d.alpha; const bh = 13 * u;
+    ctx.drawImage(tintBeams[2], d.x - 2.6 * u, floor - bh, 5.2 * u, bh); ctx.restore(); }                 // foco propio (leyenda)
+  if (d.lvl >= 7) drawFlames(d.x, floor - dropY, u, t, d.lvl >= 10 ? (t * 140 + d.hue) % 360 : -1, d.alpha);
   ctx.save();
   ctx.globalAlpha = d.alpha;
   ctx.translate(hipX, hipY);
   if (p.rot) { ctx.translate(0, 0.6 * u); ctx.rotate(p.rot); ctx.translate(0, -0.6 * u); }
   ctx.scale(Math.sign(p.sx || 1) * Math.max(0.22, Math.abs(p.sx)), 1);
-  const col = d.guest ? '#bdbdbd' : `hsl(${d.hue},90%,62%)`;
+  const col = d.lvl >= 10 ? `hsl(${(t * 140 + d.hue) % 360},95%,62%)` : d.lvl >= 9 ? `hsl(45,95%,${56 + 10 * Math.sin(t * 4)}%)` : d.guest ? '#bdbdbd' : `hsl(${d.hue},90%,62%)`;
+  // alas (nivel 8+), detrás del cuerpo
+  if (d.lvl >= 8) drawWings(sh, u, t, d.lvl >= 10);
   // capa (nivel 5)
   if (d.lvl >= 5) { const fl = Math.sin(t * 6) * 0.5 * u; ctx.fillStyle = '#c2102a'; ctx.beginPath();
     ctx.moveTo(sh[0] - 0.9 * u, sh[1]); ctx.lineTo(sh[0] + 0.9 * u, sh[1]); ctx.lineTo(1.7 * u + fl, 1.2 * u); ctx.lineTo(-1.7 * u + fl, 1.2 * u); ctx.closePath(); ctx.fill(); }
@@ -436,8 +457,23 @@ function drawDancer(d, p, t) {
   ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 0.6 * u + 5; ctx.stroke(path);
   const fl = d.flash && t - d.flash < 0.35 ? 1 - (t - d.flash) / 0.35 : 0;
   ctx.strokeStyle = fl ? `hsl(${d.hue},100%,${62 + 30 * fl}%)` : col; ctx.lineWidth = 0.6 * u; ctx.stroke(path);
+  // cadena de oro con púa (nivel 6+)
+  if (d.lvl >= 6) { const c = [td[0] * 1.9 * u, td[1] * 1.9 * u];
+    ctx.strokeStyle = '#ffd54a'; ctx.lineWidth = 0.16 * u; ctx.beginPath(); ctx.moveTo(sh[0] - 0.55 * u, sh[1] + 0.05 * u); ctx.quadraticCurveTo(c[0] - 0.2 * u, c[1], c[0], c[1]);
+    ctx.quadraticCurveTo(c[0] + 0.2 * u, c[1], sh[0] + 0.55 * u, sh[1] + 0.05 * u); ctx.stroke();
+    ctx.fillStyle = '#e3122b'; ctx.strokeStyle = '#ffd54a'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(c[0] - 0.4 * u, c[1] + 0.05 * u);
+    ctx.quadraticCurveTo(c[0], c[1] - 0.15 * u, c[0] + 0.4 * u, c[1] + 0.05 * u); ctx.quadraticCurveTo(c[0] + 0.2 * u, c[1] + 0.6 * u, c[0], c[1] + 0.75 * u);
+    ctx.quadraticCurveTo(c[0] - 0.2 * u, c[1] + 0.6 * u, c[0] - 0.4 * u, c[1] + 0.05 * u); ctx.fill(); ctx.stroke(); }
   // guitarra en el aire
-  if (d.special === 'guitarrazo' || (d.move === 'guitarra' && !d.special)) drawGuitar(lh, rh, u);
+  if (d.special === 'guitarrazo' || (d.move === 'guitarra' && !d.special)) {
+    drawGuitar(lh, rh, u);
+    // antebrazos y manos encima de la guitarra (tocando, no detrás)
+    const arms = new Path2D();
+    arms.moveTo(le[0], le[1]); arms.lineTo(lh[0], lh[1]); arms.moveTo(re[0], re[1]); arms.lineTo(rh[0], rh[1]);
+    arms.moveTo(lh[0] + 0.01, lh[1]); arms.arc(lh[0], lh[1], 0.12 * u, 0, TAU); arms.moveTo(rh[0] + 0.01, rh[1]); arms.arc(rh[0], rh[1], 0.12 * u, 0, TAU);
+    ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 0.6 * u + 5; ctx.stroke(arms);
+    ctx.strokeStyle = fl ? `hsl(${d.hue},100%,${62 + 30 * fl}%)` : col; ctx.lineWidth = 0.6 * u; ctx.stroke(arms);
+  }
   // cabeza
   ctx.translate(hc[0], hc[1]); ctx.rotate(ha);
   ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.beginPath(); ctx.arc(0, 0, HR + 3, 0, TAU); ctx.fill();
@@ -449,11 +485,13 @@ function drawDancer(d, p, t) {
     if (tired) { ctx.moveTo(-0.3 * u, 0.35 * u); ctx.lineTo(0.3 * u, 0.35 * u); } else ctx.arc(0, 0.12 * u, 0.36 * u, 0.15 * Math.PI, 0.85 * Math.PI);
     ctx.stroke(); }
   if (d.lvl >= 2) { ctx.fillStyle = d.lvl >= 4 ? '#111' : '#e3122b'; ctx.fillRect(-HR, -0.55 * u, HR * 2, 0.24 * u); }       // bandana
-  if (d.lvl >= 3) { ctx.fillStyle = '#0b0b0f'; ctx.beginPath(); ctx.roundRect(-0.72 * u, -0.28 * u, 0.62 * u, 0.34 * u, 0.1 * u); ctx.roundRect(0.1 * u, -0.28 * u, 0.62 * u, 0.34 * u, 0.1 * u); ctx.fill();
+  if (d.lvl >= 3) { ctx.fillStyle = d.lvl >= 6 ? '#e8b020' : '#0b0b0f'; ctx.beginPath(); ctx.roundRect(-0.72 * u, -0.28 * u, 0.62 * u, 0.34 * u, 0.1 * u); ctx.roundRect(0.1 * u, -0.28 * u, 0.62 * u, 0.34 * u, 0.1 * u); ctx.fill();
     ctx.fillRect(-0.15 * u, -0.22 * u, 0.3 * u, 0.08 * u); }
   if (d.lvl >= 4 && !d.leader) { ctx.fillStyle = '#20151a'; ctx.beginPath(); ctx.ellipse(0, -0.72 * u, 1.45 * u, 0.28 * u, 0, 0, TAU); ctx.fill();
     ctx.beginPath(); ctx.roundRect(-0.7 * u, -1.65 * u, 1.4 * u, 1.0 * u, 0.25 * u); ctx.fill(); ctx.fillStyle = '#e3122b'; ctx.fillRect(-0.7 * u, -0.98 * u, 1.4 * u, 0.2 * u); }
   if (d.leader) drawCrown(u, t);
+  if (d.lvl >= 9) { ctx.strokeStyle = '#ffe27a'; ctx.lineWidth = 0.22 * u; ctx.globalAlpha = d.alpha * (0.8 + 0.2 * Math.sin(t * 5)); ctx.beginPath();
+    ctx.ellipse(0, -(d.leader ? 2.35 : d.lvl >= 4 ? 2.0 : 1.35) * u, 0.95 * u, 0.28 * u, 0, 0, TAU); ctx.stroke(); ctx.globalAlpha = d.alpha; }   // aureola
   ctx.restore();
   // sudor si está cansado
   if (d.energy <= 0 && !d.leaving && Math.floor(t * 3) % 2) { ctx.fillStyle = '#7fd3ff'; ctx.globalAlpha = d.alpha;
@@ -479,6 +517,33 @@ function drawGuitar(lh, rh, u) {
   ctx.translate((body[0] + lh[0]) / 2, (body[1] + lh[1]) / 2);
   ctx.rotate(Math.atan2(dy, dx) + Math.PI * 3 / 4);                   // mástil del sprite está a -135°
   ctx.drawImage(guitarImg(), -S / 2, -S / 2, S, S);
+  ctx.restore();
+}
+function drawWings(sh, u, t, legend) {
+  const flap = Math.sin(t * 6) * 0.22;
+  for (const side of [-1, 1]) {
+    ctx.save(); ctx.translate(sh[0] + side * 0.2 * u, sh[1] + 0.3 * u); ctx.rotate(side * (0.15 + flap)); ctx.scale(side, 1);
+    ctx.fillStyle = legend ? `hsla(${(t * 140) % 360},95%,70%,0.92)` : 'rgba(255,255,255,0.93)'; ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(0, 0);
+    ctx.bezierCurveTo(1.2 * u, -2.4 * u, 3.6 * u, -2.6 * u, 4.4 * u, -1.6 * u);
+    ctx.quadraticCurveTo(3.6 * u, -1.1 * u, 3.9 * u, -0.5 * u); ctx.quadraticCurveTo(3.0 * u, -0.3 * u, 3.2 * u, 0.4 * u);
+    ctx.quadraticCurveTo(2.2 * u, 0.3 * u, 2.2 * u, 1.0 * u); ctx.quadraticCurveTo(1.0 * u, 0.9 * u, 0, 0.3 * u);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = legend ? 'rgba(255,255,255,0.6)' : 'rgba(120,170,220,0.7)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0.6 * u, -0.3 * u); ctx.quadraticCurveTo(2.2 * u, -1.4 * u, 3.8 * u, -1.5 * u); ctx.moveTo(0.6 * u, 0); ctx.quadraticCurveTo(1.8 * u, -0.5 * u, 3.0 * u, -0.4 * u); ctx.stroke();
+    ctx.restore(); }
+}
+function drawFlames(x, y, u, t, hue, alpha) {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 6; i++) {
+    const k = i / 5 - 0.5, fx = x + k * 3.6 * u, h = (2.3 + 1.1 * Math.sin(t * 9 + i * 1.7) + 0.5 * Math.sin(t * 13 + i)) * u * (1 - Math.abs(k) * 0.6), w = 0.55 * u;
+    const sway = Math.sin(t * 7 + i * 2) * 0.35 * u;
+    ctx.globalAlpha = 0.75 * alpha;
+    ctx.fillStyle = hue >= 0 ? `hsl(${(hue + i * 30) % 360},100%,55%)` : (i % 2 ? '#ff5a1f' : '#ff8a1f');
+    ctx.beginPath(); ctx.moveTo(fx - w, y); ctx.quadraticCurveTo(fx - w * 0.8, y - h * 0.5, fx + sway, y - h); ctx.quadraticCurveTo(fx + w * 0.8, y - h * 0.5, fx + w, y); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = hue >= 0 ? 'rgba(255,255,255,0.7)' : '#ffd54a'; ctx.globalAlpha = 0.8 * alpha;
+    ctx.beginPath(); ctx.moveTo(fx - w * 0.45, y); ctx.quadraticCurveTo(fx, y - h * 0.35, fx + sway * 0.5, y - h * 0.55); ctx.quadraticCurveTo(fx + w * 0.3, y - h * 0.3, fx + w * 0.45, y); ctx.closePath(); ctx.fill();
+  }
   ctx.restore();
 }
 function drawCrown(u, t) {
@@ -539,9 +604,12 @@ function update(t, dt) {
     if (window.__forceMove) { setMove(d, window.__forceMove, t); continue; }
     if (fiesta) { setMove(d, FIESTA_SEQ[Math.floor(b / 8) % FIESTA_SEQ.length], t); continue; }
     if (d.energy < 12) { setMove(d, 'sway', t); continue; }
-    const list = UNLOCK[Math.max(0, d.lvl - 1)];
-    const slot = Math.floor((b + (d.hue % 7)) / 8);                  // cambia de paso cada 8 tiempos
-    if (d.move === 'caminar' || d.move === 'sway' || d.move === 'cansado' || d.move === 'saludo' || d.beatSlot !== slot) { d.beatSlot = slot; setMove(d, list[(slot + d.hue) % list.length], t); }
+    const slot = Math.floor((b + (d.hue % 4)) / 8);                  // cambia de paso cada 8 tiempos
+    if (d.beatSlot !== slot || d.move === 'caminar' || d.move === 'sway' || d.move === 'cansado' || d.move === 'saludo') {
+      const turned = d.beatSlot !== slot && d.beatSlot !== -1; d.beatSlot = slot;
+      setMove(d, ROTA[(slot + d.hue) % ROTA.length], t);
+      if (turned && !d.special && R() < 0.2 + 0.05 * Math.min(10, d.lvl)) doSpecial(d, pick(AUTO_SP(d.lvl)), t);   // especial solo
+    }
   }
   for (let i = parts.length - 1; i >= 0; i--) { const p = parts[i]; p.age += dt; if (p.age > p.life) { parts.splice(i, 1); continue; }
     p.x += p.vx * dt; p.y += p.vy * dt; if (p.type === 'chispa') p.vy += 500 * dt; else if (p.type === 'polvo') { p.vx *= 1 - 4 * dt; p.vy = p.vy * (1 - 5 * dt) - 20 * dt; } else { p.spin += dt * 6; p.x += Math.sin(p.age * 4 + p.hue) * 40 * dt; } }
@@ -637,6 +705,8 @@ function onChat(d) {
   onEmoji(uid, d.nickname || uid, d.profilePictureUrl || '', txt);
 }
 function handle(ev, d) {
+  const fu = (d.uniqueId || d.userId || '').toString().toLowerCase();
+  if (fu && !FANS[fu] && clubFan(d)) markFan(fu, d.nickname || fu, d.profilePictureUrl || '');
   if (ev === 'gift') onGift(d);
   else if (ev === 'like') onLike(d);
   else if (ev === 'chat') onChat(d);

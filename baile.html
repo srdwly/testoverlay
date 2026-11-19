@@ -9,26 +9,26 @@
    PISTA DE BAILE — minijuego de stickmans bailarines (todo dibujado con código)
 
    CÓMO SE JUEGA
-   · 🎁 REGALO  → entras a la pista con un bailarín con TU NOMBRE (y tu foto de
-                  cabeza). Cada moneda suma ENERGÍA (segundos de baile).
-                  Regalos más grandes = pasos más locos y NIVEL más alto:
+   · ❤️ QUIÉREME → tu bailarín FIJO, con tu nombre, color y foto de cabeza. Queda
+                  guardado para siempre (también en otros lives): si se queda sin
+                  energía se sienta a descansar, pero no se va.
+   · 👆 TAPS    → energía para tu bailarín. Si no tienes bailarín, entras como
+                  INVITADO gris (si hay lugar); sin energía el invitado se va.
+   · 🎁 REGALOS → mucha energía (1 moneda = 6 s) y NIVEL:
                   Nv2 10 monedas (bandana) · Nv3 50 (lentes) · Nv4 200 (sombrero)
                   · Nv5 1000 (capa). El que más monedas dio está al centro con CORONA.
-   · 💃🕺🎸🔥🤸👏 o "baila" en el chat → tu bailarín hace un paso especial
-                  (+2 s de energía). Si no tienes bailarín entras gratis como
-                  INVITADO gris por poco tiempo (si hay lugar).
-   · ❤️ TAPS, compartir, seguir y emojis llenan la barra de FIESTA: al llenarse
-                  todos bailan sincronizados con luces y confeti (no gastan energía).
-   · Sin energía el bailarín se cansa; si nadie lo anima en 8 s, se va.
+                  Un regalo de 500+ arma una FIESTA (luces y confeti 15 s).
+   · 💃🕺🎸🔥🤸👏 o "baila" en el chat → paso especial (+2 s).
 
    ENLACE (fuente de navegador en OBS, 1080×1920):
      baile.html                   → normal (TikFinity ws://localhost:21213)
-     ?test=1     botones para probar sin live (o teclas 1-6, E, L, F, C)
+     ?test=1     botones para probar sin live (o teclas 1-6, Q, E, L, F, C)
      ?demo=1     simula un live solo
      ?piso=1500  altura del piso en el lienzo 1920 (también puedes mover la fuente en OBS)
      ?escala=1   tamaño de los bailarines
      ?max=12     máximo de bailarines a la vez
      ?bpm=100    velocidad del baile (también !bpm 120 en el chat, solo dueños)
+     ?fan=Heart Me  nombre del regalo que da bailarín fijo (por defecto Quiéreme / Heart Me)
      ?invitados=0  sin invitados gratis · ?fotos=0 cabeza dibujada en vez de foto
      ?luces=0    sin piso de luces · ?ayuda=0 sin el texto de cómo jugar
      ?fps=30     limita cuadros por segundo (por defecto sigue a OBS)
@@ -51,11 +51,12 @@ const CFG = {
   energyMax: 120,        // segundos de baile como máximo
   secPerCoin: 6,         // 1 moneda = 6 s
   spawnMinSec: 25,       // al entrar siempre tienes al menos 25 s
-  guestSec: 20, guestMax: 30,
+  guestSec: 15, guestMax: 60,  // invitado: entra con 15 s, los taps le dan hasta 60 s
+  tapSec: 0.15,                // cada tap = 0,15 s de energía
+  fanGift: Q.get('fan') || '', fanGiftId: 7934,
   emojiSec: 2, emojiCooldown: 4,
   tiredSec: 8,
   levels: [0, 10, 50, 200, 1000],
-  hype: { perTap: 0.12, tapCapPerSec: 8, emoji: 2, perCoin: 0.4, share: 6, follow: 4, decay: 0.5 },
   fiestaSec: 15, fiestaCoins: 500,
 };
 </script>
@@ -99,9 +100,16 @@ const dancers = [];                 // bailarines en pista
 const byId = new Map();
 const parts = [];                   // partículas (confeti, chispas, polvo)
 const floats = [];                  // textos flotantes
-let hype = 0, fiestaUntil = 0, tapBudget = 0, beat0 = now(), bpm = CFG.bpm, lastRank = 0, dirty = true;
+let fiestaUntil = 0, beat0 = now(), bpm = CFG.bpm, lastRank = 0, dirty = true;
 const MAXP = 240;
 
+/* Bailarines fijos (los que mandaron Quiéreme): se guardan para siempre en OBS */
+const FKEY = 'baile_fans_v1';
+let FANS = {}; try { FANS = JSON.parse(localStorage.getItem(FKEY) || '{}') || {}; } catch (e) {}
+if (Q.has('test') || Q.has('demo')) FANS = {};
+function saveFans() { if (Q.has('test') || Q.has('demo')) return; try { localStorage.setItem(FKEY, JSON.stringify(FANS)); } catch (e) {} }
+const isFanGift = (name, id) => CFG.fanGift ? String(name || '').toLowerCase() === CFG.fanGift.toLowerCase()
+  : (/heart\s*me|qui[eé]reme/i.test(name || '') || +id === CFG.fanGiftId);
 function hueOf(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % 360; }
 function levelOf(coins) { let l = 1; CFG.levels.forEach((c, i) => { if (coins >= c) l = i + 1; }); return l; }
 const beats = t => (t - beat0) * bpm / 60;
@@ -205,12 +213,13 @@ function poseLerp(a, b, t) { const o = {}; for (const k of KEYS) o[k] = a[k] + (
   let d = ((b.rot - a.rot) % TAU + TAU * 1.5) % TAU - TAU / 2; o.rot = a.rot + d * t; return o; }
 
 /* ── Bailarín ─────────────────────────────────────────── */
-function makeDancer(uid, name, pic, guest) {
-  const d = { uid, name: String(name || uid).slice(0, 13), pic, guest, coins: 0, energy: 0, lvl: guest ? 0 : 1,
+function makeDancer(uid, name, pic) {
+  const fan = FANS[uid], coins = fan ? fan.coins || 0 : 0;
+  const d = { uid, name: String(name || (fan && fan.name) || uid).slice(0, 13), pic: pic || (fan && fan.pic) || '', guest: !fan, coins, energy: 0, lvl: fan ? levelOf(coins) : (coins ? levelOf(coins) : 0),
     x: 540 + (R() - 0.5) * 600, tx: 540, row: 0, s: 1, hue: hueOf(uid), born: now(), drop: 1,
     move: 'brazos', moveAt: now(), slot: null, beatSlot: -1, amp: 0.88 + R() * 0.28, lag: R() * 0.06, land: 0, prev: null, prevAt: 0, special: null, spAt: 0, spB0: 0,
     tiredAt: 0, leaving: 0, lastEmoji: 0, tag: null, tagKey: '', avatar: null, alpha: 0, leader: false, flash: 0 };
-  if (pic && CFG.photos) loadAvatar(d);
+  if (d.pic && CFG.photos) loadAvatar(d);
   return d;
 }
 function loadAvatar(d) {
@@ -247,18 +256,17 @@ function currentPose(d, t) {
 }
 
 /* ── Llegada de eventos ───────────────────────────────── */
-function getOrSpawn(uid, name, pic, guest) {
+// prio: 2 = fijo o alguien que regaló (puede sacar invitados y a los que descansan), 1 = invitado (solo saca a los que descansan)
+function getOrSpawn(uid, name, pic, prio) {
   let d = byId.get(uid);
   if (d) { if (d.leaving) { d.leaving = 0; d.alpha = Math.max(d.alpha, 0.3); } if (pic && !d.pic) { d.pic = pic; if (CFG.photos) loadAvatar(d); } return d; }
-  if (dancers.length >= CFG.max) {
-    // hace lugar: primero el invitado más cansado; un invitado nunca saca a alguien que regaló
-    const pool = dancers.filter(x => !x.leaving && (x.guest || !guest) && !x.leader).sort((a, b) => (b.guest - a.guest) || (a.energy - b.energy));
-    const out = pool[0];
-    if (!out) return null;
-    leave(out, true);
-    if (dancers.filter(x => !x.leaving).length >= CFG.max) return null;
+  if (dancers.filter(x => !x.leaving).length >= CFG.max) {
+    const pool = dancers.filter(x => !x.leaving && !x.leader && (x.energy <= 0 || (prio >= 2 && x.guest)))
+      .sort((a, b) => ((a.energy > 0) - (b.energy > 0)) || (b.guest - a.guest) || (a.energy - b.energy));
+    if (!pool[0]) return null;
+    leave(pool[0], true);
   }
-  d = makeDancer(uid, name, pic, guest);
+  d = makeDancer(uid, name, pic);
   dancers.push(d); byId.set(uid, d);
   burst(d.x, FLOOR - 80 * SC, 18, d.hue, 'chispa');
   lastRank = 0;
@@ -268,23 +276,24 @@ function leave(d, fast) { if (d.leaving) return; d.leaving = now() + (fast ? 0 :
 
 function addEnergy(d, sec) {
   const room = CFG.energyMax - d.energy, add = Math.min(room, sec);
-  d.energy += add; d.tiredAt = 0;
-  if (sec - add > 0) addHype((sec - add) / 20);            // lo que sobra de energía ayuda a la barra de fiesta
+  d.energy += add; if (d.energy > 0) d.tiredAt = 0;
 }
-function onGiftCoins(uid, name, pic, coins, giftName) {
-  const t = now();
-  let d = getOrSpawn(uid, name, pic, false);
-  if (!d) { addHype(coins * CFG.hype.perCoin); return; }
-  const wasGuest = d.guest; d.guest = false;
-  const lvl0 = d.lvl; d.coins += coins; d.lvl = levelOf(d.coins);
-  const sec = Math.max(d.energy <= 0 || wasGuest ? CFG.spawnMinSec - d.energy : 0, coins * CFG.secPerCoin);
+function onGiftCoins(uid, name, pic, coins, giftName, giftId) {
+  const t = now(), fanGift = isFanGift(giftName, giftId);
+  if (fanGift && !FANS[uid]) { FANS[uid] = { name: String(name || uid).slice(0, 13), pic, coins: 0 }; saveFans(); }
+  const d = getOrSpawn(uid, name, pic, 2);
+  if (!d) return;
+  const lvl0 = d.lvl, wasGuest = d.guest;
+  d.coins += coins; d.lvl = levelOf(d.coins);
+  if (FANS[uid]) { d.guest = false; Object.assign(FANS[uid], { coins: d.coins, name: d.name, pic: d.pic || FANS[uid].pic }); saveFans(); }
+  const sec = Math.max(d.energy <= 0 ? CFG.spawnMinSec - d.energy : 0, coins * CFG.secPerCoin);
   addEnergy(d, sec);
-  addHype(Math.max(2, coins * CFG.hype.perCoin));
   d.flash = t;
-  floatText(d, '+' + Math.round(sec) + ' s', `hsl(${d.hue},90%,70%)`);
+  if (fanGift && wasGuest && !d.guest) { floatText(d, '❤️ ¡Bailarín fijo!', '#ff6b8a', 1); burst(d.x, FLOOR - 120 * SC, 30, 345, 'chispa'); d.tag = null; }
+  else floatText(d, '+' + Math.round(sec) + ' s', `hsl(${d.hue},90%,70%)`);
   if (d.lvl > lvl0 && lvl0 >= 1) { floatText(d, '¡NIVEL ' + d.lvl + '!', '#ffd54a', 1.3); burst(d.x, FLOOR - 120 * SC, 26, 48, 'chispa'); }
   doSpecial(d, coins >= 99 ? 'mortal' : coins >= 30 ? 'split' : coins >= 5 ? 'giro' : 'salto', t);
-  if (coins >= CFG.fiestaCoins) startFiesta(t, d.name);
+  if (coins >= CFG.fiestaCoins) startFiesta(t);
   lastRank = 0; wake();
 }
 function onEmoji(uid, name, pic, text) {
@@ -295,19 +304,13 @@ function onEmoji(uid, name, pic, text) {
   if (!sp) sp = ['giro', 'salto', 'dab', 'aplausos'][Math.floor(R() * 4)];
   let d = byId.get(uid);
   if (d && t - d.lastEmoji < CFG.emojiCooldown) return;     // anti-spam por persona
-  addHype(CFG.hype.emoji);
-  if (!d && CFG.guests) { d = getOrSpawn(uid, name, pic, true); if (d) addEnergy(d, CFG.guestSec); }
+  if (!d && (CFG.guests || FANS[uid])) { d = getOrSpawn(uid, name, pic, FANS[uid] ? 2 : 1); if (d) addEnergy(d, CFG.guestSec); }
   else if (d) addEnergy(d, d.guest ? Math.max(0, Math.min(CFG.emojiSec, CFG.guestMax - d.energy)) : CFG.emojiSec);
   if (d) { d.lastEmoji = t; doSpecial(d, sp, t); }
   wake();
 }
-function addHype(v) {
-  if (!dancers.length || inFiesta(now())) return;
-  hype = Math.min(100, hype + v);
-  if (hype >= 100) startFiesta(now());
-}
-function startFiesta(t, who) {
-  fiestaUntil = Math.max(fiestaUntil, t) + CFG.fiestaSec; hype = 0;
+function startFiesta(t) {
+  fiestaUntil = Math.max(fiestaUntil, t) + CFG.fiestaSec;
   for (let i = 0; i < 70; i++) confetti();
   wake();
 }
@@ -358,28 +361,28 @@ function tagFor(d) {
   if (d.tag && d.tagKey === key) return d.tag;
   const fs = Math.round(23 * SC), c = d.tag || document.createElement('canvas'), g = c.getContext('2d');
   g.font = `800 ${fs}px "Segoe UI", Arial, sans-serif`;
-  const label = d.guest ? d.name : d.name + '  ' + 'Nv' + d.lvl;
+  const label = d.guest && !d.lvl ? d.name : d.name + '  ' + 'Nv' + d.lvl;
   const tw = Math.ceil(g.measureText(label).width);
   c.width = tw + 20; c.height = fs + 14;
   g.font = `800 ${fs}px "Segoe UI", Arial, sans-serif`; g.textBaseline = 'middle'; g.textAlign = 'center';
   g.lineJoin = 'round'; g.lineWidth = 6; g.strokeStyle = 'rgba(0,0,0,0.85)';
   const cx = c.width / 2, cy = c.height / 2;
   g.strokeText(label, cx, cy);
-  if (d.guest) { g.fillStyle = '#d6d6d6'; g.fillText(label, cx, cy); }
-  else { g.fillStyle = d.leader ? '#ffd54a' : '#fff'; g.fillText(d.name, cx - g.measureText('  Nv' + d.lvl).width / 2, cy);
+  if (d.guest && !d.lvl) { g.fillStyle = '#d6d6d6'; g.fillText(label, cx, cy); }
+  else { g.fillStyle = d.leader ? '#ffd54a' : d.guest ? '#d6d6d6' : '#fff'; g.fillText(d.name, cx - g.measureText('  Nv' + d.lvl).width / 2, cy);
     const nx = cx + (tw - g.measureText('Nv' + d.lvl).width) / 2; g.fillStyle = `hsl(${d.hue},95%,68%)`; g.fillText('Nv' + d.lvl, nx, cy); }
   d.tag = c; d.tagKey = key; return c;
 }
 let helpCanvas = null;
 function helpTag() {
   if (helpCanvas) return helpCanvas;
-  const fs = Math.round(25 * Math.min(1.2, SC)), c = helpCanvas = document.createElement('canvas'), g = c.getContext('2d');
-  const line = '🎁 Regalo = entras a bailar   💃🕺🎸 = pasos   ❤️ Taps = FIESTA';
+  const fs = Math.round(24 * Math.min(1.2, SC)), c = helpCanvas = document.createElement('canvas'), g = c.getContext('2d');
+  const lines = ['❤️ Quiéreme = tu bailarín fijo    👆 Taps = energía', '🎁 Regalos = energía y nivel    💃🕺🎸 = pasos'];
   g.font = `700 ${fs}px "Segoe UI", Arial, sans-serif`;
-  c.width = Math.min(1060, Math.ceil(g.measureText(line).width) + 40); c.height = fs + 22;
-  g.fillStyle = 'rgba(10,6,12,0.6)'; const r = c.height / 2; g.beginPath(); g.roundRect(0, 0, c.width, c.height, r); g.fill();
+  c.width = Math.min(1060, Math.ceil(Math.max(...lines.map(l => g.measureText(l).width))) + 48); c.height = fs * 2 + 34;
+  g.fillStyle = 'rgba(10,6,12,0.6)'; g.beginPath(); g.roundRect(0, 0, c.width, c.height, 22); g.fill();
   g.font = `700 ${fs}px "Segoe UI", Arial, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = '#fff';
-  g.fillText(line, c.width / 2, c.height / 2 + 1, c.width - 30);
+  lines.forEach((l, i) => g.fillText(l, c.width / 2, 17 + fs / 2 + i * (fs + 4) + 1, c.width - 30));
   return c;
 }
 // cono de luz pre-dibujado
@@ -457,12 +460,26 @@ function drawDancer(d, p, t) {
     ctx.beginPath(); ctx.arc(hipX + hc[0] + HR + 4, hipY + hc[1] - 4, 0.22 * u, 0, TAU); ctx.fill(); ctx.globalAlpha = 1; }
   return { floor, sc, hipY, top: hipY + Math.min(hc[1], 0) - HR };
 }
+// guitarra real = emoji 🎸 (se dibuja una vez y se reusa). El emoji viene con el mástil
+// hacia arriba a la derecha; se voltea para que el mástil vaya a la mano izquierda.
+let guitarSprite = null;
+function guitarImg() {
+  if (guitarSprite) return guitarSprite;
+  const c = guitarSprite = document.createElement('canvas'); c.width = c.height = 160; const g = c.getContext('2d');
+  g.translate(160, 0); g.scale(-1, 1);
+  g.font = '128px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('🎸', 80, 88);
+  return c;
+}
 function drawGuitar(lh, rh, u) {
-  const bx = rh[0] * 0.55, by = rh[1] + 0.2 * u;
-  ctx.strokeStyle = '#3a2412'; ctx.lineWidth = 0.28 * u; ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(lh[0], lh[1]); ctx.stroke();
-  ctx.fillStyle = '#e3122b'; ctx.strokeStyle = 'rgba(0,0,0,0.75)'; ctx.lineWidth = 3;
-  ctx.beginPath(); ctx.ellipse(bx + 0.2 * u, by + 0.15 * u, 0.95 * u, 0.7 * u, -0.5, 0, TAU); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = '#1a1014'; ctx.beginPath(); ctx.arc(bx + 0.2 * u, by + 0.15 * u, 0.22 * u, 0, TAU); ctx.fill();
+  const body = [rh[0] * 0.45 + 0.1 * u, rh[1] + 0.6 * u];          // cuerpo de la guitarra junto a la mano que rasguea
+  const dx = lh[0] - body[0], dy = lh[1] - body[1], len = Math.hypot(dx, dy);
+  const S = Math.max(3.0 * u, len * 1.2);
+  ctx.save();
+  ctx.translate((body[0] + lh[0]) / 2, (body[1] + lh[1]) / 2);
+  ctx.rotate(Math.atan2(dy, dx) + Math.PI * 3 / 4);                   // mástil del sprite está a -135°
+  ctx.drawImage(guitarImg(), -S / 2, -S / 2, S, S);
+  ctx.restore();
 }
 function drawCrown(u, t) {
   const y = -0.85 * u, w = 1.5 * u, h = 0.95 * u;
@@ -489,18 +506,6 @@ function drawFloor(t, b, fiesta, active) {
     ctx.fillRect(i * tw + 3, y + 3, tw - 6, 16);
   }
 }
-function drawHype(t) {
-  if (!dancers.length) return;
-  const x = 40, y = FLOOR - BAND_UP + 40, w = 300 * Math.min(1, SC + 0.1), h = 22;
-  const fiesta = inFiesta(t);
-  const v = fiesta ? (fiestaUntil - t) / CFG.fiestaSec : hype / 100;
-  ctx.fillStyle = 'rgba(10,6,12,0.65)'; ctx.beginPath(); ctx.roundRect(x - 8, y - 34, w + 16, h + 44, 14); ctx.fill();
-  ctx.font = '800 22px "Segoe UI", Arial, sans-serif'; ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
-  ctx.fillStyle = '#fff'; ctx.fillText(fiesta ? '🪩 ¡FIESTA!' : '❤️ Barra de FIESTA', x, y - 10);
-  ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.fillRect(x, y, w, h);
-  ctx.fillStyle = fiesta ? `hsl(${(t * 200) % 360},95%,60%)` : '#e3122b'; ctx.fillRect(x, y, w * clamp(v, 0, 1), h);
-}
-
 /* ════════════════ BUCLE ════════════════ */
 let running = false, lastT = now(), lastSave = 0, lastHelp = -999, lastFrame = 0;
 function wake() { dirty = true; if (!running) { running = true; lastT = now(); requestAnimationFrame(frame); } }
@@ -518,8 +523,6 @@ function frame() {
 }
 function update(t, dt) {
   const fiesta = inFiesta(t), b = beats(t);
-  tapBudget = Math.min(CFG.hype.tapCapPerSec, tapBudget + CFG.hype.tapCapPerSec * dt);
-  if (!fiesta) hype = Math.max(0, hype - CFG.hype.decay * dt);
   if (t - lastRank > 2.5) { lastRank = t; arrange(); }
   for (let i = dancers.length - 1; i >= 0; i--) {
     const d = dancers[i];
@@ -531,7 +534,7 @@ function update(t, dt) {
     const dx = d.tx - d.x, walking = Math.abs(dx) > 10;
     if (walking) d.x += Math.sign(dx) * Math.min(Math.abs(dx), 280 * SC * dt);
     // elegir paso
-    if (d.energy <= 0) { if (!d.tiredAt) d.tiredAt = t; setMove(d, 'cansado', t); if (t - d.tiredAt > CFG.tiredSec) leave(d); continue; }
+    if (d.energy <= 0) { if (!d.tiredAt) d.tiredAt = t; setMove(d, 'cansado', t); if (d.guest && t - d.tiredAt > CFG.tiredSec) leave(d); continue; }   // los fijos se quedan descansando
     if (walking && d.drop <= 0) { setMove(d, 'caminar', t); continue; }
     if (window.__forceMove) { setMove(d, window.__forceMove, t); continue; }
     if (fiesta) { setMove(d, FIESTA_SEQ[Math.floor(b / 8) % FIESTA_SEQ.length], t); continue; }
@@ -585,7 +588,6 @@ function render(t) {
     ctx.font = `900 ${fs}px "Segoe UI", Arial, sans-serif`; ctx.lineWidth = fs / 6; ctx.strokeStyle = 'rgba(0,0,0,0.85)';
     ctx.strokeText(f.txt, x, y); ctx.fillStyle = f.big >= 1 ? `hsl(${(t * 220) % 360},95%,65%)` : f.col; ctx.fillText(f.txt, x, y); }
   ctx.globalAlpha = 1;
-  drawHype(t);
   // cómo jugar: siempre si la pista está vacía, si no 8 s cada minuto
   if (CFG.help) { const show = !active || (t - lastHelp) < 8; if (active && t - lastHelp > 60) lastHelp = t;
     if (show) { const h = helpTag(); ctx.drawImage(h, Math.round(540 - h.width / 2), FLOOR + 48 * Math.min(1, SC)); } }
@@ -593,13 +595,13 @@ function render(t) {
 
 /* ── Guardar (si OBS recarga la fuente, la pista sigue) ── */
 const SKEY = 'baile_pista_v1';
-function save() { try { localStorage.setItem(SKEY, JSON.stringify({ at: Date.now(), hype, bpm,
+function save() { try { localStorage.setItem(SKEY, JSON.stringify({ at: Date.now(), bpm,
   d: dancers.filter(d => !d.leaving).map(d => ({ uid: d.uid, name: d.name, pic: d.pic, guest: d.guest, coins: d.coins, energy: d.energy, x: d.x })) })); } catch (e) {} }
 function load() { try { const s = JSON.parse(localStorage.getItem(SKEY) || 'null');
   if (!s || Date.now() - s.at > 3 * 60 * 1000 || Q.has('test') || Q.has('demo')) return;
-  hype = s.hype || 0; bpm = s.bpm || bpm;
-  for (const o of s.d || []) { const d = makeDancer(o.uid, o.name, o.pic, o.guest); Object.assign(d, { coins: o.coins, energy: Math.max(o.energy, 6), x: o.x, drop: 0 });
-    d.lvl = d.guest ? 0 : levelOf(d.coins); dancers.push(d); byId.set(d.uid, d); } } catch (e) {} }
+
+  for (const o of s.d || []) { const d = makeDancer(o.uid, o.name, o.pic); Object.assign(d, { coins: Math.max(d.coins, o.coins || 0), energy: Math.max(o.energy, 6), x: o.x, drop: 0 });
+    d.lvl = d.coins ? levelOf(d.coins) : (d.guest ? 0 : 1); dancers.push(d); byId.set(d.uid, d); } } catch (e) {} }
 
 /* ── TikFinity ────────────────────────────────────────── */
 const combos = new Map(), seen = new Set();
@@ -613,15 +615,24 @@ function onGift(d) {
   const delta = Math.max(0, cnt - was);
   if (d.repeatEnd === false) combos.set(key, { n: cnt, t: Date.now() }); else combos.delete(key);
   if (!delta) return;
-  onGiftCoins(uid.toLowerCase(), d.nickname || uid, d.profilePictureUrl || '', coins * delta, d.giftName);
+  onGiftCoins(uid.toLowerCase(), d.nickname || uid, d.profilePictureUrl || '', coins * delta, d.giftName, d.giftId);
 }
-function onLike(d) { const n = parseInt(d.likeCount || 1, 10) || 1; const v = Math.min(tapBudget, n * CFG.hype.perTap); tapBudget -= v; addHype(v); if (dancers.length) wake(); }
+function onLike(d) {
+  const uid = (d.uniqueId || d.userId || '').toString().toLowerCase(); if (!uid) return;
+  const n = parseInt(d.likeCount || 1, 10) || 1;
+  let x = byId.get(uid);
+  if (!x) { if (!CFG.guests && !FANS[uid]) return; x = getOrSpawn(uid, d.nickname || uid, d.profilePictureUrl || '', FANS[uid] ? 2 : 1); if (!x) return; addEnergy(x, CFG.guestSec); }
+  const cap = x.guest ? CFG.guestMax : CFG.energyMax;
+  const was = x.energy; addEnergy(x, Math.max(0, Math.min(n * CFG.tapSec, cap - x.energy)));
+  if (was <= 0 && x.energy > 0) doSpecial(x, 'salto', now());           // se levanta de descansar
+  wake();
+}
 function onChat(d) {
   const uid = (d.uniqueId || d.userId || '').toString().toLowerCase(), txt = (d.comment || '').trim();
   if (txt.startsWith('!') && OWNERS.includes(uid)) {
     const m = txt.toLowerCase().match(/^!bpm\s+(\d{2,3})/); if (m) { const nb = clamp(+m[1], 60, 200); beat0 = now() - beats(now()) * 60 / nb; bpm = nb; return; }
     if (txt.toLowerCase() === '!fiesta') { if (dancers.length) startFiesta(now()); return; }
-    if (txt.toLowerCase() === '!limpiar') { dancers.forEach(x => leave(x, true)); hype = 0; fiestaUntil = 0; wake(); return; }
+    if (txt.toLowerCase() === '!limpiar') { dancers.forEach(x => leave(x, true)); fiestaUntil = 0; wake(); return; }
   }
   onEmoji(uid, d.nickname || uid, d.profilePictureUrl || '', txt);
 }
@@ -629,9 +640,6 @@ function handle(ev, d) {
   if (ev === 'gift') onGift(d);
   else if (ev === 'like') onLike(d);
   else if (ev === 'chat') onChat(d);
-  else if (ev === 'share') addHype(CFG.hype.share);
-  else if (ev === 'follow') addHype(CFG.hype.follow);
-  else if (ev === 'social') addHype(/share/i.test(d.displayType || d.label || '') ? CFG.hype.share : CFG.hype.follow);
 }
 let ws = null, reTimer = null;
 function connect() {
@@ -656,6 +664,7 @@ function fakeGift(coins, name, count) { const b = who(); const gid = 'g' + coins
     if (c >= count) { clearInterval(iv); handle('gift', { ...b, giftName: name, giftId: gid, diamondCount: coins, repeatCount: c, repeatEnd: true, giftType: 1 }); } }, 250); }
   else handle('gift', { ...b, giftName: name, giftId: gid, diamondCount: coins, repeatCount: 1, giftType: 2 }); }
 const TESTS = [
+  ['q', 'Quiéreme ❤️', () => fakeGift(1, 'Heart Me', 1)],
   ['1', 'Rosa (1)', () => fakeGift(1, 'Rose', 1)],
   ['2', '10 rosas', () => fakeGift(1, 'Rose', 10)],
   ['3', 'Corazón (5)', () => fakeGift(5, 'Finger Heart', 1)],
@@ -663,9 +672,9 @@ const TESTS = [
   ['5', 'Regalo 500', () => fakeGift(500, 'Money Gun', 1)],
   ['6', 'Galaxia (1000)', () => fakeGift(1000, 'Galaxy', 1)],
   ['e', 'Emoji 💃', () => handle('chat', { ...who(), comment: pick(['💃', '🕺', '🎸', '🔥', '🤸', '👏', 'baila!']) })],
-  ['l', 'Taps ❤️', () => handle('like', { ...who(), likeCount: 15 })],
+  ['l', 'Taps 👆', () => handle('like', { ...who(), likeCount: 15 })],
   ['f', '¡Fiesta!', () => { if (!dancers.length) fakeGift(1, 'Rose', 1); setTimeout(() => startFiesta(now()), 50); }],
-  ['c', 'Limpiar', () => { dancers.forEach(x => leave(x, true)); hype = 0; fiestaUntil = 0; wake(); }],
+  ['c', 'Limpiar', () => { dancers.forEach(x => leave(x, true)); fiestaUntil = 0; wake(); }],
 ];
 addEventListener('keydown', e => { const k = e.key.toLowerCase(); const t = TESTS.find(x => x[0] === k); if (t && e.target.tagName !== 'INPUT') t[2](); });
 if (Q.get('test') === '1') {
@@ -677,12 +686,13 @@ if (Q.get('test') === '1') {
 function startDemo() {
   setInterval(() => { const r = R();
     if (r < 0.45) handle('like', { ...who(), likeCount: 5 + Math.floor(R() * 40) });
+    else if (r < 0.52) fakeGift(1, 'Heart Me', 1);
     else if (r < 0.75) handle('chat', { ...who(), comment: pick(['💃', '🕺', '🎸', '🔥', '🤸', '👏', 'hola', 'baila']) });
     else if (r < 0.97) fakeGift(pick([1, 1, 1, 5, 10, 30]), 'Rose', R() < 0.4 ? 3 + Math.floor(R() * 8) : 1);
     else fakeGift(pick([99, 199, 500, 1000]), 'Big', 1);
   }, 900);
 }
-window.__baile = { handle, startFiesta, doSpecial: (d, n) => doSpecial(d, n, now()), get dancers() { return dancers; }, get hype() { return hype; }, CFG };
+window.__baile = { handle, startFiesta, doSpecial: (d, n) => doSpecial(d, n, now()), get dancers() { return dancers; }, get fans() { return FANS; }, CFG };
 
 /* ── Inicio ───────────────────────────────────────────── */
 load();

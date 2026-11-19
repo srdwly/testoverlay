@@ -15,7 +15,8 @@
    · 👆 TAPS    → energía para tu bailarín. Si no tienes bailarín, entras como
                   INVITADO gris (si hay lugar); sin energía el invitado se va.
    · 🎁 REGALOS → siempre entras a la pista (aunque esté llena), mucha energía
-                  (1 moneda = 6 s) y NIVEL según monedas acumuladas:
+                  (1 moneda = 6 s) y NIVEL según las monedas del DÍA (como el top de monedas;
+                  si tu bailarín se va y vuelve ese día, vuelve con el mismo nivel):
                   Nv2 10 bandana · Nv3 50 lentes · Nv4 200 sombrero · Nv5 1000 capa
                   · Nv6 2500 cadena de oro con púa · Nv7 5000 fuego en los pies
                   · Nv8 10000 aura · Nv9 20000 cuerpo dorado y aureola
@@ -114,6 +115,15 @@ let FANS = {}; try { FANS = JSON.parse(localStorage.getItem(FKEY) || '{}') || {}
 if (Q.has('test') || Q.has('demo')) FANS = {};
 function saveFans() { if (Q.has('test') || Q.has('demo')) return; const n = Date.now(); for (const k in FANS) if (FANS[k] < n) delete FANS[k];
   try { localStorage.setItem(FKEY, JSON.stringify(FANS)); } catch (e) {} }
+/* Monedas del DÍA por persona (como el top de monedas del ranking): el día empieza a las 3:00 y nunca
+   cambia en medio de un live (solo tras 60 min sin actividad). Si un bailarín se va y vuelve ese día,
+   vuelve con el mismo nivel. */
+const DKEY = 'baile_dia_v1', DAY_START_H = 3, DAY_GAP_MIN = 60;
+const dayKey = t => { const d = new Date(t - DAY_START_H * 3600e3); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+let DAY = { day: dayKey(Date.now()), act: 0, coins: {} };
+try { const s = JSON.parse(localStorage.getItem(DKEY) || 'null'); if (s && s.coins && !Q.has('test') && !Q.has('demo')) DAY = s; } catch (e) {}
+function rollDay() { const t = Date.now(); if (!(DAY.act && t - DAY.act <= DAY_GAP_MIN * 60e3) && DAY.day !== dayKey(t)) DAY = { day: dayKey(t), act: 0, coins: {} }; DAY.act = t; }
+function saveDay() { if (Q.has('test') || Q.has('demo')) return; try { localStorage.setItem(DKEY, JSON.stringify(DAY)); } catch (e) {} }
 const isFan = uid => (FANS[uid] || 0) > Date.now();
 const isFanGift = (name, id) => CFG.fanGift ? String(name || '').toLowerCase() === CFG.fanGift.toLowerCase()
   : (/heart\s*me|qui[eé]reme/i.test(name || '') || +id === CFG.fanGiftId);
@@ -222,8 +232,8 @@ function poseLerp(a, b, t) { const o = {}; for (const k of KEYS) o[k] = a[k] + (
 
 /* ── Bailarín ─────────────────────────────────────────── */
 function makeDancer(uid, name, pic) {
-  const fan = isFan(uid);
-  const d = { uid, name: String(name || uid).slice(0, 13), pic: pic || '', guest: !fan, coins: 0, energy: 0, lvl: fan ? 1 : 0,
+  const fan = isFan(uid), coins = DAY.coins[uid] || 0;
+  const d = { uid, name: String(name || uid).slice(0, 13), pic: pic || '', guest: !fan, coins, energy: 0, lvl: coins ? levelOf(coins) : fan ? 1 : 0,
     x: 540 + (R() - 0.5) * 600, tx: 540, row: 0, s: 1, hue: hueOf(uid), born: now(), drop: 1,
     move: 'brazos', moveAt: now(), slot: null, beatSlot: -1, amp: 0.88 + R() * 0.28, lag: R() * 0.06, land: 0, prev: null, prevAt: 0, special: null, spAt: 0, spB0: 0,
     tiredAt: 0, leaving: 0, lastEmoji: 0, tag: null, tagKey: '', avatar: null, alpha: 0, leader: false, flash: 0 };
@@ -294,7 +304,8 @@ function onGiftCoins(uid, name, pic, coins, giftName, giftId) {
   const d = getOrSpawn(uid, name, pic, 3);
   if (!d) return;
   const lvl0 = d.lvl, wasGuest = d.guest;
-  d.coins += coins; d.lvl = levelOf(d.coins);
+  rollDay(); DAY.coins[uid] = (DAY.coins[uid] || 0) + coins; saveDay();
+  d.coins = DAY.coins[uid]; d.lvl = levelOf(d.coins);
   if (isFan(uid)) { d.guest = false; if (!d.lvl) d.lvl = 1; }
   const sec = Math.max(d.energy <= 0 ? CFG.spawnMinSec - d.energy : 0, coins * CFG.secPerCoin);
   addEnergy(d, sec);
@@ -661,7 +672,7 @@ function save() { try { localStorage.setItem(SKEY, JSON.stringify({ at: Date.now
 function load() { try { const s = JSON.parse(localStorage.getItem(SKEY) || 'null');
   if (!s || Date.now() - s.at > 3 * 60 * 1000 || Q.has('test') || Q.has('demo')) return;
 
-  for (const o of s.d || []) { const d = makeDancer(o.uid, o.name, o.pic); Object.assign(d, { coins: o.coins || 0, energy: Math.max(o.energy, 6), x: o.x, drop: 0 });
+  for (const o of s.d || []) { const d = makeDancer(o.uid, o.name, o.pic); Object.assign(d, { coins: Math.max(d.coins, o.coins || 0), energy: Math.max(o.energy, 6), x: o.x, drop: 0 });
     d.lvl = d.coins ? levelOf(d.coins) : (d.guest ? 0 : 1); dancers.push(d); byId.set(d.uid, d); } } catch (e) {} }
 
 /* ── TikFinity ────────────────────────────────────────── */
@@ -681,6 +692,7 @@ function onGift(d) {
 function onLike(d) {
   const uid = (d.uniqueId || d.userId || '').toString().toLowerCase(); if (!uid) return;
   const n = parseInt(d.likeCount || 1, 10) || 1;
+  DAY.act = Date.now();
   let x = byId.get(uid);
   if (!x) { if (!CFG.guests && !isFan(uid)) return; x = getOrSpawn(uid, d.nickname || uid, d.profilePictureUrl || '', isFan(uid) ? 2 : 1); if (!x) return; addEnergy(x, CFG.guestSec); }
   const cap = x.guest ? CFG.guestMax : CFG.energyMax;

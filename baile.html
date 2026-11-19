@@ -55,10 +55,10 @@ const CFG = {
   help: Q.get('ayuda') === '1',
   fps: num('fps', 0),
   energyMax: 7200,       // máximo 2 horas de baile (pedido de Rodrigo: una galaxia no debe durar solo 2 min)
-  secPerCoin: 6,         // 1 moneda = 6 s
+  secPerCoin: 8,         // 1 moneda = 8 s
   spawnMinSec: 25,       // al entrar siempre tienes al menos 25 s
   guestSec: 15, guestMax: 60,  // invitado: entra con 15 s, los taps le dan hasta 60 s
-  tapSec: 0.15,                // cada tap = 0,15 s de energía
+  tapSec: 0.25,                // cada tap = 0,25 s de energía
   fanGift: Q.get('fan') || '', fanGiftId: 7934,
   emojiSec: 2, emojiCooldown: 4,
   tiredSec: 8,
@@ -281,7 +281,7 @@ function getOrSpawn(uid, name, pic, prio) {
   let d = byId.get(uid);
   if (d) { if (d.leaving) { d.leaving = 0; d.alpha = Math.max(d.alpha, 0.3); } if (pic && !d.pic) { d.pic = pic; if (CFG.photos) loadAvatar(d); } return d; }
   if (dancers.filter(x => !x.leaving).length >= CFG.max) {
-    const pool = dancers.filter(x => !x.leaving && !x.leader && (x.energy <= 0 || (prio >= 2 && x.guest)))
+    const pool = dancers.filter(x => !x.leaving && !x.leader && ((x.energy <= 0 && (prio >= 2 || x.guest)) || (prio >= 2 && x.guest)))   // un invitado nuevo solo reemplaza a otro invitado que descansa, nunca a un donador
       .sort((a, b) => ((a.energy > 0) - (b.energy > 0)) || (b.guest - a.guest) || (a.energy - b.energy));
     // el que regala SIEMPRE entra: si no hay nadie descansando, sale el que tiene menos energía (vuelve cuando haga tap)
     if (!pool[0] && prio >= 3) pool.push(...dancers.filter(x => !x.leaving && !x.leader).sort((a, b) => (b.guest - a.guest) || (a.energy - b.energy)));

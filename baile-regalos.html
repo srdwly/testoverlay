@@ -9,7 +9,10 @@
    PISTA DE BAILE + REGALOS — los bailarines de baile.html y los regalos que entran
    volando en parábola como en Rosas 7 (en 2D, del tamaño de los bailarines). Cada regalo
    vuela hacia el bailarín de quien lo mandó y se apila en el piso detrás de ellos.
-   Opciones extra: ?regalo=1 tamaño de los regalos · ?maxregalos=60 · ?vida=90 s en la pila.
+   Los regalos entran como fichas 3D (como Rosas 7), se achican mientras viajan hacia la pista
+   (que se ve lejos) y al asentarse en la pila se vuelven 2D. ?ficha=siempre = se quedan 3D
+   inclinadas como en Rosas 7 · ?ficha=0 = siempre 2D.
+   Opciones extra: ?regalo=1 tamaño de los regalos · ?maxregalos=60 · ?vida=90 s en la pila · ?piso=1880
    (Rosas 7 queda igual; este es un overlay aparte. Usar uno u otro, no los dos.)
 
    CÓMO SE JUEGA
@@ -48,7 +51,7 @@ const num = (k, d) => { const v = parseFloat(Q.get(k)); return isFinite(v) ? v :
 const CFG = {
   wsUrl: 'ws://localhost:21213/',
   owners: ['rodrigovelizguitar'],
-  floorY: num('piso', 1500),
+  floorY: num('piso', 1880),        // en la base del live
   scale: num('escala', 1),
   max: Math.max(1, Math.min(30, num('max', 12))),
   bpm: num('bpm', 100),
@@ -588,20 +591,41 @@ const GC = {
   maxMult: 2.6, gravity: 1800, bounce: 0.25, friction: 0.35, overlap: 0.62, popBounce: 0.55,
   max: Math.round(num('maxregalos', 60)), life: num('vida', 90), pileMax: 150 * SC,
   maxPerGift: 30, gapMs: 90, bigCoins: 100,
+  ficha: Q.get('ficha') === '0' ? 'off' : Q.get('ficha') === 'siempre' ? 'siempre' : 'vuelo',   // 3D solo en el vuelo (por defecto)
+  grosor: 0.22, inclina: 28,
 };
+/* ── Matrices 3×3 para las fichas 3D (igual que Rosas 7) ── */
+const mmul = (a, b) => [
+  a[0] * b[0] + a[1] * b[3] + a[2] * b[6], a[0] * b[1] + a[1] * b[4] + a[2] * b[7], a[0] * b[2] + a[1] * b[5] + a[2] * b[8],
+  a[3] * b[0] + a[4] * b[3] + a[5] * b[6], a[3] * b[1] + a[4] * b[4] + a[5] * b[7], a[3] * b[2] + a[4] * b[5] + a[5] * b[8],
+  a[6] * b[0] + a[7] * b[3] + a[8] * b[6], a[6] * b[1] + a[7] * b[4] + a[8] * b[7], a[6] * b[2] + a[7] * b[5] + a[8] * b[8]];
+const IDM = () => [1, 0, 0, 0, 1, 0, 0, 0, 1];
+const rotY = t => { const c = Math.cos(t), s = Math.sin(t); return [c, 0, s, 0, 1, 0, -s, 0, c]; };
+const rotX = t => { const c = Math.cos(t), s = Math.sin(t); return [1, 0, 0, 0, c, -s, 0, s, c]; };
+function rotAxis(x, y, z, t) { const c = Math.cos(t), s = Math.sin(t), k = 1 - c;
+  return [c + x * x * k, x * y * k - z * s, x * z * k + y * s, y * x * k + z * s, c + y * y * k, y * z * k - x * s, z * x * k - y * s, z * y * k + x * s, c + z * z * k]; }
+function ortho(m) { let ax = m[0], ay = m[3], az = m[6], l = Math.hypot(ax, ay, az) || 1; ax /= l; ay /= l; az /= l;
+  let bx = m[1], by = m[4], bz = m[7]; const d = ax * bx + ay * by + az * bz; bx -= d * ax; by -= d * ay; bz -= d * az;
+  l = Math.hypot(bx, by, bz) || 1; bx /= l; by /= l; bz /= l;
+  return [ax, bx, ay * bz - az * by, ay, by, az * bx - ax * bz, az, bz, ax * by - ay * bx]; }
 const gifts = [], gparts = [];
 let gPending = 0;
 const gSprites = {};
 const SPRG = 112;
+function gTint(draw, fill) { const c = document.createElement('canvas'); c.width = c.height = SPRG; const x = c.getContext('2d'); draw(x);
+  x.globalCompositeOperation = 'source-atop'; x.fillStyle = fill; x.fillRect(0, 0, SPRG, SPRG); return c; }
+const gParts = draw => ({ edge: gTint(draw, 'rgba(45,25,10,.6)'), back: gTint(draw, 'rgba(15,8,20,.35)') });
 function gMake(draw) { const c = document.createElement('canvas'); c.width = c.height = SPRG; const x = c.getContext('2d');
   x.shadowColor = 'rgba(0,0,0,.45)'; x.shadowBlur = 7; x.shadowOffsetY = 3; draw(x); return c; }
-const gFallback = gMake(x => { x.font = `${SPRG * 0.7}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",serif`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('🌹', SPRG / 2, SPRG / 2 + 4); });
+const gRose = x => { x.font = `${SPRG * 0.7}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",serif`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('🌹', SPRG / 2, SPRG / 2 + 4); };
+const gFallback = gMake(gRose), gFallbackTok = gParts(gRose);
+function gToken(url) { const s = url && gSprites[url]; return s && s.tok ? s.tok : gFallbackTok; }
 function gSprite(url) {
   if (!url) return gFallback;
   let s = gSprites[url];
   if (!s) { s = gSprites[url] = { c: null };
     const img = new Image(); img.crossOrigin = 'anonymous';
-    img.onload = () => { s.c = gMake(x => x.drawImage(img, 8, 6, SPRG - 16, SPRG - 16)); wake(); };
+    img.onload = () => { const dr = x => x.drawImage(img, 8, 6, SPRG - 16, SPRG - 16); s.c = gMake(dr); s.tok = gParts(dr); wake(); };
     img.onerror = () => { if (img.crossOrigin) { img.crossOrigin = null; img.src = url; } };
     img.src = url; }
   return s.c || gFallback;
@@ -620,6 +644,8 @@ function gSpawn(url, coins, targetX, hue) {
   const b = { x: sx, y: 1920 - BAND_TOP + r * 3, vx: 0, vy: 0, r, m: r * r, a: gRand(0, 6.28), av: gRand(-4, 4), url, coins, hue,
     born: now(), rest: 0, sleep: false, fade: 0, landed: false, hits: 0, sq: 0, sqv: 0, pvy: 0,
     thr: { t0: now(), dur: gRand(0.75, 1.0), sx, sy: 1920 - BAND_TOP + r * 3, tx, ty: FLOOR - gRand(520, 820) * SC, spin: gRand(-14, 14) } };
+  if (GC.ficha !== 'off') { const ang = gRand(0, 6.28); b.T = rotAxis(Math.cos(ang), Math.sin(ang), 0, gRand(0.2, 1.1));
+    b.wy = gRand(9, 16) * (R() < 0.5 ? -1 : 1); b.wx = gRand(-2.5, 2.5); }
   gifts.push(b); wake();
 }
 function gFadeOldest(n) { gifts.filter(b => !b.fade && !b.thr).sort((a, b) => a.born - b.born).slice(0, n).forEach(b => b.fade = now()); }
@@ -643,9 +669,34 @@ function gImpact(b, y) {
   const Rr = b.coins >= GC.bigCoins ? W : b.r * 3.2;
   for (const n of gifts) { if (n === b || n.thr || n.fade) continue; const dd = Math.hypot(n.x - b.x, n.y - b.y); if (dd > Rr) continue;
     const s = 800 * (1 - dd / Rr) * gRand(0.6, 1.1) * (b.coins >= GC.bigCoins ? 0.8 : 1); if (s < 60) continue;
-    n.sleep = false; n.rest = 0; n.vy = Math.min(n.vy, -s); n.vx += gRand(-1, 1) * s * 0.25; n.av += gRand(-8, 8); n.sqv -= Math.min(6, s * 0.006); n.hits = Math.min(n.hits, 1); }
+    n.sleep = false; n.rest = 0; n.vy = Math.min(n.vy, -s); n.vx += gRand(-1, 1) * s * 0.25; n.av += gRand(-8, 8); n.sqv -= Math.min(6, s * 0.006); n.hits = Math.min(n.hits, 1);
+    if (GC.ficha === 'siempre') { n.T = n.T || IDM(); n.wy = (n.wy || 0) + gRand(-1, 1) * Math.min(9, s * 0.012); n.wx = (n.wx || 0) + gRand(-2, 2); } }
 }
-function giftsBusy() { return gPending > 0 || gparts.length > 0 || gifts.some(b => !b.sleep || b.fade || b.sq || b.thr); }
+function giftsBusy() { return gPending > 0 || gparts.length > 0 || gifts.some(b => !b.sleep || b.fade || b.sq || b.thr || b.tilting); }
+// giro de la ficha 3D y asentarse mirando a la cámara: en modo 'vuelo' termina plana (2D, más liviano)
+function updateTilt(b, dt) {
+  b.tilting = false; if (!b.T) return;
+  const settled = !b.thr && (b.landed || b.hits > 0 || b.sleep || b.rest > 0.1);
+  if (b.wx || b.wy) { b.T = mmul(b.T, rotY(b.wy * dt)); if (b.wx) b.T = mmul(b.T, rotX(b.wx * dt));
+    const damp = b.thr ? 1 : Math.pow(settled ? 0.04 : 0.7, dt); b.wx *= damp; b.wy *= damp; if (Math.abs(b.wx) + Math.abs(b.wy) < 0.08) b.wx = b.wy = 0;
+    b.T = ortho(b.T); b.tilting = true; }
+  if (settled) { const nx = b.T[2], ny = b.T[5], th = Math.acos(clamp(b.T[8], -1, 1)), lim = GC.ficha === 'siempre' ? GC.inclina * Math.PI / 180 : 0;
+    if (th > lim + 0.01) { let ax = ny, ay = -nx; const l = Math.hypot(ax, ay); if (l < 1e-4) { ax = 1; ay = 0; } else { ax /= l; ay /= l; }
+      b.T = mmul(rotAxis(ax, ay, 0, Math.min(th - lim, (b.sleep ? 3 : 5) * dt)), b.T); b.tilting = true; }
+    else if (!lim && !b.wx && !b.wy) { b.a += Math.atan2(b.T[3], b.T[0]); b.T = null; } }
+}
+function drawToken(b, spr, sc) {
+  const T = b.T, c = Math.cos(b.a), s = Math.sin(b.a), r = b.r * sc;
+  const e0 = (c * T[0] - s * T[3]) * r, e1 = (s * T[0] + c * T[3]) * r, f0 = (c * T[1] - s * T[4]) * r, f1 = (s * T[1] + c * T[4]) * r;
+  const th = GC.grosor * r, front = T[8] >= 0;
+  const dx = (c * T[2] - s * T[5]) * th * (front ? 1 : -1), dy = (s * T[2] + c * T[5]) * th * (front ? 1 : -1);
+  const len = Math.hypot(dx, dy), layers = len < 0.7 ? 0 : Math.min(14, Math.ceil(len / (1.1 + 2 * Math.abs(T[8]))));
+  const B = ctx.getTransform(), tok = gToken(b.url);
+  for (let i = 0; i <= layers; i++) { const k = layers ? i / layers - 0.5 : 0.5, ox = dx * k, oy = dy * k, last = i === layers;
+    ctx.setTransform(B.a * e0 + B.c * e1, B.b * e0 + B.d * e1, B.a * f0 + B.c * f1, B.b * f0 + B.d * f1, B.a * ox + B.c * oy + B.e, B.b * ox + B.d * oy + B.f);
+    ctx.drawImage(last ? (front ? spr : tok.back) : tok.edge, -1, -1, 2, 2); }
+  ctx.setTransform(B);
+}
 function updateGifts(dt) {
   const tn = now();
   for (const b of gifts) {                                   // vuelo en parábola
@@ -654,7 +705,7 @@ function updateGifts(dt) {
     b.x = T.sx + (T.tx - T.sx) * e;
     b.y = T.sy + (T.ty - T.sy) * e - 307 * Math.sin(Math.PI * q);
     b.a += T.spin * (1 - q) * 0.016;
-    b.vis = 1 + 2.4 * (1 - e);
+    b.vis = 1 + 3.0 * (1 - e);                         // cerca de la cámara = enorme; llega chiquito a la pista lejana
     if (q >= 1) { b.thr = null; b.vis = 1; b.vx = (b.x - px) / Math.max(dt, 0.008); b.vy = Math.max(60, (b.y - py) / Math.max(dt, 0.008)); b.av = T.spin * 0.2; }
   }
   for (const b of gifts) { if (b.sleep || b.thr) continue; b.vy += GC.gravity * dt; b.vx *= 0.999; b.av *= 0.985; b.x += b.vx * dt; b.y += b.vy * dt; b.a += b.av * dt; }
@@ -698,6 +749,7 @@ function updateGifts(dt) {
     b.rest = Math.abs(b.vx) + Math.abs(b.vy) < 40 ? b.rest + dt : 0;
     if (b.rest > 0.6) { b.sleep = true; b.vx = b.vy = b.av = 0; }
   }
+  for (const b of gifts) updateTilt(b, dt);
   for (const b of gifts) { if (!b.sq && !b.sqv) continue; b.sqv += (-b.sq * 180 - b.sqv * 14) * dt; b.sq += b.sqv * dt * 0.06;
     b.sq = clamp(b.sq, -0.35, 0.35); if (Math.abs(b.sq) < 0.003 && Math.abs(b.sqv) < 0.05) { b.sq = 0; b.sqv = 0; } }
   // pila bajita (no tapa a los bailarines), vida y desvanecer
@@ -712,11 +764,12 @@ function drawGift(b, tn) {
   const f = b.fade ? 1 - (tn - b.fade) / 0.6 : 1, sc = (b.fade ? 0.6 + 0.4 * f : 1) * (b.vis || 1), spr = gSprite(b.url), q = b.sq || 0;
   if (b.thr) { const T = b.thr, t = Math.min(1, (tn - T.t0) / T.dur);                   // estela
     for (let k = 3; k >= 1; k--) { const tk = Math.max(0, t - k * 0.05), ek = easeOut3(tk);
-      const gx = T.sx + (T.tx - T.sx) * ek, gy = T.sy + (T.ty - T.sy) * ek - 307 * Math.sin(Math.PI * tk), gs = 1 + 2.4 * (1 - ek);
+      const gx = T.sx + (T.tx - T.sx) * ek, gy = T.sy + (T.ty - T.sy) * ek - 307 * Math.sin(Math.PI * tk), gs = 1 + 3.0 * (1 - ek);
       ctx.globalAlpha = 0.12 * (4 - k); ctx.drawImage(spr, gx - b.r * gs, gy - b.r * gs, b.r * 2 * gs, b.r * 2 * gs); } }
   ctx.globalAlpha = Math.max(0, f);
-  ctx.save(); ctx.translate(b.x, b.y + b.r * q * 0.6); if (q) ctx.scale(1 + q, 1 - q); ctx.rotate(b.a); ctx.scale(sc, sc);
-  ctx.drawImage(spr, -b.r, -b.r, b.r * 2, b.r * 2); ctx.restore(); ctx.globalAlpha = 1;
+  ctx.save(); ctx.translate(b.x, b.y + b.r * q * 0.6); if (q) ctx.scale(1 + q, 1 - q);
+  if (b.T) drawToken(b, spr, sc); else { ctx.rotate(b.a); ctx.scale(sc, sc); ctx.drawImage(spr, -b.r, -b.r, b.r * 2, b.r * 2); }
+  ctx.restore(); ctx.globalAlpha = 1;
 }
 function drawGiftPile(tn) {                                   // sombras + pila (detrás de los bailarines)
   for (const b of gifts) { if (b.thr) continue; const gap = FLOOR - (b.y + b.r * GC.overlap); if (gap > b.r * 2) continue;

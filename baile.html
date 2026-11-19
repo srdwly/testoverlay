@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pista de baile</title>
+<script>
+/* ════════════════════════════════════════════════════════════════
+   PISTA DE BAILE — minijuego de stickmans bailarines (todo dibujado con código)
+
+   CÓMO SE JUEGA
+   · 🎁 REGALO  → entras a la pista con un bailarín con TU NOMBRE (y tu foto de
+                  cabeza). Cada moneda suma ENERGÍA (segundos de baile).
+                  Regalos más grandes = pasos más locos y NIVEL más alto:
+                  Nv2 10 monedas (bandana) · Nv3 50 (lentes) · Nv4 200 (sombrero)
+                  · Nv5 1000 (capa). El que más monedas dio está al centro con CORONA.
+   · 💃🕺🎸🔥🤸👏 o "baila" en el chat → tu bailarín hace un paso especial
+                  (+2 s de energía). Si no tienes bailarín entras gratis como
+                  INVITADO gris por poco tiempo (si hay lugar).
+   · ❤️ TAPS, compartir, seguir y emojis llenan la barra de FIESTA: al llenarse
+                  todos bailan sincronizados con luces y confeti (no gastan energía).
+   · Sin energía el bailarín se cansa; si nadie lo anima en 8 s, se va.
+
+   ENLACE (fuente de navegador en OBS, 1080×1920):
+     baile.html                   → normal (TikFinity ws://localhost:21213)
+     ?test=1     botones para probar sin live (o teclas 1-6, E, L, F, C)
+     ?demo=1     simula un live solo
+     ?piso=1500  altura del piso en el lienzo 1920 (también puedes mover la fuente en OBS)
+     ?escala=1   tamaño de los bailarines
+     ?max=12     máximo de bailarines a la vez
+     ?bpm=112    velocidad del baile (también !bpm 120 en el chat, solo dueños)
+     ?invitados=0  sin invitados gratis · ?fotos=0 cabeza dibujada en vez de foto
+     ?luces=0    sin piso de luces · ?ayuda=0 sin el texto de cómo jugar
+     ?fps=30     limita cuadros por segundo (por defecto sigue a OBS)
+   COMANDOS (dueños): !bpm N · !fiesta · !limpiar
+   ════════════════════════════════════════════════════════════════ */
+const Q = new URLSearchParams(location.search);
+const num = (k, d) => { const v = parseFloat(Q.get(k)); return isFinite(v) ? v : d; };
+const CFG = {
+  wsUrl: 'ws://localhost:21213/',
+  owners: ['rodrigovelizguitar'],
+  floorY: num('piso', 1500),
+  scale: num('escala', 1),
+  max: Math.max(1, Math.min(30, num('max', 12))),
+  bpm: num('bpm', 112),
+  guests: Q.get('invitados') !== '0',
+  photos: Q.get('fotos') !== '0',
+  lights: Q.get('luces') !== '0',
+  help: Q.get('ayuda') !== '0',
+  fps: num('fps', 0),
+  energyMax: 120,        // segundos de baile como máximo
+  secPerCoin: 6,         // 1 moneda = 6 s
+  spawnMinSec: 25,       // al entrar siempre tienes al menos 25 s
+  guestSec: 20, guestMax: 30,
+  emojiSec: 2, emojiCooldown: 4,
+  tiredSec: 8,
+  levels: [0, 10, 50, 200, 1000],
+  hype: { perTap: 0.12, tapCapPerSec: 8, emoji: 2, perCoin: 0.4, share: 6, follow: 4, decay: 0.5 },
+  fiestaSec: 15, fiestaCoins: 500,
+};
+</script>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  #stage { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; transform-origin: 0 0; pointer-events: none; }
+  #cv { position: absolute; left: 0; }
+  #test { position: fixed; right: 8px; top: 8px; z-index: 5; display: flex; flex-wrap: wrap; gap: 6px; max-width: 330px;
+    font: 600 13px system-ui, Arial; }
+  #test button { background: #1d1420; color: #fff; border: 1px solid #e3122b; border-radius: 8px; padding: 7px 9px; cursor: pointer; }
+  #test button:hover { background: #e3122b; }
+  #test input { width: 110px; padding: 6px; border-radius: 8px; border: 1px solid #555; background: #111; color: #fff; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas></div>
+<script>
+'use strict';
+/* ── Lienzo: solo una franja alrededor del piso (más liviano que 1080×1920) ── */
+const SC = CFG.scale;
+const BAND_UP = Math.round(640 * SC), BAND_DN = Math.round(150 * SC);
+const BAND_TOP = Math.max(0, CFG.floorY - BAND_UP);
+const W = 1080, BH = Math.min(1920, CFG.floorY + BAND_DN) - BAND_TOP;
+const FLOOR = CFG.floorY - BAND_TOP;          // piso dentro del lienzo
+const cv = document.getElementById('cv');
+const stage = document.getElementById('stage');
+cv.width = W; cv.height = BH; cv.style.top = BAND_TOP + 'px';
+const ctx = cv.getContext('2d');
+function fit() { stage.style.transform = `scale(${innerWidth / 1080})`; }
+addEventListener('resize', fit); fit();
+
+const TAU = Math.PI * 2, R = Math.random;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+const now = () => performance.now() / 1000;
+const OWNERS = CFG.owners.map(s => s.toLowerCase());
+
+/* ── Estado ────────────────────────────────────────────── */
+const dancers = [];                 // bailarines en pista
+const byId = new Map();
+const parts = [];                   // partículas (confeti, chispas, polvo)
+const floats = [];                  // textos flotantes
+let hype = 0, fiestaUntil = 0, tapBudget = 0, beat0 = now(), bpm = CFG.bpm, lastRank = 0, dirty = true;
+const MAXP = 240;
+
+function hueOf(s) { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h % 360; }
+function levelOf(coins) { let l = 1; CFG.levels.forEach((c, i) => { if (coins >= c) l = i + 1; }); return l; }
+const beats = t => (t - beat0) * bpm / 60;
+const inFiesta = t => t < fiestaUntil;
+
+/* ════════════════ POSES Y PASOS ════════════════
+   Ángulos: 0 = hacia abajo, +π/2 = derecha de la pantalla, π = arriba.
+   "l" = extremidad del lado izquierdo de la pantalla.                     */
+const KEYS = ['by', 'bx', 't', 'hd', 'la1', 'la2', 'ra1', 'ra2', 'll1', 'll2', 'rl1', 'rl2', 'rot', 'sx'];
+const BASE = { by: 0, bx: 0, t: 0, hd: 0, la1: -0.18, la2: -0.1, ra1: 0.18, ra2: 0.1, ll1: -0.14, ll2: -0.06, rl1: 0.14, rl2: 0.06, rot: 0, sx: 1 };
+function P(o) { const p = Object.assign({}, BASE, o); return p; }
+function knees(p, k) { p.ll1 -= k; p.ll2 += k * 0.6; p.rl1 += k; p.rl2 -= k * 0.6; return p; }
+const S2 = b => Math.sin(b * TAU), C2 = b => Math.cos(b * TAU);
+
+const MOVES = {
+  // suave, poca energía
+  sway(b) { const s = Math.sin(b * Math.PI); return knees(P({ bx: 0.35 * s, t: 0.1 * s, hd: 0.12 * s, la1: -0.25 + 0.15 * s, la2: -0.15 + 0.2 * s, ra1: 0.25 + 0.15 * s, ra2: 0.15 + 0.2 * s }), 0.12 + 0.1 * Math.abs(s)); },
+  // rebote con aplausos
+  aplauso(b) { const k = Math.abs(S2(b / 2)); const c = 0.5 + 0.5 * C2(b);
+    return knees(P({ hd: 0.1 * S2(b / 2), la1: -1.55 - 0.25 * c, la2: 2.75 - 0.35 * c, ra1: 1.55 + 0.25 * c, ra2: -2.75 + 0.35 * c }), 0.08 + 0.28 * k); },
+  // manos arriba
+  brazos(b) { const s = S2(b / 2), k = Math.abs(S2(b / 2));
+    return knees(P({ bx: 0.15 * s, t: 0.08 * s, la1: -2.5 + 0.35 * s, la2: -2.8 + 0.5 * s, ra1: 2.5 + 0.35 * s, ra2: 2.8 + 0.5 * s }), 0.06 + 0.3 * k); },
+  // disco (señalar arriba / abajo)
+  disco(b) { const ph = Math.floor(b) % 2, s = S2(b / 2);
+    return knees(P({ bx: ph ? 0.35 : -0.35, t: ph ? -0.12 : 0.12, hd: ph ? 0.25 : -0.1,
+      la1: -0.9, la2: 0.9, ra1: ph ? 2.45 : -0.55, ra2: ph ? 2.5 : -0.75, ll1: -0.2, rl1: ph ? 0.35 : 0.12, rl2: ph ? 0.05 : 0.06 }), 0.15 + 0.1 * Math.abs(s)); },
+  // floss
+  floss(b) { const s = S2(b / 2), x = Math.sign(s) * Math.min(1, Math.abs(s) * 1.6);
+    return knees(P({ bx: -0.45 * x, t: -0.08 * x, la1: 0.7 * x - 0.15, la2: 0.7 * x - 0.15, ra1: 0.7 * x + 0.15, ra2: 0.7 * x + 0.15 }), 0.08); },
+  // running man
+  correr(b) { const ph = Math.floor(b) % 2, f = b % 1, up = Math.sin(f * Math.PI);
+    const p = P({ by: -0.1 * up, t: 0.06 * (ph ? 1 : -1), la1: ph ? -0.7 : -0.1, la2: ph ? 0.6 : -0.4, ra1: ph ? 0.1 : 0.7, ra2: ph ? 0.4 : -0.6 });
+    if (ph) { p.ll1 = -0.9 * up - 0.1; p.ll2 = 0.25 * up; } else { p.rl1 = 0.9 * up + 0.1; p.rl2 = -0.25 * up; }
+    return p; },
+  // guitarra en el aire 🎸
+  guitarra(b) { const s = S2(b / 2), st = S2(b * 2);
+    return knees(P({ t: -0.12 + 0.1 * s, hd: -0.25 + 0.2 * s, la1: -1.9, la2: -2.25 + 0.08 * s, ra1: 0.55, ra2: -1.1 + 0.45 * st, ll1: -0.35, rl1: 0.35 }), 0.22 + 0.1 * Math.abs(s)); },
+  // caminar
+  caminar(b) { const s = S2(b); return P({ by: -0.05 * Math.abs(s), la1: -0.15 - 0.35 * s, la2: -0.1 - 0.4 * s, ra1: 0.15 + 0.35 * s, ra2: 0.1 + 0.4 * s, ll1: -0.1 + 0.35 * s, ll2: 0.35 * s - 0.05, rl1: 0.1 - 0.35 * s, rl2: 0.05 - 0.35 * s }); },
+  // cansado: manos en las rodillas
+  cansado(b) { const s = Math.sin(b * Math.PI * 0.5);
+    return knees(P({ t: 0.55, hd: 0.35 + 0.05 * s, la1: -0.35, la2: 0.25, ra1: 0.75, ra2: 0.95, by: 0.03 * s }), 0.35); },
+  // saludo
+  saludo(b) { const s = S2(b); return P({ ra1: 2.3, ra2: 2.8 + 0.45 * s, hd: 0.1, la1: -0.2 }); },
+};
+// Especiales: duración en tiempos (beats) y pose según progreso 0..1
+const SPECIAL = {
+  salto: { len: 2, f(q) { const j = Math.sin(clamp(q, 0, 1) * Math.PI), a = clamp(j * 1.6, 0, 1);
+    return P({ by: -2.6 * j, la1: lerp(-0.2, -2.4, a), la2: lerp(-0.1, -2.5, a), ra1: lerp(0.2, 2.4, a), ra2: lerp(0.1, 2.5, a), ll1: lerp(-0.14, -0.6, a), ll2: lerp(-0.06, -0.6, a), rl1: lerp(0.14, 0.6, a), rl2: lerp(0.06, 0.6, a) }); } },
+  giro: { len: 2, f(q) { const e = ease(clamp(q, 0, 1)); return knees(P({ sx: Math.cos(e * TAU * 2), la1: -1.5, la2: -1.6, ra1: 1.5, ra2: 1.6, by: -0.2 * Math.sin(e * Math.PI) }), 0.1); } },
+  mortal: { len: 3, f(q) { q = clamp(q, 0, 1); const j = Math.sin(q * Math.PI), r = ease(clamp((q - 0.15) / 0.7, 0, 1));
+    const tuck = Math.sin(r * Math.PI);
+    return knees(P({ by: -3.6 * j, rot: -r * TAU, la1: lerp(-2.5, -0.6, tuck), la2: lerp(-2.6, 0.9, tuck), ra1: lerp(2.5, 0.6, tuck), ra2: lerp(2.6, -0.9, tuck) }), 0.9 * tuck + 0.15 * (1 - j)); } },
+  dab: { len: 2, f(q) { const a = clamp(q * 4, 0, 1) * clamp((1 - q) * 4, 0, 1);
+    return knees(P({ hd: lerp(0, 0.6, a), t: lerp(0, 0.15, a), la1: lerp(-0.18, -2.2, a), la2: lerp(-0.1, -2.2, a), ra1: lerp(0.18, -2.4, a), ra2: lerp(0.1, 1.2, a) }), 0.1 * a); } },
+  split: { len: 3, f(q) { const a = clamp(q * 3, 0, 1) * clamp((1 - q) * 3, 0, 1);
+    return P({ ll1: lerp(-0.14, -1.45, a), ll2: lerp(-0.06, -1.5, a), rl1: lerp(0.14, 1.45, a), rl2: lerp(0.06, 1.5, a), la1: lerp(-0.18, -2.6, a), la2: lerp(-0.1, -2.7, a), ra1: lerp(0.18, 2.6, a), ra2: lerp(0.1, 2.7, a) }); } },
+  aplausos: { len: 2, f(q) { return MOVES.aplauso(q * 4); } },
+  guitarrazo: { len: 4, f(q) { return MOVES.guitarra(q * 8); } },
+};
+// Pasos disponibles por nivel
+const UNLOCK = [['aplauso', 'brazos'], ['aplauso', 'brazos', 'disco'], ['brazos', 'disco', 'floss', 'aplauso'],
+  ['disco', 'floss', 'correr', 'guitarra', 'brazos'], ['disco', 'floss', 'correr', 'guitarra', 'brazos']];
+const FIESTA_SEQ = ['brazos', 'disco', 'floss', 'correr'];
+// Emojis / palabras del chat → paso especial
+const EMOJI = [[/🤸|mortal|flip/i, 'mortal'], [/🎸|🤘|guitarra|rock/i, 'guitarrazo'], [/🔥|salta|jump/i, 'salto'],
+  [/💃|🩰|gira|spin/i, 'giro'], [/🕺|🪩|disco/i, 'dab'], [/👏|aplau/i, 'aplausos'], [/👯|🎶|🎵|🥳|bail|dance|baile/i, null]];
+
+function poseLerp(a, b, t) { const o = {}; for (const k of KEYS) o[k] = a[k] + (b[k] - a[k]) * t;
+  // rotación por el camino corto
+  let d = ((b.rot - a.rot) % TAU + TAU * 1.5) % TAU - TAU / 2; o.rot = a.rot + d * t; return o; }
+
+/* ── Bailarín ─────────────────────────────────────────── */
+function makeDancer(uid, name, pic, guest) {
+  const d = { uid, name: String(name || uid).slice(0, 13), pic, guest, coins: 0, energy: 0, lvl: guest ? 0 : 1,
+    x: 540 + (R() - 0.5) * 600, tx: 540, row: 0, s: 1, hue: hueOf(uid), born: now(), drop: 1,
+    move: 'brazos', moveAt: now(), slot: null, beatSlot: -1, prev: null, prevAt: 0, special: null, spAt: 0, spB0: 0,
+    tiredAt: 0, leaving: 0, lastEmoji: 0, tag: null, tagKey: '', avatar: null, alpha: 0, leader: false, flash: 0 };
+  if (pic && CFG.photos) loadAvatar(d);
+  return d;
+}
+function loadAvatar(d) {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => { try { const c = document.createElement('canvas'); c.width = c.height = 96; const g = c.getContext('2d');
+    g.beginPath(); g.arc(48, 48, 48, 0, TAU); g.clip(); g.drawImage(img, 0, 0, 96, 96); d.avatar = c; dirty = true; } catch (e) {} };
+  img.onerror = () => { if (img.crossOrigin) { img.crossOrigin = null; img.src = d.pic; } };
+  img.src = d.pic;
+}
+function setMove(d, m, t) { if (d.move === m) return; d.prev = d.move; d.prevAt = t; d.move = m; d.moveAt = t; }
+function doSpecial(d, name, t) { if (!SPECIAL[name] || d.leaving) return; d.prevPose = currentPose(d, t); d.special = name; d.spAt = t; d.spB0 = beats(t); }
+
+function currentPose(d, t) {
+  const b = beats(t);
+  if (d.special) {
+    const sp = SPECIAL[d.special], q = (b - d.spB0) / sp.len;
+    if (q < 1) { const p = sp.f(q); return q < 0.12 && d.prevPose ? poseLerp(d.prevPose, p, q / 0.12) : p; }
+    d.special = null; d.prev = '__sp'; d.prevPose = sp.f(1); d.prevAt = t;
+  }
+  let p = MOVES[d.move](b);
+  const bt = (t - d.prevAt) / 0.3;
+  if (bt < 1 && d.prev) p = poseLerp(d.prev === '__sp' ? d.prevPose : MOVES[d.prev](b), p, ease(bt));
+  return p;
+}
+
+/* ── Llegada de eventos ───────────────────────────────── */
+function getOrSpawn(uid, name, pic, guest) {
+  let d = byId.get(uid);
+  if (d) { if (d.leaving) { d.leaving = 0; d.alpha = Math.max(d.alpha, 0.3); } if (pic && !d.pic) { d.pic = pic; if (CFG.photos) loadAvatar(d); } return d; }
+  if (dancers.length >= CFG.max) {
+    // hace lugar: primero el invitado más cansado; un invitado nunca saca a alguien que regaló
+    const pool = dancers.filter(x => !x.leaving && (x.guest || !guest) && !x.leader).sort((a, b) => (b.guest - a.guest) || (a.energy - b.energy));
+    const out = pool[0];
+    if (!out) return null;
+    leave(out, true);
+    if (dancers.filter(x => !x.leaving).length >= CFG.max) return null;
+  }
+  d = makeDancer(uid, name, pic, guest);
+  dancers.push(d); byId.set(uid, d);
+  burst(d.x, FLOOR - 80 * SC, 18, d.hue, 'chispa');
+  lastRank = 0;
+  return d;
+}
+function leave(d, fast) { if (d.leaving) return; d.leaving = now() + (fast ? 0 : 1.6); if (!fast) setMove(d, 'saludo', now()); }
+
+function addEnergy(d, sec) {
+  const room = CFG.energyMax - d.energy, add = Math.min(room, sec);
+  d.energy += add; d.tiredAt = 0;
+  if (sec - add > 0) addHype((sec - add) / 6);
+}
+function onGiftCoins(uid, name, pic, coins, giftName) {
+  const t = now();
+  let d = getOrSpawn(uid, name, pic, false);
+  if (!d) { addHype(coins * CFG.hype.perCoin); return; }
+  const wasGuest = d.guest; d.guest = false;
+  const lvl0 = d.lvl; d.coins += coins; d.lvl = levelOf(d.coins);
+  const sec = Math.max(d.energy <= 0 || wasGuest ? CFG.spawnMinSec - d.energy : 0, coins * CFG.secPerCoin);
+  addEnergy(d, sec);
+  addHype(Math.max(2, coins * CFG.hype.perCoin));
+  d.flash = t;
+  floatText(d, '+' + Math.round(sec) + ' s', `hsl(${d.hue},90%,70%)`);
+  if (d.lvl > lvl0 && lvl0 >= 1) { floatText(d, '¡NIVEL ' + d.lvl + '!', '#ffd54a', 1.3); burst(d.x, FLOOR - 120 * SC, 26, 48, 'chispa'); }
+  doSpecial(d, coins >= 99 ? 'mortal' : coins >= 30 ? 'split' : coins >= 5 ? 'giro' : 'salto', t);
+  if (coins >= CFG.fiestaCoins) startFiesta(t, d.name);
+  lastRank = 0; wake();
+}
+function onEmoji(uid, name, pic, text) {
+  const t = now();
+  let sp = null, hit = false;
+  for (const [re, s] of EMOJI) if (re.test(text)) { hit = true; sp = s; break; }
+  if (!hit) return;
+  if (!sp) sp = ['giro', 'salto', 'dab', 'aplausos'][Math.floor(R() * 4)];
+  let d = byId.get(uid);
+  if (d && t - d.lastEmoji < CFG.emojiCooldown) return;     // anti-spam por persona
+  addHype(CFG.hype.emoji);
+  if (!d && CFG.guests) { d = getOrSpawn(uid, name, pic, true); if (d) addEnergy(d, CFG.guestSec); }
+  else if (d) addEnergy(d, d.guest ? Math.max(0, Math.min(CFG.emojiSec, CFG.guestMax - d.energy)) : CFG.emojiSec);
+  if (d) { d.lastEmoji = t; doSpecial(d, sp, t); }
+  wake();
+}
+function addHype(v) {
+  if (!dancers.length || inFiesta(now())) return;
+  hype = Math.min(100, hype + v);
+  if (hype >= 100) startFiesta(now());
+}
+function startFiesta(t, who) {
+  fiestaUntil = Math.max(fiestaUntil, t) + CFG.fiestaSec; hype = 0;
+  floats.push({ x: 540, y: FLOOR - 470 * SC, txt: who ? '¡FIESTA de ' + who + '!' : '¡FIESTA!', col: '#fff', t0: t, life: 2.6, big: 1 });
+  for (let i = 0; i < 70; i++) confetti();
+  wake();
+}
+
+/* ── Partículas y textos ──────────────────────────────── */
+function burst(x, y, n, hue, type) { for (let i = 0; i < n && parts.length < MAXP; i++) { const a = R() * TAU, v = 120 + R() * 260;
+  parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 120, life: 0.6 + R() * 0.5, age: 0, hue: hue + (R() - 0.5) * 40, sz: 3 + R() * 4, type }); } }
+function confetti() { if (parts.length >= MAXP) return;
+  parts.push({ x: R() * W, y: -10 - R() * 200, vx: (R() - 0.5) * 60, vy: 120 + R() * 140, life: 4, age: 0, hue: R() * 360, sz: 6 + R() * 6, type: 'confeti', spin: R() * TAU }); }
+function floatText(d, txt, col, big) {
+  const m = !big && /^\+\d+ s$/.test(txt) && floats.find(f => f.d === d && f.sum && now() - f.t0 < 0.6);
+  if (m) { m.sum += parseInt(txt.slice(1), 10); m.txt = '+' + m.sum + ' s'; m.t0 = now(); return; }
+  floats.push({ sum: /^\+\d+ s$/.test(txt) ? parseInt(txt.slice(1), 10) : 0, d, x: d.x, y: 0, txt, col, t0: now(), life: big ? 1.6 : 1.1, big: big ? 0.6 : 0 }); }
+
+/* ── Acomodo en la pista ──────────────────────────────── */
+function arrange() {
+  // lugares fijos: cada bailarín conserva su lugar (no se reacomodan todos con cada regalo);
+  // el que más monedas dio va siempre al centro con corona.
+  const live = dancers.filter(d => !d.leaving), n = live.length;
+  let lead = null; for (const d of live) if (d.coins > 0 && (!lead || d.coins > lead.coins)) lead = d;
+  live.forEach(d => d.leader = d === lead);
+  const used = new Map();
+  for (const d of live) { if (d.slot == null || d.slot >= n || used.has(d.slot)) d.slot = null; else used.set(d.slot, d); }
+  if (lead && lead.slot !== 0) { const o = used.get(0); if (o) o.slot = lead.slot; lead.slot = 0;
+    used.clear(); for (const d of live) if (d.slot != null) used.set(d.slot, d); }
+  for (const d of live) if (d.slot == null) { let k = 0; while (used.has(k)) k++; d.slot = k; used.set(k, d); }
+  // los invitados gratis ceden la fila de adelante a los que regalaron
+  const fg = live.filter(d => d.guest && d.slot < 7 && d.slot > 0), bp = live.filter(d => !d.guest && d.slot >= 7);
+  for (let i = 0; i < Math.min(fg.length, bp.length); i++) { const s = fg[i].slot; fg[i].slot = bp[i].slot; bp[i].slot = s; }
+  const nf = Math.min(7, n), nb = n - nf;
+  for (const d of live) {
+    const row = d.slot < 7 ? 0 : 1, i = row ? d.slot - 7 : d.slot, cnt = row ? nb : nf, span = row ? 900 : 960;
+    const gap = Math.min(150 * SC, span / Math.max(1, cnt));
+    const k = i === 0 ? 0 : (i % 2 ? 1 : -1) * Math.ceil(i / 2);      // centro, derecha, izquierda…
+    let x = 540 + k * gap;
+    if (cnt % 2 === 0) x -= gap / 2;                                   // grupo par: centrado
+    if (row && cnt % 2 === 1) x += gap / 2;                            // atrás: entre los de adelante
+    d.tx = x; d.row = row;
+    if (d.drop > 0.9) d.x = x;                                         // recién llegado: cae directo a su lugar
+  }
+  // nombres en dos alturas para que no se pisen
+  live.slice().sort((a, b) => a.tx - b.tx).forEach((d, i) => d.tagUp = i % 2);
+}
+
+/* ── Etiqueta de nombre (se dibuja una sola vez y se reusa) ── */
+function tagFor(d) {
+  const key = d.name + '|' + d.lvl + '|' + d.guest + '|' + d.leader;
+  if (d.tag && d.tagKey === key) return d.tag;
+  const fs = Math.round(23 * SC), c = d.tag || document.createElement('canvas'), g = c.getContext('2d');
+  g.font = `800 ${fs}px "Segoe UI", Arial, sans-serif`;
+  const label = d.guest ? d.name : d.name + '  ' + 'Nv' + d.lvl;
+  const tw = Math.ceil(g.measureText(label).width);
+  c.width = tw + 20; c.height = fs + 14;
+  g.font = `800 ${fs}px "Segoe UI", Arial, sans-serif`; g.textBaseline = 'middle'; g.textAlign = 'center';
+  g.lineJoin = 'round'; g.lineWidth = 6; g.strokeStyle = 'rgba(0,0,0,0.85)';
+  const cx = c.width / 2, cy = c.height / 2;
+  g.strokeText(label, cx, cy);
+  if (d.guest) { g.fillStyle = '#d6d6d6'; g.fillText(label, cx, cy); }
+  else { g.fillStyle = d.leader ? '#ffd54a' : '#fff'; g.fillText(d.name, cx - g.measureText('  Nv' + d.lvl).width / 2, cy);
+    const nx = cx + (tw - g.measureText('Nv' + d.lvl).width) / 2; g.fillStyle = `hsl(${d.hue},95%,68%)`; g.fillText('Nv' + d.lvl, nx, cy); }
+  d.tag = c; d.tagKey = key; return c;
+}
+let helpCanvas = null;
+function helpTag() {
+  if (helpCanvas) return helpCanvas;
+  const fs = Math.round(25 * Math.min(1.2, SC)), c = helpCanvas = document.createElement('canvas'), g = c.getContext('2d');
+  const line = '🎁 Regalo = entras a bailar   💃🕺🎸 = pasos   ❤️ Taps = FIESTA';
+  g.font = `700 ${fs}px "Segoe UI", Arial, sans-serif`;
+  c.width = Math.min(1060, Math.ceil(g.measureText(line).width) + 40); c.height = fs + 22;
+  g.fillStyle = 'rgba(10,6,12,0.6)'; const r = c.height / 2; g.beginPath(); g.roundRect(0, 0, c.width, c.height, r); g.fill();
+  g.font = `700 ${fs}px "Segoe UI", Arial, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = '#fff';
+  g.fillText(line, c.width / 2, c.height / 2 + 1, c.width - 30);
+  return c;
+}
+// cono de luz pre-dibujado
+const beam = (() => { const c = document.createElement('canvas'); c.width = 260; c.height = 700; const g = c.getContext('2d');
+  const gr = g.createLinearGradient(0, 0, 0, 700); gr.addColorStop(0, 'rgba(255,255,255,0.55)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.beginPath(); g.moveTo(120, 0); g.lineTo(140, 0); g.lineTo(260, 700); g.lineTo(0, 700); g.closePath(); g.fill(); return c; })();
+const tintBeams = [0, 1, 2].map(i => { const c = document.createElement('canvas'); c.width = beam.width; c.height = beam.height; const g = c.getContext('2d');
+  g.drawImage(beam, 0, 0); g.globalCompositeOperation = 'source-in'; g.fillStyle = ['#ff3b5c', '#3bc8ff', '#ffd54a'][i]; g.fillRect(0, 0, c.width, c.height); return c; });
+
+/* ════════════════ DIBUJO ════════════════ */
+function drawDancer(d, p, t) {
+  const row = d.row, sc = SC * (row ? 0.8 : 1) * (d.leader ? 1.15 : 1), u = 18 * sc;
+  const floor = FLOOR - (row ? 95 * SC : 0);
+  const TH = 2.4 * u, SH = 2.4 * u, TO = 3.0 * u, UA = 1.7 * u, FA = 1.6 * u, HR = 0.82 * u;
+  const dir = a => [Math.sin(a), Math.cos(a)];
+  // piernas → altura de la cadera (los pies tocan el piso solos)
+  const lk = dir(p.ll1), lf = dir(p.ll2), rk = dir(p.rl1), rf = dir(p.rl2);
+  const lKy = TH * lk[1], lFy = lKy + SH * lf[1], rKy = TH * rk[1], rFy = rKy + SH * rf[1];
+  const hipY = floor - Math.max(lFy, rFy, lKy, rKy) + p.by * u - d.drop * 520 * SC;
+  const hipX = d.x + p.bx * u;
+  const td = [Math.sin(p.t), -Math.cos(p.t)];
+  const sh = [td[0] * 2.7 * u, td[1] * 2.7 * u], nk = [td[0] * TO, td[1] * TO];
+  const ha = p.t + p.hd, hc = [nk[0] + Math.sin(ha) * (HR + 0.3 * u), nk[1] - Math.cos(ha) * (HR + 0.3 * u)];
+  const a = (o, ang, len) => [o[0] + Math.sin(ang) * len, o[1] + Math.cos(ang) * len];
+  const le = a(sh, p.la1, UA), lh = a(le, p.la2, FA), re = a(sh, p.ra1, UA), rh = a(re, p.ra2, FA);
+  const LK = [TH * lk[0], lKy], LF = [LK[0] + SH * lf[0], lFy], RK = [TH * rk[0], rKy], RF = [RK[0] + SH * rf[0], rFy];
+
+  ctx.save();
+  ctx.globalAlpha = d.alpha;
+  ctx.translate(hipX, hipY);
+  if (p.rot) { ctx.translate(0, -1.5 * u); ctx.rotate(p.rot); ctx.translate(0, 1.5 * u); }
+  ctx.scale(p.sx || 0.04, 1);
+  const col = d.guest ? '#bdbdbd' : `hsl(${d.hue},90%,62%)`;
+  // capa (nivel 5)
+  if (d.lvl >= 5) { const fl = Math.sin(t * 6) * 0.5 * u; ctx.fillStyle = '#c2102a'; ctx.beginPath();
+    ctx.moveTo(sh[0] - 0.9 * u, sh[1]); ctx.lineTo(sh[0] + 0.9 * u, sh[1]); ctx.lineTo(1.7 * u + fl, 1.2 * u); ctx.lineTo(-1.7 * u + fl, 1.2 * u); ctx.closePath(); ctx.fill(); }
+  // cuerpo: contorno oscuro + color
+  const path = new Path2D();
+  path.moveTo(0, 0); path.lineTo(nk[0], nk[1]);
+  path.moveTo(lh[0], lh[1]); path.lineTo(le[0], le[1]); path.lineTo(sh[0], sh[1]); path.lineTo(re[0], re[1]); path.lineTo(rh[0], rh[1]);
+  path.moveTo(LF[0], LF[1]); path.lineTo(LK[0], LK[1]); path.lineTo(0, 0); path.lineTo(RK[0], RK[1]); path.lineTo(RF[0], RF[1]);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 0.55 * u + 5; ctx.stroke(path);
+  const fl = d.flash && t - d.flash < 0.35 ? 1 - (t - d.flash) / 0.35 : 0;
+  ctx.strokeStyle = fl ? `hsl(${d.hue},100%,${62 + 30 * fl}%)` : col; ctx.lineWidth = 0.55 * u; ctx.stroke(path);
+  // guitarra en el aire
+  if (d.special === 'guitarrazo' || (d.move === 'guitarra' && !d.special)) drawGuitar(lh, rh, u);
+  // cabeza
+  ctx.translate(hc[0], hc[1]); ctx.rotate(ha);
+  ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.beginPath(); ctx.arc(0, 0, HR + 3, 0, TAU); ctx.fill();
+  if (d.avatar) ctx.drawImage(d.avatar, -HR, -HR, HR * 2, HR * 2);
+  else { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(0, 0, HR, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#1a1014'; const tired = d.energy <= 0;
+    ctx.fillRect(-0.38 * u, -0.2 * u, 0.16 * u, tired ? 0.06 * u : 0.22 * u); ctx.fillRect(0.22 * u, -0.2 * u, 0.16 * u, tired ? 0.06 * u : 0.22 * u);
+    ctx.beginPath(); ctx.lineWidth = 0.12 * u; ctx.strokeStyle = '#1a1014';
+    if (tired) { ctx.moveTo(-0.3 * u, 0.35 * u); ctx.lineTo(0.3 * u, 0.35 * u); } else ctx.arc(0, 0.12 * u, 0.36 * u, 0.15 * Math.PI, 0.85 * Math.PI);
+    ctx.stroke(); }
+  if (d.lvl >= 2) { ctx.fillStyle = d.lvl >= 4 ? '#111' : '#e3122b'; ctx.fillRect(-HR, -0.55 * u, HR * 2, 0.24 * u); }       // bandana
+  if (d.lvl >= 3) { ctx.fillStyle = '#0b0b0f'; ctx.beginPath(); ctx.roundRect(-0.72 * u, -0.28 * u, 0.62 * u, 0.34 * u, 0.1 * u); ctx.roundRect(0.1 * u, -0.28 * u, 0.62 * u, 0.34 * u, 0.1 * u); ctx.fill();
+    ctx.fillRect(-0.15 * u, -0.22 * u, 0.3 * u, 0.08 * u); }
+  if (d.lvl >= 4 && !d.leader) { ctx.fillStyle = '#20151a'; ctx.beginPath(); ctx.ellipse(0, -0.72 * u, 1.45 * u, 0.28 * u, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.roundRect(-0.7 * u, -1.65 * u, 1.4 * u, 1.0 * u, 0.25 * u); ctx.fill(); ctx.fillStyle = '#e3122b'; ctx.fillRect(-0.7 * u, -0.98 * u, 1.4 * u, 0.2 * u); }
+  if (d.leader) drawCrown(u, t);
+  ctx.restore();
+  // sudor si está cansado
+  if (d.energy <= 0 && !d.leaving && Math.floor(t * 3) % 2) { ctx.fillStyle = '#7fd3ff'; ctx.globalAlpha = d.alpha;
+    ctx.beginPath(); ctx.arc(hipX + hc[0] + HR + 4, hipY + hc[1] - 4, 0.22 * u, 0, TAU); ctx.fill(); ctx.globalAlpha = 1; }
+  return { floor, sc, hipY, top: hipY + Math.min(hc[1], 0) - HR };
+}
+function drawGuitar(lh, rh, u) {
+  const bx = rh[0] * 0.55, by = rh[1] + 0.2 * u;
+  ctx.strokeStyle = '#3a2412'; ctx.lineWidth = 0.28 * u; ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(lh[0], lh[1]); ctx.stroke();
+  ctx.fillStyle = '#e3122b'; ctx.strokeStyle = 'rgba(0,0,0,0.75)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.ellipse(bx + 0.2 * u, by + 0.15 * u, 0.95 * u, 0.7 * u, -0.5, 0, TAU); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#1a1014'; ctx.beginPath(); ctx.arc(bx + 0.2 * u, by + 0.15 * u, 0.22 * u, 0, TAU); ctx.fill();
+}
+function drawCrown(u, t) {
+  const y = -0.85 * u, w = 1.5 * u, h = 0.95 * u;
+  ctx.fillStyle = '#ffd54a'; ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(-w / 2, y); ctx.lineTo(-w / 2, y - h * 0.6); ctx.lineTo(-w / 4, y - h * 0.25); ctx.lineTo(0, y - h);
+  ctx.lineTo(w / 4, y - h * 0.25); ctx.lineTo(w / 2, y - h * 0.6); ctx.lineTo(w / 2, y); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#e3122b'; ctx.beginPath(); ctx.arc(0, y - 0.3 * u, 0.14 * u, 0, TAU); ctx.fill();
+}
+
+let floorTiles = null;
+function drawFloor(t, b, fiesta, active) {
+  if (!CFG.lights) return;
+  const y = FLOOR + 4, n = 14, tw = W / n;
+  if (!floorTiles) { floorTiles = document.createElement('canvas'); floorTiles.width = W; floorTiles.height = 46; const g = floorTiles.getContext('2d');
+    const gr = g.createLinearGradient(0, 0, 0, 46); gr.addColorStop(0, 'rgba(20,10,20,0.55)'); gr.addColorStop(1, 'rgba(20,10,20,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, W, 46); g.fillStyle = 'rgba(255,255,255,0.65)'; g.fillRect(0, 0, W, 3); }
+  ctx.drawImage(floorTiles, 0, y);
+  if (!active) return;
+  const k = Math.floor(b), f = 1 - (b % 1);
+  for (let i = 0; i < n; i++) {
+    const on = fiesta ? (i + k) % 3 === 0 : (i * 7 + k * 3) % 5 === 0;
+    if (!on) continue;
+    ctx.fillStyle = `hsla(${fiesta ? (i * 40 + k * 30) % 360 : 350},95%,60%,${(fiesta ? 0.5 : 0.28) * f})`;
+    ctx.fillRect(i * tw + 3, y + 3, tw - 6, 16);
+  }
+}
+function drawHype(t) {
+  if (!dancers.length) return;
+  const x = 40, y = FLOOR - BAND_UP + 40, w = 300 * Math.min(1, SC + 0.1), h = 22;
+  const fiesta = inFiesta(t);
+  const v = fiesta ? (fiestaUntil - t) / CFG.fiestaSec : hype / 100;
+  ctx.fillStyle = 'rgba(10,6,12,0.65)'; ctx.beginPath(); ctx.roundRect(x - 8, y - 34, w + 16, h + 44, 14); ctx.fill();
+  ctx.font = '800 22px "Segoe UI", Arial, sans-serif'; ctx.textBaseline = 'alphabetic'; ctx.textAlign = 'left';
+  ctx.fillStyle = '#fff'; ctx.fillText(fiesta ? '🪩 ¡FIESTA!' : '❤️ Barra de FIESTA', x, y - 10);
+  ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.fillRect(x, y, w, h);
+  ctx.fillStyle = fiesta ? `hsl(${(t * 200) % 360},95%,60%)` : '#e3122b'; ctx.fillRect(x, y, w * clamp(v, 0, 1), h);
+}
+
+/* ════════════════ BUCLE ════════════════ */
+let running = false, lastT = now(), lastSave = 0, lastHelp = -999, lastFrame = 0;
+function wake() { dirty = true; if (!running) { running = true; lastT = now(); requestAnimationFrame(frame); } }
+function frame() {
+  const t = now();
+  if (CFG.fps > 0 && t - lastFrame < 1 / CFG.fps - 0.002) { requestAnimationFrame(frame); return; }
+  lastFrame = t;
+  const dt = Math.min(0.1, t - lastT); lastT = t;
+  update(t, dt);
+  render(t);
+  if (t - lastSave > 3) { lastSave = t; save(); }
+  const idle = !dancers.length && !parts.length && !floats.length && !inFiesta(t);
+  if (idle && !Q.has('demo')) { running = false; render(t); return; }     // nada que animar → se detiene (0% CPU)
+  requestAnimationFrame(frame);
+}
+function update(t, dt) {
+  const fiesta = inFiesta(t), b = beats(t);
+  tapBudget = Math.min(CFG.hype.tapCapPerSec, tapBudget + CFG.hype.tapCapPerSec * dt);
+  if (!fiesta) hype = Math.max(0, hype - CFG.hype.decay * dt);
+  if (t - lastRank > 2.5) { lastRank = t; arrange(); }
+  for (let i = dancers.length - 1; i >= 0; i--) {
+    const d = dancers[i];
+    d.drop = Math.max(0, d.drop - dt * 2.4);
+    if (d.leaving) { if (t > d.leaving) { d.alpha -= dt * 3; if (d.alpha <= 0) { burst(d.x, FLOOR - 90 * SC, 14, d.hue, 'chispa'); dancers.splice(i, 1); if (byId.get(d.uid) === d) byId.delete(d.uid); lastRank = 0; } } continue; }
+    d.alpha = Math.min(1, d.alpha + dt * 4);
+    if (!fiesta) d.energy = Math.max(0, d.energy - dt);
+    // moverse a su lugar
+    const dx = d.tx - d.x, walking = Math.abs(dx) > 10;
+    if (walking) d.x += Math.sign(dx) * Math.min(Math.abs(dx), 280 * SC * dt);
+    // elegir paso
+    if (d.energy <= 0) { if (!d.tiredAt) d.tiredAt = t; setMove(d, 'cansado', t); if (t - d.tiredAt > CFG.tiredSec) leave(d); continue; }
+    if (walking && d.drop <= 0) { setMove(d, 'caminar', t); continue; }
+    if (window.__forceMove) { setMove(d, window.__forceMove, t); continue; }
+    if (fiesta) { setMove(d, FIESTA_SEQ[Math.floor(b / 8) % FIESTA_SEQ.length], t); continue; }
+    if (d.energy < 12) { setMove(d, 'sway', t); continue; }
+    const list = UNLOCK[Math.max(0, d.lvl - 1)];
+    const slot = Math.floor((b + (d.hue % 7)) / 8);                  // cambia de paso cada 8 tiempos
+    if (d.move === 'caminar' || d.move === 'sway' || d.move === 'cansado' || d.move === 'saludo' || d.beatSlot !== slot) { d.beatSlot = slot; setMove(d, list[(slot + d.hue) % list.length], t); }
+  }
+  for (let i = parts.length - 1; i >= 0; i--) { const p = parts[i]; p.age += dt; if (p.age > p.life) { parts.splice(i, 1); continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt; if (p.type === 'chispa') p.vy += 500 * dt; else { p.spin += dt * 6; p.x += Math.sin(p.age * 4 + p.hue) * 40 * dt; } }
+  if (fiesta && R() < dt * 25) confetti();
+  for (let i = floats.length - 1; i >= 0; i--) if (t - floats[i].t0 > floats[i].life) floats.splice(i, 1);
+}
+function render(t) {
+  ctx.clearRect(0, 0, W, BH);
+  const b = beats(t), fiesta = inFiesta(t), active = dancers.length > 0;
+  if (fiesta) {                                       // luces
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 3; i++) { const ang = Math.sin(t * 1.3 + i * 2.1) * 0.55, x = 180 + i * 360;
+      ctx.save(); ctx.globalAlpha = 0.35 + 0.15 * Math.sin(b * Math.PI); ctx.translate(x, FLOOR - BAND_UP + 20); ctx.rotate(ang);
+      ctx.drawImage(tintBeams[i], -130, 0, 260, BAND_UP); ctx.restore(); }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  drawFloor(t, b, fiesta, active);
+  // fila de atrás primero
+  const order = dancers.slice().sort((a, c) => (c.row - a.row) || (a.leader - c.leader));
+  const info = new Map();
+  for (const d of order) info.set(d, drawDancer(d, currentPose(d, t), t));
+  // nombres + energía
+  for (const d of order) {
+    const inf = info.get(d), tag = tagFor(d);
+    const ty = Math.min(inf.floor - 205 * inf.sc, inf.top - 26 * inf.sc) - (d.leader ? 18 * inf.sc : 0) - (d.tagUp ? 38 * SC : 0);
+    ctx.globalAlpha = d.alpha;
+    ctx.drawImage(tag, Math.round(d.x - tag.width / 2), Math.round(ty - tag.height));
+    const bw = 84 * inf.sc, e = clamp(d.energy / CFG.energyMax, 0, 1);
+    ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(d.x - bw / 2 - 2, ty - 1, bw + 4, 9);
+    ctx.fillStyle = e > 0.4 ? '#36e07a' : e > 0.12 ? '#ffd54a' : '#ff4b4b'; ctx.fillRect(d.x - bw / 2, ty + 1, bw * Math.max(e, d.energy > 0 ? 0.03 : 0), 5);
+    ctx.globalAlpha = 1;
+  }
+  // partículas
+  for (const p of parts) { const a = 1 - p.age / p.life; ctx.globalAlpha = a; ctx.fillStyle = `hsl(${p.hue},95%,62%)`;
+    if (p.type === 'confeti') { ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.spin); ctx.fillRect(-p.sz / 2, -p.sz / 4, p.sz, p.sz / 2); ctx.restore(); }
+    else ctx.fillRect(p.x - p.sz / 2, p.y - p.sz / 2, p.sz, p.sz); }
+  ctx.globalAlpha = 1;
+  // textos flotantes
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+  for (const f of floats) { const q = (t - f.t0) / f.life;
+    const x = f.d ? f.d.x : f.x, y = f.d ? (info.get(f.d) ? info.get(f.d).floor - 290 * SC : FLOOR - 290 * SC) - q * 70 * SC : f.y;
+    const fs = Math.round((f.big >= 1 ? 92 : f.big ? 40 : 32) * SC * (f.big >= 1 ? 1 + 0.08 * Math.sin(b * TAU) : 1));
+    ctx.globalAlpha = q < 0.8 ? 1 : (1 - q) / 0.2;
+    ctx.font = `900 ${fs}px "Segoe UI", Arial, sans-serif`; ctx.lineWidth = fs / 6; ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+    ctx.strokeText(f.txt, x, y); ctx.fillStyle = f.big >= 1 ? `hsl(${(t * 220) % 360},95%,65%)` : f.col; ctx.fillText(f.txt, x, y); }
+  ctx.globalAlpha = 1;
+  drawHype(t);
+  // cómo jugar: siempre si la pista está vacía, si no 8 s cada minuto
+  if (CFG.help) { const show = !active || (t - lastHelp) < 8; if (active && t - lastHelp > 60) lastHelp = t;
+    if (show) { const h = helpTag(); ctx.drawImage(h, Math.round(540 - h.width / 2), FLOOR + 48 * Math.min(1, SC)); } }
+}
+
+/* ── Guardar (si OBS recarga la fuente, la pista sigue) ── */
+const SKEY = 'baile_pista_v1';
+function save() { try { localStorage.setItem(SKEY, JSON.stringify({ at: Date.now(), hype, bpm,
+  d: dancers.filter(d => !d.leaving).map(d => ({ uid: d.uid, name: d.name, pic: d.pic, guest: d.guest, coins: d.coins, energy: d.energy, x: d.x })) })); } catch (e) {} }
+function load() { try { const s = JSON.parse(localStorage.getItem(SKEY) || 'null');
+  if (!s || Date.now() - s.at > 3 * 60 * 1000 || Q.has('test') || Q.has('demo')) return;
+  hype = s.hype || 0; bpm = s.bpm || bpm;
+  for (const o of s.d || []) { const d = makeDancer(o.uid, o.name, o.pic, o.guest); Object.assign(d, { coins: o.coins, energy: Math.max(o.energy, 6), x: o.x, drop: 0 });
+    d.lvl = d.guest ? 0 : levelOf(d.coins); dancers.push(d); byId.set(d.uid, d); } } catch (e) {} }
+
+/* ── TikFinity ────────────────────────────────────────── */
+const combos = new Map(), seen = new Set();
+function onGift(d) {
+  const uid = (d.uniqueId || d.userId || '').toString(); if (!uid) return;
+  const coins = parseInt(d.diamondCount ?? d.gift?.diamond_count ?? 0, 10) || 0; if (!coins) return;
+  const cnt = parseInt(d.repeatCount || d.gift?.repeat_count || 1, 10) || 1;
+  const key = uid + '|' + (d.giftId ?? d.giftName ?? '?') + '|' + (d.groupId || '');
+  // los combos llegan como 1,2,3…: se suma solo lo nuevo para que el bailarín reaccione en vivo
+  const prev = combos.get(key); const was = prev ? prev.n : 0;
+  const delta = Math.max(0, cnt - was);
+  if (d.repeatEnd === false) combos.set(key, { n: cnt, t: Date.now() }); else combos.delete(key);
+  if (!delta) return;
+  onGiftCoins(uid.toLowerCase(), d.nickname || uid, d.profilePictureUrl || '', coins * delta, d.giftName);
+}
+function onLike(d) { const n = parseInt(d.likeCount || 1, 10) || 1; const v = Math.min(tapBudget, n * CFG.hype.perTap); tapBudget -= v; addHype(v); if (dancers.length) wake(); }
+function onChat(d) {
+  const uid = (d.uniqueId || d.userId || '').toString().toLowerCase(), txt = (d.comment || '').trim();
+  if (txt.startsWith('!') && OWNERS.includes(uid)) {
+    const m = txt.toLowerCase().match(/^!bpm\s+(\d{2,3})/); if (m) { const nb = clamp(+m[1], 60, 200); beat0 = now() - beats(now()) * 60 / nb; bpm = nb; return; }
+    if (txt.toLowerCase() === '!fiesta') { if (dancers.length) startFiesta(now()); return; }
+    if (txt.toLowerCase() === '!limpiar') { dancers.forEach(x => leave(x, true)); hype = 0; fiestaUntil = 0; wake(); return; }
+  }
+  onEmoji(uid, d.nickname || uid, d.profilePictureUrl || '', txt);
+}
+function handle(ev, d) {
+  if (ev === 'gift') onGift(d);
+  else if (ev === 'like') onLike(d);
+  else if (ev === 'chat') onChat(d);
+  else if (ev === 'share') addHype(CFG.hype.share);
+  else if (ev === 'follow') addHype(CFG.hype.follow);
+  else if (ev === 'social') addHype(/share/i.test(d.displayType || d.label || '') ? CFG.hype.share : CFG.hype.follow);
+}
+let ws = null, reTimer = null;
+function connect() {
+  try { ws = new WebSocket(CFG.wsUrl); } catch (e) { return retry(); }
+  ws.onopen = () => console.log('[Baile] Conectado a TikFinity');
+  ws.onmessage = e => { let m; try { m = JSON.parse(e.data); } catch { return; } const d = m.data || {};
+    if (d.msgId) { const k = m.event + '|' + d.msgId + '|' + (d.uniqueId || '') + '|' + (d.likeCount || '') + '|' + (d.repeatCount || '') + '|' + d.repeatEnd;
+      if (seen.has(k)) return; seen.add(k); if (seen.size > 3000) seen.clear(); }
+    handle(m.event, d); };
+  ws.onerror = () => {}; ws.onclose = retry;
+}
+function retry() { clearTimeout(reTimer); reTimer = setTimeout(connect, 5000); }
+setInterval(() => { const t = Date.now(); for (const [k, v] of combos) if (t - v.t > 30000) combos.delete(k); }, 10000);
+
+/* ── Pruebas sin live ─────────────────────────────────── */
+const FAKE = ['Andrea', 'Lokito_23', 'Sumo', 'Luz', 'MarcoElPro', 'Kathy', 'Rolo', 'Vale', 'Pancho', 'Mery', 'Tito', 'Juanca', 'Nico', 'Flor', 'GuitarFan'];
+const pick = a => a[Math.floor(R() * a.length)];
+let testName = '';
+function who() { const n = testName || pick(FAKE); return { uniqueId: n.toLowerCase(), nickname: n }; }
+function fakeGift(coins, name, count) { const b = who(); const gid = 'g' + coins;
+  if (count > 1) { let c = 0; const iv = setInterval(() => { c++; handle('gift', { ...b, giftName: name, giftId: gid, diamondCount: coins, repeatCount: c, repeatEnd: false, giftType: 1 });
+    if (c >= count) { clearInterval(iv); handle('gift', { ...b, giftName: name, giftId: gid, diamondCount: coins, repeatCount: c, repeatEnd: true, giftType: 1 }); } }, 250); }
+  else handle('gift', { ...b, giftName: name, giftId: gid, diamondCount: coins, repeatCount: 1, giftType: 2 }); }
+const TESTS = [
+  ['1', 'Rosa (1)', () => fakeGift(1, 'Rose', 1)],
+  ['2', '10 rosas', () => fakeGift(1, 'Rose', 10)],
+  ['3', 'Corazón (5)', () => fakeGift(5, 'Finger Heart', 1)],
+  ['4', 'Sombrero (99)', () => fakeGift(99, 'Hat and Mustache', 1)],
+  ['5', 'Regalo 500', () => fakeGift(500, 'Money Gun', 1)],
+  ['6', 'Galaxia (1000)', () => fakeGift(1000, 'Galaxy', 1)],
+  ['e', 'Emoji 💃', () => handle('chat', { ...who(), comment: pick(['💃', '🕺', '🎸', '🔥', '🤸', '👏', 'baila!']) })],
+  ['l', 'Taps ❤️', () => handle('like', { ...who(), likeCount: 15 })],
+  ['f', '¡Fiesta!', () => { if (!dancers.length) fakeGift(1, 'Rose', 1); setTimeout(() => startFiesta(now()), 50); }],
+  ['c', 'Limpiar', () => { dancers.forEach(x => leave(x, true)); hype = 0; fiestaUntil = 0; wake(); }],
+];
+addEventListener('keydown', e => { const k = e.key.toLowerCase(); const t = TESTS.find(x => x[0] === k); if (t && e.target.tagName !== 'INPUT') t[2](); });
+if (Q.get('test') === '1') {
+  const box = document.createElement('div'); box.id = 'test';
+  const inp = document.createElement('input'); inp.placeholder = 'nombre (opcional)'; inp.oninput = () => testName = inp.value.trim(); box.appendChild(inp);
+  for (const [k, label, fn] of TESTS) { const bt = document.createElement('button'); bt.textContent = label + ' [' + k.toUpperCase() + ']'; bt.onclick = fn; box.appendChild(bt); }
+  document.body.appendChild(box);
+}
+function startDemo() {
+  setInterval(() => { const r = R();
+    if (r < 0.45) handle('like', { ...who(), likeCount: 5 + Math.floor(R() * 40) });
+    else if (r < 0.75) handle('chat', { ...who(), comment: pick(['💃', '🕺', '🎸', '🔥', '🤸', '👏', 'hola', 'baila']) });
+    else if (r < 0.97) fakeGift(pick([1, 1, 1, 5, 10, 30]), 'Rose', R() < 0.4 ? 3 + Math.floor(R() * 8) : 1);
+    else fakeGift(pick([99, 199, 500, 1000]), 'Big', 1);
+  }, 900);
+}
+window.__baile = { handle, startFiesta, doSpecial: (d, n) => doSpecial(d, n, now()), get dancers() { return dancers; }, get hype() { return hype; }, CFG };
+
+/* ── Inicio ───────────────────────────────────────────── */
+load();
+arrange();
+if (Q.get('demo') === '1') startDemo(); else if (Q.get('test') !== '1' || Q.get('ws') === '1') connect();
+wake();
+</script>
+</body>
+</html>

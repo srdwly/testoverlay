@@ -144,6 +144,7 @@ const inFiesta = t => t < fiestaUntil;
    Piernas: se dan los PIES (lfx/rfx = posición en el piso, lfy/rfy = cuánto se levantan)
    y las rodillas se calculan solas (IK), así los pies no patinan.
    air = todo el cuerpo en el aire · cr = agacharse · bx = mover la cadera.        */
+const H0_SIT = 4.6 - 0.45;   // cadera casi en el piso (H0 = 4.6)
 const KEYS = ['air', 'cr', 'bx', 't', 'hd', 'la1', 'la2', 'ra1', 'ra2', 'lfx', 'lfy', 'rfx', 'rfy', 'rot', 'sx'];
 const BASE = { air: 0, cr: 0.15, bx: 0, t: 0, hd: 0, la1: -0.2, la2: -0.1, ra1: 0.2, ra2: 0.1, lfx: -0.8, lfy: 0, rfx: 0.8, rfy: 0, rot: 0, sx: 1 };
 const P = o => Object.assign({}, BASE, o);
@@ -197,9 +198,10 @@ const MOVES = {
   caminar(b) { const s = Math.sin(b * Math.PI * 2), f = fr(b), up = Math.sin(f * Math.PI) * 0.6, ph = Math.floor(b) % 2;
     return P({ cr: 0.2, lfx: -0.55, rfx: 0.55, lfy: ph ? up : 0, rfy: ph ? 0 : up, t: 0.04 * s,
       la1: -0.15 - 0.35 * s, la2: -0.1 - 0.4 * s, ra1: 0.15 + 0.35 * s, ra2: 0.1 + 0.4 * s }); },
-  // cansado: manos en las rodillas, respirando
+  // cansado: sentado en el piso, rodillas arriba, brazos apoyados en las rodillas, respirando
   cansado(b) { const s = Math.sin(b * Math.PI * 0.5);
-    return P({ lfx: -1.15, rfx: 1.15, cr: 1.25 + 0.05 * s, t: 0.55 + 0.05 * s, hd: 0.35, la1: -0.15, la2: 0.25, ra1: 0.55, ra2: 0.85 }); },
+    return P({ lfx: -0.5, rfx: 0.5, cr: H0_SIT, t: 0.03 * s, hd: 0.12 + 0.04 * s,
+      la1: -1.02 - 0.04 * s, la2: 0.5, ra1: 1.02 + 0.04 * s, ra2: -0.5 }); },
   saludo(b) { const s = Math.sin(b * TAU); return P({ ra1: 2.3, ra2: 2.8 + 0.45 * s, hd: 0.1, bx: 0.15 * s, la1: -0.2 }); },
 };
 // Especiales: duración en tiempos y pose según progreso 0..1 (con impulso antes y aterrizaje después)

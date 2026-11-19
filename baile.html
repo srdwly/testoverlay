@@ -299,7 +299,7 @@ function onGiftCoins(uid, name, pic, coins, giftName, giftId) {
   const sec = Math.max(d.energy <= 0 ? CFG.spawnMinSec - d.energy : 0, coins * CFG.secPerCoin);
   addEnergy(d, sec);
   d.flash = t;
-  if (fanGift) { floatText(d, wasGuest ? '❤️ ¡Fijo 15 min!' : '❤️ +15 min', '#ff6b8a', 1); burst(d.x, FLOOR - 120 * SC, 30, 345, 'chispa'); d.tag = null; }
+  if (fanGift) { if (wasGuest) d.tag = null; burst(d.x, FLOOR - 120 * SC, 30, 345, 'chispa'); d.tag = null; }
   else floatText(d, '+' + Math.round(sec) + ' s', `hsl(${d.hue},90%,70%)`);
   if (d.lvl > lvl0 && lvl0 >= 1) { floatText(d, '¡NIVEL ' + d.lvl + '!', '#ffd54a', 1.3); burst(d.x, FLOOR - 120 * SC, 26, 48, 'chispa'); }
   doSpecial(d, coins >= 99 ? 'mortal' : coins >= 30 ? 'split' : coins >= 5 ? 'giro' : 'salto', t);

@@ -306,6 +306,7 @@ function leave(d, fast) { if (d.leaving) return; d.leaving = now() + (fast ? 0 :
 function addEnergy(d, sec) {
   const room = CFG.energyMax - d.energy, add = Math.min(room, sec);
   d.energy += add; if (d.energy > 0) d.tiredAt = 0;
+  if (add > 0) d.eFull = d.energy;   // la barra vuelve a llenarse: cuanta más energía, más lento baja
 }
 function onGiftCoins(uid, name, pic, coins, giftName, giftId) {
   const t = now(), fanGift = isFanGift(giftName, giftId);
@@ -824,7 +825,7 @@ function update(t, dt) {
     if (d.leaving) { if (t > d.leaving) { d.alpha -= dt * 3; if (d.alpha <= 0) { burst(d.x, FLOOR - 90 * SC, 14, d.hue, 'chispa'); dancers.splice(i, 1); if (byId.get(d.uid) === d) byId.delete(d.uid); lastRank = 0; } } continue; }
     d.alpha = Math.min(1, d.alpha + dt * 4);
     if (!d.guest && !isFan(d.uid)) { d.guest = true; d.tag = null; d.tiredAt = d.energy <= 0 ? t : 0; }   // se acabaron sus 15 min de fijo
-    if (isFan(d.uid)) { if (d.energy < 30) { if (d.energy <= 0) d.tiredAt = 0; d.energy = 30; } }   // Quiéreme: baila sin cansarse todos sus 15 min
+    if (isFan(d.uid)) { if (d.energy < 30) { if (d.energy <= 0) d.tiredAt = 0; d.energy = 30; d.eFull = Math.max(d.eFull || 0, 30); } }   // Quiéreme: baila sin cansarse todos sus 15 min
     else if (!fiesta) d.energy = Math.max(0, d.energy - dt);
     // moverse a su lugar
     const dx = d.tx - d.x, walking = Math.abs(dx) > 10;
@@ -871,7 +872,7 @@ function render(t) {
     d.tagY = ty - tag.height;
     ctx.globalAlpha = d.alpha;
     ctx.drawImage(tag, Math.round(d.x - tag.width / 2), Math.round(ty - tag.height));
-    const bw = 84 * inf.sc, e = clamp(d.energy / 120, 0, 1);            // barra llena = 2 min o más (celeste si tiene más de 10 min)
+    const bw = 84 * inf.sc, e = isFan(d.uid) ? 1 : clamp(d.energy / Math.max(1, d.eFull || d.energy), 0, 1);   // llena al recargar; baja más lento si tiene más tiempo (celeste si tiene más de 10 min)
     ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(d.x - bw / 2 - 2, ty - 1, bw + 4, 9);
     ctx.fillStyle = d.energy > 600 ? '#5fd8ff' : e > 0.4 ? '#36e07a' : e > 0.12 ? '#ffd54a' : '#ff4b4b'; ctx.fillRect(d.x - bw / 2, ty + 1, bw * Math.max(e, d.energy > 0 ? 0.03 : 0), 5);
     ctx.globalAlpha = 1;

@@ -611,7 +611,8 @@ function update(t, dt) {
     if (d.leaving) { if (t > d.leaving) { d.alpha -= dt * 3; if (d.alpha <= 0) { burst(d.x, FLOOR - 90 * SC, 14, d.hue, 'chispa'); dancers.splice(i, 1); if (byId.get(d.uid) === d) byId.delete(d.uid); lastRank = 0; } } continue; }
     d.alpha = Math.min(1, d.alpha + dt * 4);
     if (!d.guest && !isFan(d.uid)) { d.guest = true; d.tag = null; d.tiredAt = d.energy <= 0 ? t : 0; }   // se acabaron sus 15 min de fijo
-    if (!fiesta) d.energy = Math.max(0, d.energy - dt);
+    if (isFan(d.uid)) { if (d.energy < 30) { if (d.energy <= 0) d.tiredAt = 0; d.energy = 30; } }   // Quiéreme: baila sin cansarse todos sus 15 min
+    else if (!fiesta) d.energy = Math.max(0, d.energy - dt);
     // moverse a su lugar
     const dx = d.tx - d.x, walking = Math.abs(dx) > 10;
     if (walking) d.x += Math.sign(dx) * Math.min(Math.abs(dx), 280 * SC * dt);

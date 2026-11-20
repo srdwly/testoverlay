@@ -70,6 +70,7 @@ const CFG = {
   tapPct: num('tap', 0.2),     // cada tap tap (evento de likes) llena 20 % de la barra (tope 20 % de 60 s en barras grandes)
   tapGap: 0.6,                 // un mismo usuario suma como máximo cada 0,6 s (TikTok manda los taps en ráfagas)
   coinPct: 0.25,               // regalo de menos de 10 monedas: 25 % por moneda · 10 monedas o más: barra llena
+  vipCoins: num('vip', 1000), vipExtra: 8,   // 1000+ monedas en el día = bailarín PERMANENTE con lugar extra (hasta 8 extra)
   fest: (Q.get('fest') || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean),   // regalos LIVE Fest (nombre o id) = doble
   fanGift: Q.get('fan') || '', fanGiftId: 7934,
   emojiSec: 2, emojiCooldown: 4,
@@ -137,6 +138,7 @@ try { const s = JSON.parse(localStorage.getItem(DKEY) || 'null'); if (s && s.coi
 function rollDay() { const t = Date.now(); if (!(DAY.act && t - DAY.act <= DAY_GAP_MIN * 60e3) && DAY.day !== dayKey(t)) DAY = { day: dayKey(t), act: 0, coins: {} }; DAY.act = t; }
 function saveDay() { if (Q.has('test') || Q.has('demo')) return; try { localStorage.setItem(DKEY, JSON.stringify(DAY)); } catch (e) {} }
 const isFan = uid => (FANS[uid] || 0) > Date.now();
+const isVip = uid => (DAY.coins[uid] || 0) >= CFG.vipCoins;   // 1000+ monedas hoy: baila siempre y no lo sacan
 const isFanGift = (name, id) => CFG.fanGift ? String(name || '').toLowerCase() === CFG.fanGift.toLowerCase()
   : (/heart\s*me|qui[eé]reme/i.test(name || '') || +id === CFG.fanGiftId);
 function hueOf(s) { let h = 2166136261; for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619); h ^= h >>> 13; h = Math.imul(h, 0x5bd1e995); h ^= h >>> 15; return (h >>> 0) % 360; }
@@ -292,11 +294,12 @@ function currentPose(d, t) {
 function getOrSpawn(uid, name, pic, prio) {
   let d = byId.get(uid);
   if (d) { if (d.leaving) { d.leaving = 0; d.alpha = Math.max(d.alpha, 0.3); } if (pic && !d.pic) { d.pic = pic; if (CFG.photos) loadAvatar(d); } return d; }
-  if (dancers.filter(x => !x.leaving).length >= CFG.max) {
-    const pool = dancers.filter(x => !x.leaving && !x.leader && ((x.energy <= 0 && (prio >= 2 || x.guest)) || (prio >= 2 && x.guest)))   // un invitado nuevo solo reemplaza a otro invitado que descansa, nunca a un donador
+  // los permanentes (1000+ monedas) tienen su propio lugar extra: no cuentan para el máximo y nunca salen
+  if (!isVip(uid) && dancers.filter(x => !x.leaving && !isVip(x.uid)).length >= CFG.max) {
+    const pool = dancers.filter(x => !x.leaving && !x.leader && !isVip(x.uid) && ((x.energy <= 0 && (prio >= 2 || x.guest)) || (prio >= 2 && x.guest)))   // un invitado nuevo solo reemplaza a otro invitado que descansa, nunca a un donador
       .sort((a, b) => ((a.energy > 0) - (b.energy > 0)) || (b.guest - a.guest) || (a.energy - b.energy));
     // el que regala SIEMPRE entra: si no hay nadie descansando, sale el que tiene menos energía (vuelve cuando haga tap)
-    if (!pool[0] && prio >= 3) pool.push(...dancers.filter(x => !x.leaving && !x.leader).sort((a, b) => (b.guest - a.guest) || (a.energy - b.energy)));
+    if (!pool[0] && prio >= 3) pool.push(...dancers.filter(x => !x.leaving && !x.leader && !isVip(x.uid)).sort((a, b) => (b.guest - a.guest) || (a.energy - b.energy)));
     if (!pool[0]) return null;
     leave(pool[0], true);
   }
@@ -306,7 +309,7 @@ function getOrSpawn(uid, name, pic, prio) {
   lastRank = 0;
   return d;
 }
-function leave(d, fast) { if (d.leaving) return; d.leaving = now() + (fast ? 0 : 1.6); if (!fast) setMove(d, 'saludo', now()); }
+function leave(d, fast) { if (d.leaving || (isVip(d.uid) && !fast)) return; d.leaving = now() + (fast ? 0 : 1.6); if (!fast) setMove(d, 'saludo', now()); }
 
 const capOf = d => d.cap || CFG.guestCap;
 // suma segundos sin pasar del tanque; devuelve lo que sumó
@@ -319,10 +322,10 @@ const isFest = (name, id) => /\bfest\b/i.test(name || '') || CFG.fest.includes(S
 function onGiftCoins(uid, name, pic, coins, giftName, giftId) {
   const t = now(), fanGift = isFanGift(giftName, giftId);
   if (fanGift) { FANS[uid] = Date.now() + CFG.fixedMin * 60000; saveFans(); }
+  rollDay(); DAY.coins[uid] = (DAY.coins[uid] || 0) + coins; (DAY.names = DAY.names || {})[uid] = name; saveDay();   // antes de entrar: si llega a 1000 entra a un lugar extra sin sacar a nadie
   const d = getOrSpawn(uid, name, pic, 3);
   if (!d) return;
   const lvl0 = d.lvl, wasGuest = d.guest;
-  rollDay(); DAY.coins[uid] = (DAY.coins[uid] || 0) + coins; saveDay();
   d.coins = DAY.coins[uid]; d.lvl = levelOf(d.coins);
   if (isFan(uid)) { d.guest = false; if (!d.lvl) d.lvl = 1; }
   // tanque: los regalos lo agrandan (8 s por moneda, doble si es LIVE Fest); 10+ monedas lo llenan, menos = 25 % por moneda
@@ -383,7 +386,7 @@ function arrange() {
     used.clear(); for (const d of live) if (d.slot != null) used.set(d.slot, d); }
   for (const d of live) if (d.slot == null) { let k = 0; while (used.has(k)) k++; d.slot = k; used.set(k, d); }
   // los invitados gratis ceden la fila de adelante a los que regalaron
-  const fg = live.filter(d => d.guest && d.slot < 7 && d.slot > 0), bp = live.filter(d => !d.guest && d.slot >= 7);
+  const free = d => d.guest && !d.coins, fg = live.filter(d => free(d) && d.slot < 7 && d.slot > 0), bp = live.filter(d => !free(d) && d.slot >= 7);
   for (let i = 0; i < Math.min(fg.length, bp.length); i++) { const s = fg[i].slot; fg[i].slot = bp[i].slot; bp[i].slot = s; }
   const nf = Math.min(7, n), nb = n - nf;
   for (const d of live) {
@@ -836,7 +839,7 @@ function update(t, dt) {
     if (d.leaving) { if (t > d.leaving) { d.alpha -= dt * 3; if (d.alpha <= 0) { burst(d.x, FLOOR - 90 * SC, 14, d.hue, 'chispa'); dancers.splice(i, 1); if (byId.get(d.uid) === d) byId.delete(d.uid); lastRank = 0; } } continue; }
     d.alpha = Math.min(1, d.alpha + dt * 4);
     if (!d.guest && !isFan(d.uid)) { d.guest = true; d.tag = null; d.tiredAt = d.energy <= 0 ? t : 0; }   // se acabaron sus 15 min de fijo
-    if (isFan(d.uid)) { if (d.energy < capOf(d)) { if (d.energy <= 0) d.tiredAt = 0; d.energy = capOf(d); } }   // Quiéreme: baila sin cansarse todos sus 15 min
+    if (isFan(d.uid) || isVip(d.uid)) { if (d.energy < capOf(d)) { if (d.energy <= 0) d.tiredAt = 0; d.energy = capOf(d); } }   // Quiéreme: baila sin cansarse todos sus 15 min
     else if (!fiesta) d.energy = Math.max(0, d.energy - dt);
     // moverse a su lugar
     const dx = d.tx - d.x, walking = Math.abs(dx) > 10;
@@ -883,7 +886,7 @@ function render(t) {
     d.tagY = ty - tag.height;
     ctx.globalAlpha = d.alpha;
     ctx.drawImage(tag, Math.round(d.x - tag.width / 2), Math.round(ty - tag.height));
-    const bw = 84 * inf.sc, e = isFan(d.uid) ? 1 : clamp(d.energy / capOf(d), 0, 1);   // barra = tanque (celeste si tiene más de 10 min)
+    const bw = 84 * inf.sc, e = isFan(d.uid) || isVip(d.uid) ? 1 : clamp(d.energy / capOf(d), 0, 1);   // barra = tanque (celeste si tiene más de 10 min)
     ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(d.x - bw / 2 - 2, ty - 1, bw + 4, 9);
     ctx.fillStyle = d.energy > 600 ? '#5fd8ff' : e > 0.4 ? '#36e07a' : e > 0.12 ? '#ffd54a' : '#ff4b4b'; ctx.fillRect(d.x - bw / 2, ty + 1, bw * Math.max(e, d.energy > 0 ? 0.03 : 0), 5);
     ctx.globalAlpha = 1;
@@ -908,6 +911,19 @@ function render(t) {
     if (show) { const h = helpTag(); ctx.drawImage(h, Math.round(540 - h.width / 2), FLOOR + 48 * Math.min(1, SC)); } }
 }
 
+/* ── Los permanentes (1000+ monedas hoy) siempre vuelven a la pista ── */
+function bringVips() {
+  const t = Date.now(); if (!(DAY.act && t - DAY.act <= DAY_GAP_MIN * 60e3) && DAY.day !== dayKey(t)) return;   // ya es otro día: no traer a los de ayer
+  let n = dancers.filter(x => !x.leaving && isVip(x.uid)).length;
+  for (const uid in DAY.coins) {
+    if (!isVip(uid) || n >= CFG.vipExtra) continue;
+    const d = byId.get(uid);
+    if (d && !d.leaving) continue;
+    const nd = getOrSpawn(uid, (DAY.names && DAY.names[uid]) || uid, '', 3); if (!nd) continue;
+    addEnergy(nd, capOf(nd)); n++; wake();
+  }
+}
+setInterval(bringVips, 4000);
 /* ── Guardar (si OBS recarga la fuente, la pista sigue) ── */
 const SKEY = 'bailereg_pista_v1';
 function save() { try { localStorage.setItem(SKEY, JSON.stringify({ at: Date.now(), bpm,
@@ -916,7 +932,8 @@ function load() { try { const s = JSON.parse(localStorage.getItem(SKEY) || 'null
   if (!s || Date.now() - s.at > 3 * 60 * 1000 || Q.has('test') || Q.has('demo')) return;
 
   for (const o of s.d || []) { const d = makeDancer(o.uid, o.name, o.pic); Object.assign(d, { coins: Math.max(d.coins, o.coins || 0), energy: Math.max(o.energy, 6), cap: o.cap || 0, x: o.x, drop: 0 });
-    d.lvl = d.coins ? levelOf(d.coins) : (d.guest ? 0 : 1); dancers.push(d); byId.set(d.uid, d); } } catch (e) {} }
+    d.lvl = d.coins ? levelOf(d.coins) : (d.guest ? 0 : 1); dancers.push(d); byId.set(d.uid, d);
+    if (d.coins) (DAY.names = DAY.names || {})[d.uid] = d.name; } } catch (e) {} }
 
 /* ── TikFinity ────────────────────────────────────────── */
 const combos = new Map(), seen = new Set();

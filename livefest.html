@@ -20,7 +20,8 @@
      3. Futuros Reyes se reinicia solo cada día a la 1:00 (hora Bolivia),
         cuando termina el ranking diario.
 
-   NO cuenta (no llega por TikFinity): votos, puntos de misión, Caja fuerte.
+   NO cuenta solo (no llega por TikFinity): votos, misiones, Caja fuerte.
+   Las misiones se suman con !mision N o con el botón del panel.
    Por eso conviene volver a anotar el puntaje real de vez en cuando.
 
    CÓMO ANOTAR LOS PUNTOS (cualquiera de estas):
@@ -29,6 +30,8 @@
           !fest 2993 3224 2000    → puntos, faltan, puesto al que apuntas
           !reyes 14.29k 37 44     → puntos, diferencia en contra, tu puesto
           !doble 5                → Estallido doble por 5 minutos (!doble 0 lo apaga)
+          !mision 300             → suma puntos de una misión cumplida a la Liga de poder
+                                    (también: Interactuar → clic → "Sumar misión")
      · En el enlace: livefest.html?fest=2993,3224,2000&reyes=14.29k,37,44
        (solo se aplica si cambias el enlace; no pisa lo que anotaste después)
 
@@ -162,6 +165,8 @@ const CFG = {
     <label>Puntos de hoy <input id="i-rp" inputmode="decimal" placeholder="14.29k"></label>
     <label>Diferencia en contra <input id="i-rd" inputmode="decimal" placeholder="37"></label>
     <label>Tu puesto <input id="i-rn" inputmode="numeric" placeholder="44"></label>
+    <h4>MISIÓN CUMPLIDA</h4>
+    <label>Sumar puntos de misión <input id="i-mi" inputmode="decimal" placeholder="300"></label>
     <div class="btns">
       <button class="ok" id="b-ok">Guardar</button>
       <button class="dbl" id="b-dbl">Estallido doble</button>
@@ -290,9 +295,9 @@ const pendSum = w => Object.values(S.pend).reduce((a, p) => a + p[w], 0);
 /* ── Dibujo ────────────────────────────────────────────── */
 let lastF = null, lastR = null;
 function bump(el) { el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); setTimeout(() => el.classList.remove('bump'), 180); }
-function flyUp(n, fest) {
+function flyUp(n, fest, txt) {
   const b = $('#b-fest'); const el = document.createElement('div');
-  el.className = 'fly' + (fest ? ' fest' : ''); el.textContent = '+' + fmt(n) + (fest ? ' ×2' : '');
+  el.className = 'fly' + (fest ? ' fest' : ''); el.textContent = '+' + fmt(n) + (fest ? ' ×2' : '') + (txt ? ' ' + txt : '');
   b.appendChild(el); setTimeout(() => el.remove(), 1500);
 }
 function render() {
@@ -364,6 +369,7 @@ function openForm() {
   const F = S.fest, R = S.reyes, f = $('#form'), p = S.pos || CFG.pos;
   const fNow = (F.pts ?? 0) + F.add, rNow = (R.pts ?? 0) + R.add;
   $('#i-fp').value = F.pts == null ? '' : fNow; $('#i-ff').value = ''; $('#i-fo').value = F.obj ?? '';
+  $('#i-mi').value = '';
   $('#i-rp').value = R.pts == null ? '' : rNow; $('#i-rd').value = ''; $('#i-rn').value = R.puesto ?? '';
   f.style.left = p[0] + 'px'; f.style.top = (p[1] + 10) + 'px';
   f.classList.add('on');
@@ -377,9 +383,11 @@ $('#b-ok').onclick = () => {
   // solo reiniciar el conteo si cambiaste el número de puntos
   setFest(fp != null && (F.pts == null || fp !== fNow) ? fp : null, ff, fo);
   setReyes(rp != null && (R.pts == null || rp !== rNow) ? rp : null, rd, rn);
+  const mi = num($('#i-mi').value); if (mi) mision(mi);
   $('#form').classList.remove('on');
 };
 $('#b-dbl').onclick = () => { doble(CFG.dobleMin); $('#form').classList.remove('on'); };
+function mision(n) { S.fest.add += n; flyUp(n, false, 'misión'); save(); render(); }
 function doble(min) { S.dobleHasta = min > 0 ? NOW() + min * 60e3 : 0; save(); render(); }
 
 /* ── Comandos del dueño en el chat ─────────────────────── */
@@ -390,19 +398,20 @@ function onChat(d) {
   const [cmd, ...a] = txt.split(/\s+/);
   if (cmd === '!fest') setFest(num(a[0]), num(a[1]), num(a[2]));
   else if (cmd === '!reyes') setReyes(num(a[0]), num(a[1]), num(a[2]));
+  else if (cmd === '!mision' || cmd === '!misión') { const n = num(a[0]); if (n) mision(n); }
   else if (cmd === '!doble') doble(a[0] != null ? (num(a[0]) ?? CFG.dobleMin) : CFG.dobleMin);
 }
 
 /* ── Grabador (?grabar=1): guarda eventos raros de TikTok ─ */
 const REC = Q.get('grabar') === '1';
 const COMMON = new Set(['chat', 'gift', 'like', 'member', 'social', 'roomUser', 'follow', 'share', 'subscribe', 'questionNew', 'emote', 'streamEnd', 'connected', 'disconnected']);
-const HOT = /rank|banner|fest|league|liga|poll|goal|envelope|hourly|campaign|activity|notice|toast|barrage/i;
+const HOT = /rank|banner|fest|league|liga|poll|goal|envelope|hourly|campaign|activity|notice|toast|barrage|mission|task|quest/i;
 let R2 = { counts: {}, samples: [], start: NOW() };
 try { const j = JSON.parse(localStorage.getItem('livefest_rec') || 'null'); if (j) R2 = j; } catch (e) {}
 function record(ev, msg) {
   R2.counts[ev] = (R2.counts[ev] || 0) + 1;
   let keep = !COMMON.has(ev) || HOT.test(ev);
-  if (!keep && ev !== 'chat') { try { const s = JSON.stringify(msg.data || {}); keep = /rank|liga|league|fest|banner/i.test(s) && !/giftName/.test(s); } catch (e) {} }
+  if (!keep && ev !== 'chat') { try { const s = JSON.stringify(msg.data || {}); keep = /rank|liga|league|fest|banner|mission|misi[oó]n|task/i.test(s) && !/giftName/.test(s); } catch (e) {} }
   if (keep && R2.samples.length < 400) {
     let s = ''; try { s = JSON.stringify(msg); } catch (e) {}
     R2.samples.push({ t: new Date().toISOString(), ev, raw: s.slice(0, 30000) });
@@ -459,7 +468,7 @@ if (Q.get('diag') === '1') {
   document.body.appendChild(el);
   setInterval(() => { el.textContent = 'LIVE Fest · TikFinity ' + (stat.conn ? '✓' : '✗') + ' · eventos ' + stat.n + ' · último: ' + stat.ev; }, 1000);
 }
-window.__livefest = { handle, get state() { return S; }, render, setFest, setReyes, doble };   // para pruebas
+window.__livefest = { handle, get state() { return S; }, render, setFest, setReyes, doble, mision };   // para pruebas
 
 /* ── Demo ──────────────────────────────────────────────── */
 function startDemo() {

@@ -293,7 +293,8 @@ function currentPose(d, t) {
 // prio: 2 = fijo o alguien que regaló (puede sacar invitados y a los que descansan), 1 = invitado (solo saca a los que descansan)
 function getOrSpawn(uid, name, pic, prio) {
   let d = byId.get(uid);
-  if (d) { if (d.leaving) { d.leaving = 0; d.alpha = Math.max(d.alpha, 0.3); } if (pic && !d.pic) { d.pic = pic; if (CFG.photos) loadAvatar(d); } return d; }
+  if (d) { if (name && d.name === d.uid && name !== uid) { d.name = String(name).slice(0, 13); d.tag = null; (DAY.names = DAY.names || {})[uid] = name; }   // volvió sin nombre guardado: tomar el nombre real
+    if (d.leaving) { d.leaving = 0; d.alpha = Math.max(d.alpha, 0.3); } if (pic && !d.pic) { d.pic = pic; if (CFG.photos) loadAvatar(d); } return d; }
   // los permanentes (1000+ monedas) tienen su propio lugar extra: no cuentan para el máximo y nunca salen
   if (!isVip(uid) && dancers.filter(x => !x.leaving && !isVip(x.uid)).length >= CFG.max) {
     const pool = dancers.filter(x => !x.leaving && !x.leader && !isVip(x.uid) && ((x.energy <= 0 && (prio >= 2 || x.guest)) || (prio >= 2 && x.guest)))   // un invitado nuevo solo reemplaza a otro invitado que descansa, nunca a un donador
@@ -957,6 +958,7 @@ function onLike(d) {
   const n = parseInt(d.likeCount || 1, 10) || 1;
   DAY.act = Date.now();
   let x = byId.get(uid);
+  if (x && x.name === x.uid && d.nickname && d.nickname.toLowerCase() !== uid) { x.name = String(d.nickname).slice(0, 13); x.tag = null; (DAY.names = DAY.names || {})[uid] = d.nickname; }
   if (!x) { if (!CFG.guests && !isFan(uid)) return; x = getOrSpawn(uid, d.nickname || uid, d.profilePictureUrl || '', isFan(uid) ? 2 : 1); if (!x) return; addEnergy(x, capOf(x)); x.lastTap = now(); wake(); return; }   // entra con la barra llena
   const tn = now(); if (tn - (x.lastTap || 0) < CFG.tapGap) return; x.lastTap = tn;
   const was = x.energy; addEnergy(x, CFG.tapPct * Math.min(capOf(x), CFG.giftCapMin));

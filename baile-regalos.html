@@ -616,9 +616,9 @@ function drawFloor(t, b, fiesta, active) {
    (pila bajita para no taparlos). Al caer, los bailarines de al lado rebotan; un regalo
    grande hace saltar a todos.                                                          */
 const GC = {
-  size: 42 * SC * num('regalo', 1),   // radio de un regalo de 1 moneda (px) · ?regalo=1.3 los agranda
-  maxMult: 2.6, gravity: 1800, bounce: 0.25, friction: 0.35, overlap: 0.62, popBounce: 0.55,
-  max: Math.round(num('maxregalos', 60)), life: num('vida', 90), pileMax: 185 * SC,
+  size: 1080 * 0.09 * num('regalo', 1),   // radio de un regalo de 1 moneda = igual que Rosas 7 (0,09 del ancho) · ?regalo=0.5 los achica
+  maxMult: 2.8, gravity: 1800, bounce: 0.25, friction: 0.35, overlap: 0.62, popBounce: 0.55,
+  max: Math.round(num('maxregalos', 60)), life: num('vida', 90), pileMax: 420,
   maxPerGift: 30, gapMs: 90, bigCoins: 100,
   ficha: Q.get('ficha') === '0' ? 'off' : Q.get('ficha') === 'siempre' ? 'siempre' : 'vuelo',   // 3D solo en el vuelo (por defecto)
   grosor: 0.22, inclina: 28,

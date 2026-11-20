@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Puntaje LIVE Fest</title>
+
+<script>
+/* ════════════════════════════════════════════════════════════════
+   PUNTAJE LIVE FEST 26 (Liga de poder) + FUTUROS REYES (ranking diario)
+
+   DATOS REALES: clic en el favorito "Puente LIVE Fest" en Chrome (ver
+   livefest-puente.js). Cada clic lee UNA vez tus puntos y puesto reales y
+   los manda aquí; entre lecturas se suman los regalos de TikFinity.
+   Sin el puente, funciona en modo manual:
+     1. Tú anotas lo que ves en la app (puntos y cuánto falta).
+     2. Durante el live suma los regalos que llegan por TikFinity:
+          · regalo normal          1 moneda = 1 punto
+          · regalo de FEST         1 moneda = 2 puntos (su nombre tiene "FEST")
+          · "Estallido doble"      con !doble se duplica todo por unos minutos
+        y descuenta lo que falta para el siguiente puesto.
+     3. Futuros Reyes se reinicia solo cada día a la 1:00 (hora Bolivia),
+        cuando termina el ranking diario.
+
+   NO cuenta solo (no llega por TikFinity): votos, misiones, Caja fuerte.
+   Las misiones se suman con !mision N o con el botón del panel.
+   Por eso conviene volver a anotar el puntaje real de vez en cuando.
+
+   CÓMO ANOTAR LOS PUNTOS (cualquiera de estas):
+     · En OBS: clic derecho en la fuente → Interactuar → clic en el panel.
+     · En el chat del live (solo dueños):
+          !fest 2993 3224 2000    → puntos, faltan, puesto al que apuntas
+          !reyes 14.29k 37 44     → puntos, diferencia en contra, tu puesto
+          !doble 5                → Estallido doble por 5 minutos (!doble 0 lo apaga)
+          !mision 300             → suma puntos de una misión cumplida a la Liga de poder
+                                    (también: Interactuar → clic → "Sumar misión")
+     · En el enlace: livefest.html?fest=2993,3224,2000&reyes=14.29k,37,44
+       (solo se aplica si cambias el enlace; no pisa lo que anotaste después)
+
+   ENLACES (fuente de navegador en OBS, 1080×1920):
+     livefest.html            → panel arrastrable (Interactuar → arrastrar)
+     ?solo=fest / ?solo=reyes → muestra un solo bloque
+     ?demo=1                  → simula regalos (no toca tu puntaje real)
+     ?grabar=1                → GRABADOR: ábrelo en Chrome durante el live.
+                                Guarda los eventos raros que manda TikTok
+                                (ranking, banners del evento) para ver si
+                                ahí viene tu puesto. Al final: "Descargar".
+     ?reyesfest=2             → en Futuros Reyes contar los regalos FEST doble
+     ?diag=1                  → línea de diagnóstico
+   ════════════════════════════════════════════════════════════════ */
+const CFG = {
+  wsUrl: 'ws://localhost:21213/',          // TikFinity
+  owners: ['rodrigovelizguitar'],          // quién puede usar !fest / !reyes / !doble
+  festMult: 2,                             // regalos FEST: 1 moneda = 2 puntos
+  festName: /fest/i,                       // cómo reconocer un regalo FEST por su nombre
+  festIds: [],                             // (opcional) ids de regalos FEST si el nombre no sirve
+  reyesFestMult: 2,                        // Futuros Reyes: "Regalos Especiales = x2 puntos" (?reyesfest=1 para no duplicar)
+  reyesBonusUTC: 1,                        // Futuros Reyes: hora bonus x2 de 20:00 a 21:00 Bogotá = 01:00 UTC (21:00 Bolivia)
+  realMaxMin: 240,                         // última lectura del puente: se muestra "real · hace X" hasta 4 h
+  reyesResetUTC: 5,                        // el ranking diario termina a las 05:00 UTC = 1:00 Bolivia
+  dobleMin: 5,                             // minutos de "Estallido doble" si escribes solo !doble
+  comboTimeoutSec: 20,                     // combo sin aviso de fin: se guarda a los 20 s
+  pos: [40, 210],                          // posición del panel en el lienzo 1080×1920
+  width: 430,
+};
+</script>
+
+<style>
+  :root {
+    --bg: rgba(22, 8, 38, 0.86);
+    --bg2: #2a0e44;
+    --cyan: #25f4ee;
+    --pink: #fe2c55;
+    --text: #fff;
+    --muted: #cbb9e6;
+    --gold: #ffd36b;
+  }
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  #stage {
+    position: absolute; left: 0; top: 0; width: 1080px; height: 1920px;
+    transform-origin: 0 0;
+    font-family: "Segoe UI", "Helvetica Neue", Arial, system-ui, sans-serif;
+    color: var(--text);
+  }
+  #card {
+    position: absolute; padding: 3px; border-radius: 26px;
+    background: linear-gradient(135deg, var(--cyan), #8a5cff 50%, var(--pink));
+    box-shadow: 0 10px 30px rgba(0,0,0,.45);
+    cursor: default; user-select: none;
+  }
+  #card .in { background: var(--bg); border-radius: 23px; padding: 16px 20px 18px; }
+  .hdr { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; }
+  .tag {
+    font-weight: 900; font-size: 19px; letter-spacing: .5px; font-style: italic;
+    background: linear-gradient(90deg, var(--cyan), #fff 45%, var(--pink));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .x2 {
+    display: none; margin-left: 8px; font-weight: 900; font-size: 16px; padding: 3px 10px; border-radius: 99px;
+    background: linear-gradient(90deg, var(--cyan), var(--pink)); color: #fff;
+    animation: pulse 1s ease-in-out infinite;
+  }
+  .x2.on { display: block; }
+  .real { margin-left: auto; font-size: 13px; font-weight: 700; color: var(--muted); }
+  .real.on { color: #5cf2a0; }
+  @keyframes pulse { 50% { transform: scale(1.08); } }
+  .blk { position: relative; padding: 10px 0 2px; }
+  .blk + .blk { border-top: 1px solid rgba(255,255,255,.12); margin-top: 8px; padding-top: 14px; }
+  .lbl { font-size: 15px; font-weight: 800; letter-spacing: 1.2px; color: var(--muted); text-transform: uppercase; }
+  .row { display: flex; align-items: baseline; gap: 10px; margin-top: 2px; }
+  .big { font-size: 46px; font-weight: 900; line-height: 1.05; font-variant-numeric: tabular-nums; transition: transform .15s; }
+  .big.bump { transform: scale(1.1); }
+  .unit { font-size: 18px; font-weight: 700; color: var(--muted); }
+  .live { margin-left: auto; font-size: 18px; font-weight: 800; color: var(--cyan); }
+  .bar { height: 10px; border-radius: 99px; background: rgba(255,255,255,.14); margin-top: 10px; overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 0; border-radius: 99px;
+    background: linear-gradient(90deg, var(--cyan), var(--pink)); transition: width .5s; }
+  .msg { font-size: 17px; font-weight: 700; margin-top: 7px; color: #fff; }
+  .msg b { color: var(--gold); }
+  .msg.win { color: var(--gold); }
+  .hint { font-size: 14px; color: var(--muted); margin-top: 6px; }
+  .fly { position: absolute; right: 4px; top: 30px; font-weight: 900; font-size: 24px; color: var(--cyan);
+    animation: fly 1.4s ease-out forwards; pointer-events: none; text-shadow: 0 2px 6px rgba(0,0,0,.6); }
+  .fly.fest { color: var(--pink); }
+  @keyframes fly { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(-46px); } }
+
+  /* Formulario (OBS → Interactuar → clic en el panel) */
+  #form { display: none; position: absolute; z-index: 5; background: var(--bg2); border: 2px solid var(--cyan);
+    border-radius: 18px; padding: 16px; width: 400px; font-size: 16px; }
+  #form.on { display: block; }
+  #form h4 { margin: 4px 0 8px; font-size: 16px; color: var(--muted); letter-spacing: 1px; }
+  #form label { display: flex; justify-content: space-between; align-items: center; margin: 6px 0; gap: 10px; }
+  #form input { width: 130px; font-size: 18px; padding: 5px 8px; border-radius: 8px; border: 0; }
+  #form .btns { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  #form button { flex: 1; font-size: 16px; font-weight: 800; padding: 8px; border-radius: 10px; border: 0; cursor: pointer; }
+  #form .ok { background: var(--cyan); color: #111; }
+  #form .cancel { background: #555; color: #fff; }
+  #form .dbl { background: var(--pink); color: #fff; }
+
+  /* Grabador (?grabar=1) */
+  #rec { position: fixed; right: 10px; top: 10px; width: 420px; max-height: 92vh; overflow: auto; z-index: 9;
+    background: rgba(0,0,0,.88); color: #fff; font: 14px/1.4 Arial, sans-serif; padding: 12px; border-radius: 12px; }
+  #rec button { font-weight: 700; padding: 6px 10px; margin: 6px 6px 0 0; cursor: pointer; }
+  #rec .hot { color: #ffd36b; font-weight: 700; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="card"><div class="in">
+    <div class="hdr"><span class="tag">LIVE FEST 26</span><span class="real" id="real"></span><span class="x2" id="x2">×2</span></div>
+    <div class="blk" id="b-fest">
+      <div class="lbl">Liga de poder</div>
+      <div class="row"><span class="big" id="f-big">—</span><span class="unit">pts</span><span class="live" id="f-live"></span></div>
+      <div class="bar"><i id="f-bar"></i></div>
+      <div class="msg" id="f-msg"></div>
+    </div>
+    <div class="blk" id="b-reyes">
+      <div class="lbl" id="r-lbl">Futuros Reyes · hoy</div>
+      <div class="row"><span class="big" id="r-big">—</span><span class="unit">pts</span><span class="live" id="r-live"></span></div>
+      <div class="bar"><i id="r-bar"></i></div>
+      <div class="msg" id="r-msg"></div>
+    </div>
+  </div></div>
+
+  <div id="form">
+    <h4>LIGA DE PODER (lo que dice la app)</h4>
+    <label>Puntos actuales <input id="i-fp" inputmode="decimal" placeholder="2993"></label>
+    <label>Puntos que faltan <input id="i-ff" inputmode="decimal" placeholder="3224"></label>
+    <label>Para el puesto núm. <input id="i-fo" inputmode="numeric" placeholder="2000"></label>
+    <h4>FUTUROS REYES · RANKING DIARIO</h4>
+    <label>Puntos de hoy <input id="i-rp" inputmode="decimal" placeholder="14.29k"></label>
+    <label>Diferencia en contra <input id="i-rd" inputmode="decimal" placeholder="37"></label>
+    <label>Tu puesto <input id="i-rn" inputmode="numeric" placeholder="44"></label>
+    <h4>MISIÓN CUMPLIDA</h4>
+    <label>Sumar puntos de misión <input id="i-mi" inputmode="decimal" placeholder="300"></label>
+    <div class="btns">
+      <button class="ok" id="b-ok">Guardar</button>
+      <button class="dbl" id="b-dbl">Estallido doble</button>
+      <button class="cancel" id="b-cancel">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const Q = new URLSearchParams(location.search);
+const DEMO = Q.get('demo') === '1';
+const KEY = 'livefest_v1' + (DEMO ? '_demo' : '');
+const OWNERS = CFG.owners.map(s => s.toLowerCase());
+if (Q.get('reyesfest')) CFG.reyesFestMult = parseFloat(Q.get('reyesfest')) || 1;
+const NOW = () => Date.now();
+const $ = s => document.querySelector(s);
+
+/* ── Números: "2,993" "3.224" "14.29k" "14,29k" ─────────── */
+function num(v) {
+  if (v == null) return null;
+  let s = String(v).trim().toLowerCase().replace(/\s|pts|puntos/g, '');
+  if (!s) return null;
+  let m = 1;
+  if (s.endsWith('k')) { m = 1e3; s = s.slice(0, -1); }
+  else if (s.endsWith('m')) { m = 1e6; s = s.slice(0, -1); }
+  if (m > 1) { const n = parseFloat(s.replace(',', '.')); return isNaN(n) ? null : Math.round(n * m); }
+  const n = parseInt(s.replace(/[.,]/g, ''), 10);
+  return isNaN(n) ? null : n;
+}
+const fmt = n => Math.round(n).toLocaleString('es-BO');
+const short = n => n >= 1e5 ? (n / 1e3).toFixed(1).replace('.', ',') + 'k' : fmt(n);
+
+/* ── Estado (guardado en el navegador de OBS) ─────────── */
+// fest:  pts (anotados), falta, obj (puesto meta), add (sumado desde que anotaste)
+// reyes: pts, dif, puesto, add, day (día del ranking)
+const reyesDay = (t = NOW()) => Math.floor((t - CFG.reyesResetUTC * 3600e3) / 86400e3);
+let S = {
+  fest: { pts: null, falta: null, obj: null, add: 0 },
+  reyes: { pts: null, dif: null, puesto: null, add: 0, day: reyesDay() },
+  pend: {}, dobleHasta: 0, pos: null, url: '',
+};
+function load() {
+  try { const j = JSON.parse(localStorage.getItem(KEY) || 'null'); if (j) S = Object.assign(S, j); } catch (e) {}
+}
+let saveT = 0;
+function save() { clearTimeout(saveT); saveT = setTimeout(saveNow, 300); }
+function saveNow() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
+
+function rollover() {
+  const d = reyesDay();
+  if (S.reyes.day !== d) { S.reyes = { pts: 0, dif: null, puesto: null, add: 0, day: d }; save(); return true; }
+  return false;
+}
+
+function setFest(p, f, o) {
+  if (p != null) { S.fest.pts = p; S.fest.add = 0; S.fest.falta = null; }
+  if (f != null) S.fest.falta = f;
+  if (o != null) S.fest.obj = o;
+  // la meta se fija respecto al puntaje anotado + lo que ya sumó
+  const cur = (S.fest.pts ?? 0) + S.fest.add;
+  if (f != null) { S.fest.goal = cur + f; S.fest.from = cur; }
+  else if (p != null) S.fest.goal = null;
+  save(); render();
+}
+function setReyes(p, d, n) {
+  rollover();
+  if (p != null) { S.reyes.pts = p; S.reyes.add = 0; S.reyes.dif = null; }
+  if (d != null) { const cur = (S.reyes.pts ?? 0) + S.reyes.add; S.reyes.dif = d; S.reyes.goal = cur + d; S.reyes.from = cur; }
+  else if (p != null) S.reyes.goal = null;
+  if (n != null) S.reyes.puesto = n;
+  save(); render();
+}
+
+/* Enlace con ?fest= / ?reyes=: solo se aplica cuando el enlace cambia */
+function applyUrl() {
+  const u = (Q.get('fest') || '') + '|' + (Q.get('reyes') || '');
+  if (u === '|' || u === S.url) return;
+  S.url = u;
+  if (Q.get('fest')) { const a = sp(Q.get('fest')); setFest(num(a[0]), num(a[1]), num(a[2])); }
+  if (Q.get('reyes')) { const a = sp(Q.get('reyes')); setReyes(num(a[0]), num(a[1]), num(a[2])); }
+}
+/* En el enlace separa con , o con ; (usa ; si tus números llevan coma: ?fest=2,993;3,224;2000) */
+function sp(v) { return v.includes(';') ? v.split(';') : v.split(','); }
+
+/* ── Regalos ───────────────────────────────────────────── */
+const isFest = d => CFG.festName.test(d.giftName || d.gift?.name || '') || CFG.festIds.includes(Number(d.giftId));
+const dobleOn = () => NOW() < S.dobleHasta;
+function points(d, coinsTotal) {
+  const fest = isFest(d);
+  const dbl = dobleOn() ? 2 : 1;
+  return {
+    f: coinsTotal * (fest ? CFG.festMult : 1) * dbl,
+    r: coinsTotal * (fest ? CFG.reyesFestMult : 1) * (new Date().getUTCHours() === CFG.reyesBonusUTC ? 2 : 1),
+    fest,
+  };
+}
+function onGift(d) {
+  const coins = parseInt(d.diamondCount ?? d.gift?.diamond_count ?? 0, 10) || 0;
+  const count = parseInt(d.repeatCount || d.gift?.repeat_count || 1, 10) || 1;
+  if (!coins) return;
+  rollover();
+  const uid = d.uniqueId || d.userId || '?';
+  const key = uid + '|' + (d.giftId ?? d.giftName ?? '?') + '|' + (d.groupId || '');
+  const p = points(d, coins * count);
+  const prev = S.pend[key];
+  const shown = prev ? prev.f : 0;
+  if (d.repeatEnd === false) {                       // combo en curso: se muestra, se guarda al terminar
+    S.pend[key] = { f: p.f, r: p.r, t: NOW() };
+    if (p.f > shown) flyUp(p.f - shown, p.fest);
+    save(); render(); return;
+  }
+  delete S.pend[key];
+  S.fest.add += p.f; S.reyes.add += p.r;
+  if (p.f > shown) flyUp(p.f - shown, p.fest);
+  save(); render();
+}
+function flushPending() {
+  const t = NOW(); let ch = false;
+  for (const [k, p] of Object.entries(S.pend)) {
+    if (t - p.t > CFG.comboTimeoutSec * 1000) { delete S.pend[k]; S.fest.add += p.f; S.reyes.add += p.r; ch = true; }
+  }
+  if (ch) { save(); render(); }
+}
+const pendSum = w => Object.values(S.pend).reduce((a, p) => a + p[w], 0);
+
+/* ── Dibujo ────────────────────────────────────────────── */
+let lastF = null, lastR = null;
+function bump(el) { el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); setTimeout(() => el.classList.remove('bump'), 180); }
+function flyUp(n, fest, txt) {
+  const b = $('#b-fest'); const el = document.createElement('div');
+  el.className = 'fly' + (fest ? ' fest' : ''); el.textContent = '+' + fmt(n) + (fest ? ' ×2' : '') + (txt ? ' ' + txt : '');
+  b.appendChild(el); setTimeout(() => el.remove(), 1500);
+}
+function render() {
+  const F = S.fest, R = S.reyes;
+  const fAdd = F.add + pendSum('f'), rAdd = R.add + pendSum('r');
+
+  // LIVE Fest
+  const fNow = (F.pts ?? 0) + fAdd;
+  const fBig = $('#f-big');
+  fBig.textContent = F.pts == null ? (fAdd ? '+' + fmt(fAdd) : '—') : fmt(fNow);
+  if (lastF != null && fNow > lastF) bump(fBig); lastF = fNow;
+  $('#f-live').textContent = F.pts != null && fAdd ? '+' + fmt(fAdd) + ' en vivo' : '';
+  const fMsg = $('#f-msg'); fMsg.classList.remove('win');
+  if (F.pts == null) { fMsg.innerHTML = '<span class="hint">Anota tus puntos: Interactuar → clic aquí</span>'; $('#f-bar').style.width = '0'; }
+  else if (F.goal) {
+    const left = F.goal - fNow, from = F.from ?? F.pts ?? 0;
+    $('#f-bar').style.width = Math.max(2, Math.min(100, 100 * (fNow - from) / Math.max(1, F.goal - from))) + '%';
+    const to = F.obj ? ' para el núm. ' + F.obj : ' para la meta';
+    const fr = F.rank != null ? 'Núm. ' + (F.rank > 0 ? fmt(F.rank) : '3000+') + ' · ' : '';
+    if (left > 0) fMsg.innerHTML = fr + 'faltan <b>' + fmt(left) + '</b>' + to;
+    else { fMsg.textContent = '¡Llegaste' + (F.obj ? ' al núm. ' + F.obj : ' a la meta') + '! 🎉'; fMsg.classList.add('win'); }
+  } else { fMsg.textContent = ''; $('#f-bar').style.width = '0'; }
+
+  // Futuros Reyes
+  const rNow = (R.pts ?? 0) + rAdd;
+  const rBig = $('#r-big');
+  rBig.textContent = R.pts == null ? (rAdd ? '+' + fmt(rAdd) : '—') : short(rNow);
+  if (lastR != null && rNow > lastR) bump(rBig); lastR = rNow;
+  $('#r-live').textContent = R.pts != null && rAdd ? '+' + fmt(rAdd) + ' en vivo' : '';
+  const rMsg = $('#r-msg'); rMsg.classList.remove('win');
+  const pu = R.puesto;
+  if (R.pts == null) { rMsg.innerHTML = '<span class="hint">Anota tus puntos de hoy</span>'; $('#r-bar').style.width = '0'; }
+  else if (R.goal) {
+    const left = R.goal - rNow, from = R.from ?? R.pts ?? 0;
+    $('#r-bar').style.width = Math.max(2, Math.min(100, 100 * (rNow - from) / Math.max(1, R.goal - from))) + '%';
+    const up = R.target || (pu > 1 ? pu - 1 : 0);
+    if (left > 0) rMsg.innerHTML = (pu ? 'Puesto ' + pu + ' · ' : '') + 'faltan <b>' + fmt(left) + '</b>' + (up ? ' para el ' + up : '');
+    else { rMsg.textContent = up ? '¡Pasaste al puesto ' + up + '! 🎉' : '¡Pasaste al de arriba! 🎉'; rMsg.classList.add('win'); }
+  } else { rMsg.textContent = pu ? 'Puesto ' + pu : ''; $('#r-bar').style.width = '0'; }
+
+  // Dato real del puente
+  const rl = $('#real'), age = S.realT ? (NOW() - S.realT) / 60000 : Infinity;
+  if (age < CFG.realMaxMin) { rl.textContent = '● real · hace ' + (age < 1 ? 'instantes' : age < 60 ? Math.floor(age) + ' min' : Math.floor(age / 60) + ' h ' + Math.floor(age % 60) + ' min'); rl.className = 'real on'; }
+  else { rl.textContent = S.realT ? 'estimado' : ''; rl.className = 'real'; }
+  $('#r-lbl').textContent = 'Futuros Reyes · ' + (R.liga ? R.liga + ' · ' : '') + 'hoy';
+
+  // Estallido doble
+  const x2 = $('#x2');
+  if (dobleOn()) { const s = Math.ceil((S.dobleHasta - NOW()) / 1000); x2.classList.add('on'); x2.textContent = '×2 ' + Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+  else x2.classList.remove('on');
+}
+
+/* ── Posición, arrastre y formulario ──────────────────── */
+function layout() {
+  const sc = Math.min(innerWidth / 1080, innerHeight / 1920);
+  $('#stage').style.transform = 'scale(' + sc + ')';
+  const c = $('#card'); const p = S.pos || CFG.pos;
+  c.style.left = p[0] + 'px'; c.style.top = p[1] + 'px'; c.style.width = CFG.width + 'px';
+  const solo = Q.get('solo');
+  if (solo === 'fest') $('#b-reyes').style.display = 'none';
+  if (solo === 'reyes') $('#b-fest').style.display = 'none';
+}
+addEventListener('resize', layout);
+function enableDrag() {
+  const c = $('#card'); let st = null, moved = false;
+  c.addEventListener('pointerdown', e => { const p = S.pos || CFG.pos; st = { x: e.clientX, y: e.clientY, p: [...p] }; moved = false; c.setPointerCapture(e.pointerId); });
+  c.addEventListener('pointermove', e => {
+    if (!st) return;
+    const sc = Math.min(innerWidth / 1080, innerHeight / 1920);
+    const dx = (e.clientX - st.x) / sc, dy = (e.clientY - st.y) / sc;
+    if (Math.abs(dx) + Math.abs(dy) > 6) moved = true;
+    if (moved) { S.pos = [Math.round(st.p[0] + dx), Math.round(st.p[1] + dy)]; layout(); }
+  });
+  c.addEventListener('pointerup', () => { if (!st) return; st = null; if (moved) save(); else openForm(); });
+}
+function openForm() {
+  const F = S.fest, R = S.reyes, f = $('#form'), p = S.pos || CFG.pos;
+  const fNow = (F.pts ?? 0) + F.add, rNow = (R.pts ?? 0) + R.add;
+  $('#i-fp').value = F.pts == null ? '' : fNow; $('#i-ff').value = ''; $('#i-fo').value = F.obj ?? '';
+  $('#i-mi').value = '';
+  $('#i-rp').value = R.pts == null ? '' : rNow; $('#i-rd').value = ''; $('#i-rn').value = R.puesto ?? '';
+  f.style.left = p[0] + 'px'; f.style.top = (p[1] + 10) + 'px';
+  f.classList.add('on');
+}
+$('#b-cancel').onclick = () => $('#form').classList.remove('on');
+$('#b-ok').onclick = () => {
+  const F = S.fest, R = S.reyes;
+  const fp = num($('#i-fp').value), ff = num($('#i-ff').value), fo = num($('#i-fo').value);
+  const rp = num($('#i-rp').value), rd = num($('#i-rd').value), rn = num($('#i-rn').value);
+  const fNow = (F.pts ?? 0) + F.add, rNow = (R.pts ?? 0) + R.add;
+  // solo reiniciar el conteo si cambiaste el número de puntos
+  setFest(fp != null && (F.pts == null || fp !== fNow) ? fp : null, ff, fo);
+  setReyes(rp != null && (R.pts == null || rp !== rNow) ? rp : null, rd, rn);
+  const mi = num($('#i-mi').value); if (mi) mision(mi);
+  $('#form').classList.remove('on');
+};
+$('#b-dbl').onclick = () => { doble(CFG.dobleMin); $('#form').classList.remove('on'); };
+function mision(n) { S.fest.add += n; flyUp(n, false, 'misión'); save(); render(); }
+function doble(min) { S.dobleHasta = min > 0 ? NOW() + min * 60e3 : 0; save(); render(); }
+
+/* ── Comandos del dueño en el chat ─────────────────────── */
+function onChat(d) {
+  const uid = (d.uniqueId || '').toLowerCase();
+  const txt = (d.comment || '').trim().toLowerCase();
+  if (!txt.startsWith('!') || !OWNERS.includes(uid)) return;
+  const [cmd, ...a] = txt.split(/\s+/);
+  if (cmd === '!fest') setFest(num(a[0]), num(a[1]), num(a[2]));
+  else if (cmd === '!reyes') setReyes(num(a[0]), num(a[1]), num(a[2]));
+  else if (cmd === '!mision' || cmd === '!misión') { const n = num(a[0]); if (n) mision(n); }
+  else if (cmd === '!doble') doble(a[0] != null ? (num(a[0]) ?? CFG.dobleMin) : CFG.dobleMin);
+}
+
+/* ── Grabador (?grabar=1): guarda eventos raros de TikTok ─ */
+const REC = Q.get('grabar') === '1';
+const COMMON = new Set(['chat', 'gift', 'like', 'member', 'social', 'roomUser', 'follow', 'share', 'subscribe', 'questionNew', 'emote', 'streamEnd', 'connected', 'disconnected']);
+const HOT = /rank|banner|fest|league|liga|poll|goal|envelope|hourly|campaign|activity|notice|toast|barrage|mission|task|quest/i;
+let R2 = { counts: {}, samples: [], start: NOW() };
+try { const j = JSON.parse(localStorage.getItem('livefest_rec') || 'null'); if (j) R2 = j; } catch (e) {}
+function record(ev, msg) {
+  R2.counts[ev] = (R2.counts[ev] || 0) + 1;
+  let keep = !COMMON.has(ev) || HOT.test(ev);
+  if (!keep && ev !== 'chat') { try { const s = JSON.stringify(msg.data || {}); keep = /rank|liga|league|fest|banner|mission|misi[oó]n|task/i.test(s) && !/giftName/.test(s); } catch (e) {} }
+  if (keep && R2.samples.length < 400) {
+    let s = ''; try { s = JSON.stringify(msg); } catch (e) {}
+    R2.samples.push({ t: new Date().toISOString(), ev, raw: s.slice(0, 30000) });
+  }
+  if (REC) { try { localStorage.setItem('livefest_rec', JSON.stringify(R2)); } catch (e) {} drawRec(); }
+}
+function drawRec() {
+  let el = $('#rec');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'rec'; document.body.appendChild(el);
+    el.addEventListener('click', e => {
+      if (e.target.id === 'rec-dl') {
+        const blob = new Blob([JSON.stringify(R2, null, 1)], { type: 'application/json' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+        a.download = 'livefest-grabacion-' + new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-') + '.json'; a.click();
+      }
+      if (e.target.id === 'rec-clr') { R2 = { counts: {}, samples: [], start: NOW() }; try { localStorage.removeItem('livefest_rec'); } catch (e) {} drawRec(); }
+    });
+  }
+  const rows = Object.entries(R2.counts).sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => '<div' + (!COMMON.has(k) || HOT.test(k) ? ' class="hot"' : '') + '>' + k + ': ' + v + '</div>').join('');
+  el.innerHTML = '<b>GRABADOR LIVE FEST</b> · TikFinity ' + (stat.conn ? '✓ conectado' : '✗ sin conexión') +
+    '<br>Guardados (raros): ' + R2.samples.length + '<hr>' + (rows || 'Esperando eventos…') +
+    '<br><button id="rec-dl">Descargar</button><button id="rec-clr">Borrar</button>';
+}
+
+/* ── Datos REALES del puente (livefest-puente.js en Chrome, un clic = una lectura) ──
+   Llegan por: evento "livefest" de OBS (todas las fuentes de navegador de OBS, sin contraseña)
+   o por el WebSocket de OBS si agregas #obspass=… al final del enlace (Chrome / Live Studio).
+   Cada lectura reemplaza lo anotado a mano; entre lecturas se suman los regalos de TikFinity. */
+let lastReal = 0;
+function takeReal(d) {
+  if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { return; } }
+  if (d && typeof d.j === 'string') { try { d = JSON.parse(d.j); } catch (e) { return; } }
+  if (!d || !d.t || d.t <= lastReal) return;            // el mismo paquete llega por dos caminos
+  lastReal = d.t; rollover();
+  const f = d.fest, r = d.reyes;
+  if (f && f.score != null) {
+    const goal = f.targetScore || (f.delta != null ? f.score + f.delta : null);
+    S.fest = { pts: f.score, add: 0, falta: f.delta, obj: f.targetRank || S.fest.obj, goal: goal, from: f.score, rank: f.rank };
+  }
+  if (r && r.score != null) {
+    S.reyes = { pts: r.score, add: 0, dif: r.delta, puesto: r.rank, target: r.targetRank || null, liga: r.liga,
+                goal: r.delta != null ? r.score + r.delta : null, from: r.score, day: reyesDay() };
+  }
+  S.pend = {}; S.realT = d.t; save(); render();
+}
+addEventListener('livefest', e => takeReal(e.detail));
+(function obsListen() {
+  const HP = new URLSearchParams(location.hash.slice(1));
+  const pass = HP.get('obspass') || Q.get('obspass') || '';
+  if (window.obsstudio && !pass) return;                  // dentro de OBS llega por el evento, sin contraseña
+  const sha = async s => btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))));
+  const go = () => {
+    let w; try { w = new WebSocket(Q.get('obs') || 'ws://localhost:4455'); } catch (e) { return; }
+    w.onmessage = async m => {
+      let msg; try { msg = JSON.parse(m.data); } catch (e) { return; }
+      if (msg.op === 0) {
+        const d = { rpcVersion: 1, eventSubscriptions: 1 }, au = msg.d.authentication;
+        if (au) { if (!pass) { w.close(); return; } d.authentication = await sha(await sha(pass + au.salt) + au.challenge); }
+        w.send(JSON.stringify({ op: 1, d }));
+      } else if (msg.op === 5 && msg.d && msg.d.eventType === 'CustomEvent' && msg.d.eventData && msg.d.eventData.livefest) takeReal(msg.d.eventData.livefest);
+    };
+    w.onclose = e => { if (e.code !== 4009) setTimeout(go, 5000); };
+    w.onerror = () => {};
+  };
+  go();
+})();
+
+/* ── TikFinity ─────────────────────────────────────────── */
+let ws, reconnectTimer;
+const seen = new Set();
+const stat = { conn: false, n: 0, t: 0, ev: '' };
+function connect() {
+  try { ws = new WebSocket(CFG.wsUrl); } catch (e) { return scheduleReconnect(); }
+  ws.onopen = () => { stat.conn = true; clearTimeout(reconnectTimer); if (REC) drawRec(); };
+  ws.onmessage = evt => {
+    let msg; try { msg = JSON.parse(evt.data); } catch { return; }
+    const d = msg.data || {};
+    if (d.msgId) { const k = msg.event + '|' + d.msgId + '|' + (d.uniqueId || '') + '|' + (d.repeatCount || '') + '|' + d.repeatEnd;
+      if (seen.has(k)) return; seen.add(k); if (seen.size > 3000) seen.clear(); }
+    stat.n++; stat.t = Date.now(); stat.ev = msg.event;
+    record(msg.event || '?', msg);
+    handle(msg.event, d);
+  };
+  ws.onerror = () => {};
+  ws.onclose = () => { stat.conn = false; if (REC) drawRec(); scheduleReconnect(); };
+}
+function scheduleReconnect() { clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connect, 5000); }
+function handle(ev, d) {
+  if (ev === 'gift') onGift(d);
+  else if (ev === 'chat') onChat(d);
+}
+if (Q.get('diag') === '1') {
+  const el = document.createElement('div');
+  el.style.cssText = 'position:fixed;left:6px;top:6px;z-index:9;font:700 14px Arial;color:#fff;background:rgba(0,0,0,.75);padding:4px 8px;border-radius:6px';
+  document.body.appendChild(el);
+  setInterval(() => { el.textContent = 'LIVE Fest · TikFinity ' + (stat.conn ? '✓' : '✗') + ' · eventos ' + stat.n + ' · último: ' + stat.ev; }, 1000);
+}
+window.__livefest = { handle, get state() { return S; }, render, setFest, setReyes, doble, mision, takeReal };   // para pruebas
+
+/* ── Demo ──────────────────────────────────────────────── */
+function startDemo() {
+  if (S.fest.pts == null) setFest(2993, 3224, 2000);
+  if (S.reyes.pts == null) setReyes(14290, 37, 44);
+  const gifts = [[1, 'Rose', true], [1, 'LIVE FEST 26', true], [5, 'Finger Heart', true], [99, 'Explorador de FEST', false], [299, 'Energía de FEST', false], [30, 'Doughnut', false]];
+  setInterval(() => {
+    const g = gifts[Math.floor(Math.random() * gifts.length)];
+    const base = { uniqueId: 'fan' + Math.floor(Math.random() * 9), giftName: g[1], giftId: g[1], diamondCount: g[0] };
+    if (g[2]) {
+      let c = 0; const tot = 2 + Math.floor(Math.random() * 6);
+      const iv = setInterval(() => { c++; handle('gift', { ...base, repeatCount: c, repeatEnd: c >= tot }); if (c >= tot) clearInterval(iv); }, 250);
+    } else handle('gift', { ...base, repeatCount: 1, repeatEnd: true });
+  }, 1600);
+}
+
+/* ── Inicio ────────────────────────────────────────────── */
+load();
+rollover();
+applyUrl();
+layout(); enableDrag(); render();
+if (REC) drawRec();
+if (DEMO) startDemo(); else connect();
+setInterval(() => { flushPending(); rollover(); render(); }, 1000);
+</script>
+</body>
+</html>

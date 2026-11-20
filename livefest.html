@@ -9,8 +9,10 @@
 /* ════════════════════════════════════════════════════════════════
    PUNTAJE LIVE FEST 26 (Liga de poder) + FUTUROS REYES (ranking diario)
 
-   TikTok no da el puesto ni el puntaje por ninguna vía pública, así que
-   este overlay hace lo siguiente:
+   DATOS REALES: abre el puente en Chrome (livefest-puente.js, ver sus
+   instrucciones). Cada 5 minutos lee tus puntos y puesto reales de TikTok
+   y los manda aquí; entre lecturas se suman los regalos de TikFinity.
+   Sin el puente, funciona en modo manual:
      1. Tú anotas lo que ves en la app (puntos y cuánto falta).
      2. Durante el live suma los regalos que llegan por TikFinity:
           · regalo normal          1 moneda = 1 punto
@@ -52,7 +54,9 @@ const CFG = {
   festMult: 2,                             // regalos FEST: 1 moneda = 2 puntos
   festName: /fest/i,                       // cómo reconocer un regalo FEST por su nombre
   festIds: [],                             // (opcional) ids de regalos FEST si el nombre no sirve
-  reyesFestMult: 1,                        // Futuros Reyes: ¿los FEST cuentan doble? (?reyesfest=2)
+  reyesFestMult: 2,                        // Futuros Reyes: "Regalos Especiales = x2 puntos" (?reyesfest=1 para no duplicar)
+  reyesBonusUTC: 1,                        // Futuros Reyes: hora bonus x2 de 20:00 a 21:00 Bogotá = 01:00 UTC (21:00 Bolivia)
+  realMaxMin: 12,                          // datos del puente: se consideran frescos hasta 12 min
   reyesResetUTC: 5,                        // el ranking diario termina a las 05:00 UTC = 1:00 Bolivia
   dobleMin: 5,                             // minutos de "Estallido doble" si escribes solo !doble
   comboTimeoutSec: 20,                     // combo sin aviso de fin: se guarda a los 20 s
@@ -92,11 +96,13 @@ const CFG = {
     -webkit-background-clip: text; background-clip: text; color: transparent;
   }
   .x2 {
-    display: none; margin-left: auto; font-weight: 900; font-size: 16px; padding: 3px 10px; border-radius: 99px;
+    display: none; margin-left: 8px; font-weight: 900; font-size: 16px; padding: 3px 10px; border-radius: 99px;
     background: linear-gradient(90deg, var(--cyan), var(--pink)); color: #fff;
     animation: pulse 1s ease-in-out infinite;
   }
   .x2.on { display: block; }
+  .real { margin-left: auto; font-size: 13px; font-weight: 700; color: var(--muted); }
+  .real.on { color: #5cf2a0; }
   @keyframes pulse { 50% { transform: scale(1.08); } }
   .blk { position: relative; padding: 10px 0 2px; }
   .blk + .blk { border-top: 1px solid rgba(255,255,255,.12); margin-top: 8px; padding-top: 14px; }
@@ -141,7 +147,7 @@ const CFG = {
 <body>
 <div id="stage">
   <div id="card"><div class="in">
-    <div class="hdr"><span class="tag">LIVE FEST 26</span><span class="x2" id="x2">×2</span></div>
+    <div class="hdr"><span class="tag">LIVE FEST 26</span><span class="real" id="real"></span><span class="x2" id="x2">×2</span></div>
     <div class="blk" id="b-fest">
       <div class="lbl">Liga de poder</div>
       <div class="row"><span class="big" id="f-big">—</span><span class="unit">pts</span><span class="live" id="f-live"></span></div>
@@ -149,7 +155,7 @@ const CFG = {
       <div class="msg" id="f-msg"></div>
     </div>
     <div class="blk" id="b-reyes">
-      <div class="lbl">Futuros Reyes · hoy</div>
+      <div class="lbl" id="r-lbl">Futuros Reyes · hoy</div>
       <div class="row"><span class="big" id="r-big">—</span><span class="unit">pts</span><span class="live" id="r-live"></span></div>
       <div class="bar"><i id="r-bar"></i></div>
       <div class="msg" id="r-msg"></div>
@@ -259,7 +265,7 @@ function points(d, coinsTotal) {
   const dbl = dobleOn() ? 2 : 1;
   return {
     f: coinsTotal * (fest ? CFG.festMult : 1) * dbl,
-    r: coinsTotal * (fest ? CFG.reyesFestMult : 1),
+    r: coinsTotal * (fest ? CFG.reyesFestMult : 1) * (new Date().getUTCHours() === CFG.reyesBonusUTC ? 2 : 1),
     fest,
   };
 }
@@ -316,7 +322,8 @@ function render() {
     const left = F.goal - fNow, from = F.from ?? F.pts ?? 0;
     $('#f-bar').style.width = Math.max(2, Math.min(100, 100 * (fNow - from) / Math.max(1, F.goal - from))) + '%';
     const to = F.obj ? ' para el núm. ' + F.obj : ' para la meta';
-    if (left > 0) fMsg.innerHTML = 'Faltan <b>' + fmt(left) + '</b>' + to;
+    const fr = F.rank != null ? 'Núm. ' + (F.rank > 0 ? fmt(F.rank) : '3000+') + ' · ' : '';
+    if (left > 0) fMsg.innerHTML = fr + 'faltan <b>' + fmt(left) + '</b>' + to;
     else { fMsg.textContent = '¡Llegaste' + (F.obj ? ' al núm. ' + F.obj : ' a la meta') + '! 🎉'; fMsg.classList.add('win'); }
   } else { fMsg.textContent = ''; $('#f-bar').style.width = '0'; }
 
@@ -332,9 +339,16 @@ function render() {
   else if (R.goal) {
     const left = R.goal - rNow, from = R.from ?? R.pts ?? 0;
     $('#r-bar').style.width = Math.max(2, Math.min(100, 100 * (rNow - from) / Math.max(1, R.goal - from))) + '%';
-    if (left > 0) rMsg.innerHTML = (pu ? 'Puesto ' + pu + ' · ' : '') + 'faltan <b>' + fmt(left) + '</b>' + (pu > 1 ? ' para el ' + (pu - 1) : '');
-    else { rMsg.textContent = pu > 1 ? '¡Pasaste al puesto ' + (pu - 1) + '! 🎉' : '¡Pasaste al de arriba! 🎉'; rMsg.classList.add('win'); }
+    const up = R.target || (pu > 1 ? pu - 1 : 0);
+    if (left > 0) rMsg.innerHTML = (pu ? 'Puesto ' + pu + ' · ' : '') + 'faltan <b>' + fmt(left) + '</b>' + (up ? ' para el ' + up : '');
+    else { rMsg.textContent = up ? '¡Pasaste al puesto ' + up + '! 🎉' : '¡Pasaste al de arriba! 🎉'; rMsg.classList.add('win'); }
   } else { rMsg.textContent = pu ? 'Puesto ' + pu : ''; $('#r-bar').style.width = '0'; }
+
+  // Dato real del puente
+  const rl = $('#real'), age = S.realT ? (NOW() - S.realT) / 60000 : Infinity;
+  if (age < CFG.realMaxMin) { rl.textContent = '● real · hace ' + (age < 1 ? 'instantes' : Math.floor(age) + ' min'); rl.className = 'real on'; }
+  else { rl.textContent = S.realT ? 'estimado' : ''; rl.className = 'real'; }
+  $('#r-lbl').textContent = 'Futuros Reyes · ' + (R.liga ? R.liga + ' · ' : '') + 'hoy';
 
   // Estallido doble
   const x2 = $('#x2');
@@ -438,6 +452,49 @@ function drawRec() {
     '<br><button id="rec-dl">Descargar</button><button id="rec-clr">Borrar</button>';
 }
 
+/* ── Datos REALES del puente (livefest-puente.js en Chrome, cada 5 min) ──
+   Llegan por: evento "livefest" de OBS (todas las fuentes de navegador de OBS, sin contraseña)
+   o por el WebSocket de OBS si agregas #obspass=… al final del enlace (Chrome / Live Studio).
+   Cada lectura reemplaza lo anotado a mano; entre lecturas se suman los regalos de TikFinity. */
+let lastReal = 0;
+function takeReal(d) {
+  if (typeof d === 'string') { try { d = JSON.parse(d); } catch (e) { return; } }
+  if (d && typeof d.j === 'string') { try { d = JSON.parse(d.j); } catch (e) { return; } }
+  if (!d || !d.t || d.t <= lastReal) return;            // el mismo paquete llega por dos caminos
+  lastReal = d.t; rollover();
+  const f = d.fest, r = d.reyes;
+  if (f && f.score != null) {
+    const goal = f.targetScore || (f.delta != null ? f.score + f.delta : null);
+    S.fest = { pts: f.score, add: 0, falta: f.delta, obj: f.targetRank || S.fest.obj, goal: goal, from: f.score, rank: f.rank };
+  }
+  if (r && r.score != null) {
+    S.reyes = { pts: r.score, add: 0, dif: r.delta, puesto: r.rank, target: r.targetRank || null, liga: r.liga,
+                goal: r.delta != null ? r.score + r.delta : null, from: r.score, day: reyesDay() };
+  }
+  S.pend = {}; S.realT = d.t; save(); render();
+}
+addEventListener('livefest', e => takeReal(e.detail));
+(function obsListen() {
+  const HP = new URLSearchParams(location.hash.slice(1));
+  const pass = HP.get('obspass') || Q.get('obspass') || '';
+  if (window.obsstudio && !pass) return;                  // dentro de OBS llega por el evento, sin contraseña
+  const sha = async s => btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))));
+  const go = () => {
+    let w; try { w = new WebSocket(Q.get('obs') || 'ws://localhost:4455'); } catch (e) { return; }
+    w.onmessage = async m => {
+      let msg; try { msg = JSON.parse(m.data); } catch (e) { return; }
+      if (msg.op === 0) {
+        const d = { rpcVersion: 1, eventSubscriptions: 1 }, au = msg.d.authentication;
+        if (au) { if (!pass) { w.close(); return; } d.authentication = await sha(await sha(pass + au.salt) + au.challenge); }
+        w.send(JSON.stringify({ op: 1, d }));
+      } else if (msg.op === 5 && msg.d && msg.d.eventType === 'CustomEvent' && msg.d.eventData && msg.d.eventData.livefest) takeReal(msg.d.eventData.livefest);
+    };
+    w.onclose = e => { if (e.code !== 4009) setTimeout(go, 5000); };
+    w.onerror = () => {};
+  };
+  go();
+})();
+
 /* ── TikFinity ─────────────────────────────────────────── */
 let ws, reconnectTimer;
 const seen = new Set();
@@ -468,7 +525,7 @@ if (Q.get('diag') === '1') {
   document.body.appendChild(el);
   setInterval(() => { el.textContent = 'LIVE Fest · TikFinity ' + (stat.conn ? '✓' : '✗') + ' · eventos ' + stat.n + ' · último: ' + stat.ev; }, 1000);
 }
-window.__livefest = { handle, get state() { return S; }, render, setFest, setReyes, doble, mision };   // para pruebas
+window.__livefest = { handle, get state() { return S; }, render, setFest, setReyes, doble, mision, takeReal };   // para pruebas
 
 /* ── Demo ──────────────────────────────────────────────── */
 function startDemo() {

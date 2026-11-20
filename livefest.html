@@ -9,9 +9,9 @@
 /* ════════════════════════════════════════════════════════════════
    PUNTAJE LIVE FEST 26 (Liga de poder) + FUTUROS REYES (ranking diario)
 
-   DATOS REALES: abre el puente en Chrome (livefest-puente.js, ver sus
-   instrucciones). Cada 5 minutos lee tus puntos y puesto reales de TikTok
-   y los manda aquí; entre lecturas se suman los regalos de TikFinity.
+   DATOS REALES: clic en el favorito "Puente LIVE Fest" en Chrome (ver
+   livefest-puente.js). Cada clic lee UNA vez tus puntos y puesto reales y
+   los manda aquí; entre lecturas se suman los regalos de TikFinity.
    Sin el puente, funciona en modo manual:
      1. Tú anotas lo que ves en la app (puntos y cuánto falta).
      2. Durante el live suma los regalos que llegan por TikFinity:
@@ -56,7 +56,7 @@ const CFG = {
   festIds: [],                             // (opcional) ids de regalos FEST si el nombre no sirve
   reyesFestMult: 2,                        // Futuros Reyes: "Regalos Especiales = x2 puntos" (?reyesfest=1 para no duplicar)
   reyesBonusUTC: 1,                        // Futuros Reyes: hora bonus x2 de 20:00 a 21:00 Bogotá = 01:00 UTC (21:00 Bolivia)
-  realMaxMin: 12,                          // datos del puente: se consideran frescos hasta 12 min
+  realMaxMin: 240,                         // última lectura del puente: se muestra "real · hace X" hasta 4 h
   reyesResetUTC: 5,                        // el ranking diario termina a las 05:00 UTC = 1:00 Bolivia
   dobleMin: 5,                             // minutos de "Estallido doble" si escribes solo !doble
   comboTimeoutSec: 20,                     // combo sin aviso de fin: se guarda a los 20 s
@@ -346,7 +346,7 @@ function render() {
 
   // Dato real del puente
   const rl = $('#real'), age = S.realT ? (NOW() - S.realT) / 60000 : Infinity;
-  if (age < CFG.realMaxMin) { rl.textContent = '● real · hace ' + (age < 1 ? 'instantes' : Math.floor(age) + ' min'); rl.className = 'real on'; }
+  if (age < CFG.realMaxMin) { rl.textContent = '● real · hace ' + (age < 1 ? 'instantes' : age < 60 ? Math.floor(age) + ' min' : Math.floor(age / 60) + ' h ' + Math.floor(age % 60) + ' min'); rl.className = 'real on'; }
   else { rl.textContent = S.realT ? 'estimado' : ''; rl.className = 'real'; }
   $('#r-lbl').textContent = 'Futuros Reyes · ' + (R.liga ? R.liga + ' · ' : '') + 'hoy';
 
@@ -452,7 +452,7 @@ function drawRec() {
     '<br><button id="rec-dl">Descargar</button><button id="rec-clr">Borrar</button>';
 }
 
-/* ── Datos REALES del puente (livefest-puente.js en Chrome, cada 5 min) ──
+/* ── Datos REALES del puente (livefest-puente.js en Chrome, un clic = una lectura) ──
    Llegan por: evento "livefest" de OBS (todas las fuentes de navegador de OBS, sin contraseña)
    o por el WebSocket de OBS si agregas #obspass=… al final del enlace (Chrome / Live Studio).
    Cada lectura reemplaza lo anotado a mano; entre lecturas se suman los regalos de TikFinity. */

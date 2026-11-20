@@ -1,6 +1,6 @@
 /* ════════════════════════════════════════════════════════════════
    PUENTE LIVE FEST → OBS
-   Lee cada 5 minutos los puntos REALES de TikTok y los manda a livefest.html (OBS):
+   Con UN clic lee una vez tus puntos REALES de TikTok y los manda a livefest.html (OBS):
      · LIVE Fest 26 · Liga de poder: puntos, puesto, meta y cuánto falta
      · Futuros Reyes · ranking diario de tu liga: puntos, puesto y diferencia
    Por qué en Chrome: TikTok solo responde a páginas de tiktok.com y usa tu
@@ -11,16 +11,15 @@
      1. Chrome con tu sesión de TikTok iniciada.
      2. Favorito con este enlace (nombre: "Puente LIVE Fest"):
         javascript:(()=>{if(location.href.indexOf('https://www.tiktok.com/robots.txt')){location.href='https://www.tiktok.com/robots.txt';return}var s=document.createElement('script');s.src='https://srdwly.github.io/testoverlay/livefest-puente.js?'+Date.now();document.body.appendChild(s)})()
-     3. Clic en el favorito (abre robots.txt), y clic otra vez: aparece el panel.
+     3. Clic en el favorito (abre robots.txt), y clic otra vez: lee y manda a OBS.
      4. La primera vez escribe la contraseña del WebSocket de OBS (se guarda).
-     Deja esa pestaña abierta durante el live. Solo LEE datos; no toca tu cuenta.
+     Para actualizar: vuelve a hacer clic en el favorito (o en "Leer ahora").
+     NO lee solo: cada lectura la pides tú. Solo LEE datos; no toca tu cuenta.
    ════════════════════════════════════════════════════════════════ */
 (() => {
-  if (window.__lfPuente) return;
-  window.__lfPuente = true;
+  if (window.__lfPuente) { window.__lfPuente(); return; }      // otro clic en el favorito = leer otra vez
   const CFG = {
     uid: '7040203089512875014',                 // tu id de TikTok (Rodrigo Veliz Guitarra)
-    everySec: 300,                              // cada 5 minutos (pedido de Rodrigo)
     obs: 'ws://localhost:4455',
     fest: { id: '2026_11_eoy_revenue', activity: '2026_11_eoy' },
     reyes: { activity: 'op_component-open-2-7704377515875568402', feature: 'compfbf9418beea0',
@@ -44,7 +43,8 @@
   </style>
   <div class="w">
     <h1>Puente LIVE Fest → OBS</h1>
-    <div class="m">Deja esta pestaña abierta durante el live. Lee tus puntos cada ${CFG.everySec / 60} minutos.</div>
+    <div class="m">Lee tus puntos solo cuando tú lo pides: botón de abajo o clic otra vez en el favorito.</div>
+    <div class="r"><span></span><span><button id="now">Leer ahora</button></span></div>
     <div class="r"><span>OBS</span><span id="sObs" class="warn">conectando…</span></div>
     <div class="r"><span>Contraseña WebSocket de OBS</span><span><input id="pass" type="password"> <button id="save">Guardar</button></span></div>
     <div class="r"><span>Liga de poder</span><span id="sFest">—</span></div>
@@ -115,7 +115,7 @@
              targetScore: +c.target_score || +(lr.promotionLine || {}).score || 0,
              delta: c.delta_score != null ? +c.delta_score : null };
   }
-  let liga = null, ligaAt = 0;
+  let liga = store.get('livefest-liga') != null ? +store.get('livefest-liga') : null, ligaAt = liga != null ? Date.now() : 0;
   const reyesCall = data => post(`https://webcast.tiktok.com/webcast/activity/dispatchv2/?aid=1233&activity=${CFG.reyes.activity}`,
     { query: { anchor_id: CFG.uid, aid: 1233, activity: CFG.reyes.activity }, data: Object.assign({ activity: CFG.reyes.activity }, data) });
   const reyesState = async idx => {
@@ -124,17 +124,19 @@
     return p && p.state && +p.state.rank > 0 ? p.state : null;
   };
   async function readReyes() {
-    let st = liga != null && Date.now() - ligaAt < 3600e3 ? await reyesState(liga) : null;
-    if (!st) {                                   // buscar en qué liga estás (Ascenso, Hierro…): se repite cada hora
+    let st = liga != null ? await reyesState(liga) : null;
+    if (!st) {                                   // buscar en qué liga estás (Ascenso, Hierro…); se recuerda
       liga = null;
-      for (let i = CFG.reyes.ligas.length - 1; i >= 0 && !st; i--) { st = await reyesState(i); if (st) { liga = i; ligaAt = Date.now(); } }
+      for (let i = CFG.reyes.ligas.length - 1; i >= 0 && !st; i--) { st = await reyesState(i); if (st) { liga = i; ligaAt = Date.now(); store.set('livefest-liga', i); } }
       if (!st) throw new Error('hoy todavía no apareces en el ranking diario');
     }
     const c = st.comparison || {};
     return { liga: CFG.reyes.ligas[liga] || 'Liga ' + liga, score: +st.score || 0, rank: +st.rank || 0,
              targetRank: +c.target_rank || 0, delta: c.delta_score != null ? +c.delta_score : null };
   }
+  let busy = false;
   async function tick() {
+    if (busy) return; busy = true; $('now').disabled = true;
     const pkt = { t: Date.now(), s: 'puente' };
     try { pkt.fest = await readFest();
       const f = pkt.fest;
@@ -146,8 +148,10 @@
     } catch (e) { set('sReyes', e.message, 'bad'); }
     $('sT').textContent = new Date().toLocaleTimeString('es-BO');
     if (pkt.fest || pkt.reyes) { last = pkt; send(pkt); }
+    busy = false; $('now').disabled = false;
   }
+  $('now').onclick = tick;
+  window.__lfPuente = tick;
   tick();
-  setInterval(tick, CFG.everySec * 1000);
   window.__lfPuenteState = () => ({ last, ready, sent, liga });
 })();

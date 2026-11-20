@@ -849,8 +849,8 @@ function pickGoal(d, t) {
   const zPref = d.leader ? 0.05 : d.guest && !d.coins ? 0.35 + R() * 0.65 : R() * 0.55;
   const g = d.z < 0.5 ? freeGift(d) : null;
   if (d.leader) { d.goal = { k: 'ir', x: 540 + (R() - 0.5) * 300, z: 0, mv: R() < 0.5 ? 'moonwalk' : 'deslizar' }; return; }
-  if (g && r < 0.4) { d.goal = { k: 'patear', g }; g.kicked = d; return; }
-  if (r < 0.5) { const side = d.x < 540 ? -1 : 1; d.goal = { k: 'pared', side }; return; }
+  if (g && r < 0.35) { d.goal = { k: 'patear', g }; g.kicked = d; return; }
+  if (r >= 0.35 && r < 0.45) { const side = d.x < 540 ? -1 : 1; d.goal = { k: 'pared', side }; return; }
   if (r < 0.68) { const o = dancers.find(o => o !== d && !o.leaving && !o.goal && !o.special && o.energy > 0 && o.drop <= 0 && Math.abs(o.z - d.z) < 0.3 && Math.abs(o.x - d.x) < 420 * SC);
     if (o) { d.goal = { k: 'chocar', o }; o.goal = { k: 'chocar', o: d }; return; } }
   // a dónde ir: entre varios lugares al azar, el menos lleno (así se reparten por toda la pista)

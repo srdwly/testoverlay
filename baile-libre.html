@@ -642,7 +642,7 @@ const GC = {
   maxMult: 2.6, gravity: 1800, bounce: 0.25, friction: 0.35, overlap: 0.62, popBounce: 0.55,
   max: Math.round(num('maxregalos', 60)), life: num('vida', 90), pileMax: 185 * SC,
   maxPerGift: 30, gapMs: 90, bigCoins: 100,
-  ficha: Q.get('ficha') === '0' ? 'off' : Q.get('ficha') === 'siempre' ? 'siempre' : 'vuelo',   // 3D solo en el vuelo (por defecto)
+  ficha: Q.get('ficha') === '0' ? 'off' : Q.get('ficha') === 'vuelo' ? 'vuelo' : 'siempre',   // 3D también en el piso, como Rosas 7 (por defecto) · ?ficha=vuelo = 3D solo al volar · ?ficha=0 = 2D
   grosor: 0.22, inclina: 28,
 };
 // tamaño de entrada = Rosas 7 (radio 0,09 del ancho × 3,4 al salir) aunque en la pista queden chicos

@@ -1,0 +1,1170 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pista de baile libre</title>
+<script>
+/* ════════════════════════════════════════════════════════════════
+   PISTA LIBRE (propuesta) — igual que baile-regalos.html, pero los bailarines se mueven
+   libres por toda la pista (sin casillas ni filas): caminan, corren, hacen moonwalk y
+   ruedas, se apoyan y rebotan en los bordes de la pantalla, patean los regalos del piso,
+   les rebotan regalos en la cabeza y chocan las manos entre ellos.
+   ────────────────────────────────────────────────────────────────
+   PISTA DE BAILE + REGALOS — los bailarines de baile.html y los regalos que entran
+   volando en parábola como en Rosas 7 (en 2D, del tamaño de los bailarines). Cada regalo
+   vuela hacia el bailarín de quien lo mandó y se apila en el piso detrás de ellos.
+   Los regalos entran como fichas 3D (como Rosas 7), se achican mientras viajan hacia la pista
+   (que se ve lejos) y al asentarse en la pila se vuelven 2D. ?ficha=siempre = se quedan 3D
+   inclinadas como en Rosas 7 · ?ficha=0 = siempre 2D.
+   Opciones extra: ?regalo=1 tamaño de los regalos · ?maxregalos=60 · ?vida=90 s en la pila · ?piso=1880
+   (Rosas 7 queda igual; este es un overlay aparte. Usar uno u otro, no los dos.)
+
+   CÓMO SE JUEGA
+   · ❤️ QUIÉREME → tu bailarín queda FIJO por 15 minutos (con color y tu nombre):
+                  si se queda sin energía se sienta a descansar, pero no se va.
+                  Pasados los 15 min vuelve a ser invitado (otro Quiéreme renueva).
+   · 👆 TAPS    → energía para tu bailarín. Si no tienes bailarín, entras como
+                  INVITADO gris (si hay lugar); sin energía el invitado se va.
+   · 🎁 REGALOS → siempre entras a la pista (aunque esté llena), mucha energía
+                  (1 moneda = 6 s) y NIVEL según las monedas del DÍA (como el top de monedas;
+                  si tu bailarín se va y vuelve ese día, vuelve con el mismo nivel):
+                  Nv2 10 bandana · Nv3 50 lentes · Nv4 200 sombrero · Nv5 1000 capa
+                  · Nv6 2500 cadena de oro con púa · Nv7 5000 fuego en los pies
+                  · Nv8 10000 aura · Nv9 20000 cuerpo dorado y aureola
+                  · Nv10 50000 LEYENDA (arcoíris, aura de colores y foco propio).
+                  El que más monedas dio está al centro con CORONA.
+                  Un regalo de 500+ arma una FIESTA (luces y confeti 15 s).
+   · 💃🕺🎸🔥🤸👏 o "baila" en el chat → paso especial (+2 s).
+
+   ENLACE (fuente de navegador en OBS, 1080×1920):
+     baile.html                   → normal (TikFinity ws://localhost:21213)
+     ?test=1     botones para probar sin live (o teclas 1-6, Q, E, L, F, C)
+     ?demo=1     simula un live solo
+     ?piso=1500  altura del piso en el lienzo 1920 (también puedes mover la fuente en OBS)
+     ?escala=1   tamaño de los bailarines
+     ?max=12     máximo de bailarines a la vez
+     ?bpm=100    velocidad del baile (también !bpm 120 en el chat, solo dueños)
+     ?fan=Heart Me  nombre del regalo que da bailarín fijo (por defecto Quiéreme / Heart Me)
+     ?invitados=0  sin invitados gratis · ?fotos=1 foto de perfil como cabeza · ?fijo=15 minutos de bailarín fijo por Quiéreme
+     ?luces=0    sin piso de luces · ?ayuda=1 muestra un cartel con las reglas
+     ?fps=30     limita cuadros por segundo (por defecto sigue a OBS)
+   COMANDOS (dueños): !bpm N · !fiesta · !limpiar
+   ════════════════════════════════════════════════════════════════ */
+const Q = new URLSearchParams(location.search);
+const num = (k, d) => { const v = parseFloat(Q.get(k)); return isFinite(v) ? v : d; };
+const CFG = {
+  wsUrl: 'ws://localhost:21213/',
+  owners: ['rodrigovelizguitar'],
+  floorY: num('piso', 1880),        // en la base del live
+  scale: num('escala', 1),
+  max: Math.max(1, Math.min(30, num('max', 12))),
+  bpm: num('bpm', 100),
+  guests: Q.get('invitados') !== '0',
+  photos: Q.get('fotos') === '1',
+  fixedMin: num('fijo', 15),
+  lights: Q.get('luces') !== '0',
+  help: Q.get('ayuda') === '1',
+  fps: num('fps', 0),
+  energyMax: 7200,       // máximo 2 horas de baile (pedido de Rodrigo: una galaxia no debe durar solo 2 min)
+  secPerCoin: 8,         // 1 moneda = 8 s
+  spawnMinSec: 25,       // al entrar siempre tienes al menos 25 s
+  // Barra de energía = tanque de cada bailarín. Siempre entra LLENA; lo que cambia es el tamaño del tanque
+  // (cuánto dura llena): invitado 30 s, donador al menos 60 s y crece con regalos grandes (máx 2 h).
+  guestCap: num('tanque', 30), giftCapMin: 60,
+  tapPct: num('tap', 0.2),     // cada tap tap (evento de likes) llena 20 % de la barra (tope 20 % de 60 s en barras grandes)
+  tapGap: 0.6,                 // un mismo usuario suma como máximo cada 0,6 s (TikTok manda los taps en ráfagas)
+  coinPct: 0.25,               // regalo de menos de 10 monedas: 25 % por moneda · 10 monedas o más: barra llena
+  vipCoins: num('vip', 1000), vipExtra: 8,   // 1000+ monedas en el día = bailarín PERMANENTE con lugar extra (hasta 8 extra)
+  fest: (Q.get('fest') || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean),   // regalos LIVE Fest (nombre o id) = doble
+  fanGift: Q.get('fan') || '', fanGiftId: 7934,
+  emojiSec: 2, emojiCooldown: 4,
+  tiredSec: 8,
+  levels: [0, 10, 50, 200, 1000, 2500, 5000, 10000, 20000, 50000],
+  fiestaSec: 15, fiestaCoins: 500,
+};
+</script>
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  #stage { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; transform-origin: 0 0; pointer-events: none; }
+  #cv { position: absolute; left: 0; }
+  #test { position: fixed; right: 8px; top: 8px; z-index: 5; display: flex; flex-wrap: wrap; gap: 6px; max-width: 330px;
+    font: 600 13px system-ui, Arial; }
+  #test button { background: #1d1420; color: #fff; border: 1px solid #e3122b; border-radius: 8px; padding: 7px 9px; cursor: pointer; }
+  #test button:hover { background: #e3122b; }
+  #test input { width: 110px; padding: 6px; border-radius: 8px; border: 1px solid #555; background: #111; color: #fff; }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas></div>
+<script>
+'use strict';
+/* ── Lienzo: solo una franja alrededor del piso (más liviano que 1080×1920) ── */
+const SC = CFG.scale;
+const BAND_UP = Math.round(640 * SC), BAND_DN = Math.round(150 * SC);
+const BAND_TOP = 0;                            // lienzo completo: los regalos vuelan desde abajo de la pantalla
+const W = 1080, BH = 1920;
+const FLOOR = CFG.floorY - BAND_TOP;          // piso dentro del lienzo
+const cv = document.getElementById('cv');
+const stage = document.getElementById('stage');
+cv.width = W; cv.height = BH; cv.style.top = BAND_TOP + 'px';
+const ctx = cv.getContext('2d');
+function fit() { stage.style.transform = `scale(${innerWidth / 1080})`; }
+addEventListener('resize', fit); fit();
+
+const TAU = Math.PI * 2, R = Math.random;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const lerp = (a, b, t) => a + (b - a) * t;
+const ease = t => t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+const now = () => performance.now() / 1000;
+const OWNERS = CFG.owners.map(s => s.toLowerCase());
+
+/* ── Estado ────────────────────────────────────────────── */
+const dancers = [];                 // bailarines en pista
+const byId = new Map();
+const parts = [];                   // partículas (confeti, chispas, polvo)
+const floats = [];                  // textos flotantes
+let fiestaUntil = 0, beat0 = now(), bpm = CFG.bpm, lastRank = 0, dirty = true;
+const MAXP = 240;
+
+/* Bailarines fijos (Quiéreme): 15 minutos cada uno, se guarda por si OBS recarga */
+const FKEY = 'bailelib_fijos_v2';
+let FANS = {}; try { FANS = JSON.parse(localStorage.getItem(FKEY) || '{}') || {}; } catch (e) {}
+if (Q.has('test') || Q.has('demo')) FANS = {};
+function saveFans() { if (Q.has('test') || Q.has('demo')) return; const n = Date.now(); for (const k in FANS) if (FANS[k] < n) delete FANS[k];
+  try { localStorage.setItem(FKEY, JSON.stringify(FANS)); } catch (e) {} }
+/* Monedas del DÍA por persona (como el top de monedas del ranking): el día empieza a las 3:00 y nunca
+   cambia en medio de un live (solo tras 60 min sin actividad). Si un bailarín se va y vuelve ese día,
+   vuelve con el mismo nivel. */
+const DKEY = 'bailelib_dia_v1', DAY_START_H = 3, DAY_GAP_MIN = 60;
+const dayKey = t => { const d = new Date(t - DAY_START_H * 3600e3); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+let DAY = { day: dayKey(Date.now()), act: 0, coins: {} };
+try { const s = JSON.parse(localStorage.getItem(DKEY) || 'null'); if (s && s.coins && !Q.has('test') && !Q.has('demo')) DAY = s; } catch (e) {}
+function rollDay() { const t = Date.now(); if (!(DAY.act && t - DAY.act <= DAY_GAP_MIN * 60e3) && DAY.day !== dayKey(t)) DAY = { day: dayKey(t), act: 0, coins: {} }; DAY.act = t; }
+function saveDay() { if (Q.has('test') || Q.has('demo')) return; try { localStorage.setItem(DKEY, JSON.stringify(DAY)); } catch (e) {} }
+const isFan = uid => (FANS[uid] || 0) > Date.now();
+const isVip = uid => (DAY.coins[uid] || 0) >= CFG.vipCoins;   // 1000+ monedas hoy: baila siempre y no lo sacan
+const isFanGift = (name, id) => CFG.fanGift ? String(name || '').toLowerCase() === CFG.fanGift.toLowerCase()
+  : (/heart\s*me|qui[eé]reme/i.test(name || '') || +id === CFG.fanGiftId);
+function hueOf(s) { let h = 2166136261; for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619); h ^= h >>> 13; h = Math.imul(h, 0x5bd1e995); h ^= h >>> 15; return (h >>> 0) % 360; }
+function levelOf(coins) { let l = 1; CFG.levels.forEach((c, i) => { if (coins >= c) l = i + 1; }); return l; }
+const beats = t => (t - beat0) * bpm / 60;
+const inFiesta = t => t < fiestaUntil;
+
+/* ════════════════ POSES Y PASOS ════════════════
+   Brazos: ángulos absolutos (0 = abajo, +π/2 = derecha de la pantalla, π = arriba).
+   Piernas: se dan los PIES (lfx/rfx = posición en el piso, lfy/rfy = cuánto se levantan)
+   y las rodillas se calculan solas (IK), así los pies no patinan.
+   air = todo el cuerpo en el aire · cr = agacharse · bx = mover la cadera.        */
+const H0_SIT = 4.6 - 0.45;   // cadera casi en el piso (H0 = 4.6)
+const KEYS = ['air', 'cr', 'bx', 't', 'hd', 'la1', 'la2', 'ra1', 'ra2', 'lfx', 'lfy', 'rfx', 'rfy', 'rot', 'sx'];
+const BASE = { air: 0, cr: 0.15, bx: 0, t: 0, hd: 0, la1: -0.2, la2: -0.1, ra1: 0.2, ra2: 0.1, lfx: -0.8, lfy: 0, rfx: 0.8, rfy: 0, rot: 0, sx: 1 };
+const P = o => Object.assign({}, BASE, o);
+const fr = b => b - Math.floor(b);
+const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const groove = b => { const c = 0.5 + 0.5 * Math.cos(b * TAU); return c * c; };   // 1 justo en el tiempo
+const mix = (A, B, h) => { const o = {}; for (const k in A) o[k] = A[k] + (B[k] - A[k]) * h; return o; };
+// pasos "marcados": en cada tiempo va rápido a la pose nueva y la sostiene
+function hits(b, list, sharp) { const i = Math.floor(b), h = sstep(0, sharp || 0.3, fr(b));
+  return mix(list[(i + list.length - 1) % list.length], list[i % list.length], h); }
+
+const DISCO = [{ ra1: 2.45, ra2: 2.6, bx: 0.45, t: -0.14, hd: 0.25, rfx: 1.15, rfy: 0.15 }, { ra1: -0.35, ra2: -0.75, bx: -0.35, t: 0.12, hd: -0.12, rfx: 0.75, rfy: 0 }];
+const ROBOT = [{ la1: -1.57, la2: 3.14, ra1: 1.57, ra2: 0, hd: 0.2 }, { la1: -1.57, la2: 0, ra1: 1.57, ra2: 3.14, hd: -0.2 },
+  { la1: -0.35, la2: 1.57, ra1: 0.35, ra2: -1.57, hd: 0 }, { la1: -1.57, la2: -1.57, ra1: 1.57, ra2: 1.57, hd: 0.15 }];
+
+const MOVES = {
+  // cambio de peso suave (poca energía)
+  sway(b) { const w = Math.sin(b * Math.PI);
+    return P({ bx: 0.55 * w, t: -0.06 * w, hd: 0.1 * w, cr: 0.25 + 0.15 * Math.abs(w), lfy: 0.22 * Math.max(0, w), rfy: 0.22 * Math.max(0, -w),
+      la1: -0.25 + 0.2 * w, la2: -0.15 + 0.3 * w, ra1: 0.25 + 0.2 * w, ra2: 0.15 + 0.3 * w }); },
+  // paso lateral con aplausos
+  aplauso(b) { const w = Math.sin(b * Math.PI), c = groove(b);
+    return P({ bx: 0.6 * w, t: -0.05 * w, hd: 0.12 * w, cr: 0.3 + 0.35 * c, lfy: 0.45 * Math.max(0, w) ** 2, rfy: 0.45 * Math.max(0, -w) ** 2,
+      la1: lerp(-1.25, -0.85, c), la2: lerp(1.75, 2.35, c), ra1: lerp(1.25, 0.85, c), ra2: lerp(-1.75, -2.35, c) }); },
+  // manos arriba con saltitos
+  brazos(b) { const w = Math.sin(b * Math.PI), c = groove(b);
+    return P({ bx: 0.3 * w, t: 0.06 * w, cr: 0.2 + 0.5 * c, air: 0.3 * Math.max(0, Math.sin(b * TAU - Math.PI / 2)) * (1 - c),
+      la1: -2.55 + 0.3 * w, la2: -2.85 + 0.45 * w, ra1: 2.55 + 0.3 * w, ra2: 2.85 + 0.45 * w }); },
+  // disco: señalar arriba / abajo, marcado en cada tiempo
+  disco(b) { const h = hits(b, DISCO, 0.28); return P(Object.assign({ la1: -0.85, la2: 0.95, cr: 0.35 + 0.2 * groove(b) }, h)); },
+  floss(b) { const s = Math.sin(b * Math.PI), x = Math.sign(s) * Math.abs(s) ** 0.6;
+    return P({ bx: -0.55 * x, t: 0.1 * x, hd: -0.1 * x, cr: 0.3, lfx: -0.7, rfx: 0.7,
+      la1: 0.75 * x - 0.12, la2: 0.8 * x - 0.1, ra1: 0.75 * x + 0.12, ra2: 0.8 * x + 0.1 }); },
+  // running man
+  correr(b) { const ph = Math.floor(b) % 2, f = fr(b), lift = Math.sin(f * Math.PI);
+    const p = P({ cr: 0.55 - 0.35 * lift, air: 0.12 * lift, t: 0.05 * (ph ? 1 : -1), hd: 0.1 * groove(b) });
+    if (ph) { p.lfx = -0.25; p.lfy = 1.8 * lift; p.rfx = 0.9; p.la1 = -0.5 - 0.5 * lift; p.la2 = 1.0 + 0.6 * lift; p.ra1 = 0.3; p.ra2 = 0.1; }
+    else { p.rfx = 0.25; p.rfy = 1.8 * lift; p.lfx = -0.9; p.ra1 = 0.5 + 0.5 * lift; p.ra2 = -1.0 - 0.6 * lift; p.la1 = -0.3; p.la2 = -0.1; }
+    return p; },
+  // guitarra en el aire 🎸 (con headbang en cada tiempo)
+  guitarra(b) { const c = groove(b);
+    return P({ lfx: -1.3, rfx: 1.3, cr: 0.9 + 0.35 * c, t: -0.15 + 0.08 * Math.sin(b * Math.PI), hd: -0.3 + 0.4 * c,
+      la1: -1.85, la2: -2.3, ra1: 0.55, ra2: -1.1 + 0.45 * Math.sin(b * 2 * TAU) }); },
+  // cumbia: paso atrás alternado y cadera
+  cumbia(b) { const w = Math.sin(b * Math.PI), ph = Math.floor(b) % 2, lift = Math.sin(fr(b) * Math.PI) * 0.55;
+    return P({ bx: 0.4 * w, t: -0.08 * w, hd: 0.12 * w, cr: 0.35 + 0.2 * groove(b),
+      lfx: ph ? -0.45 : -0.85, lfy: ph ? lift : 0, rfx: ph ? 0.85 : 0.45, rfy: ph ? 0 : lift,
+      la1: -0.5 + 0.25 * w, la2: 1.3 + 0.2 * w, ra1: 0.5 + 0.25 * w, ra2: -1.3 + 0.2 * w }); },
+  // robot: poses secas en cada tiempo
+  robot(b) { const h = hits(b, ROBOT, 0.14); return P(Object.assign({ cr: 0.25 + 0.15 * groove(b) }, h)); },
+  caminar(b) { const s = Math.sin(b * Math.PI * 2), f = fr(b), up = Math.sin(f * Math.PI) * 0.6, ph = Math.floor(b) % 2;
+    return P({ cr: 0.2, lfx: -0.55, rfx: 0.55, lfy: ph ? up : 0, rfy: ph ? 0 : up, t: 0.04 * s,
+      la1: -0.15 - 0.35 * s, la2: -0.1 - 0.4 * s, ra1: 0.15 + 0.35 * s, ra2: 0.1 + 0.4 * s }); },
+  // cansado: sentado en el piso, rodillas arriba, brazos apoyados en las rodillas, respirando
+  cansado(b) { const s = Math.sin(b * Math.PI * 0.5);
+    return P({ lfx: -0.5, rfx: 0.5, cr: H0_SIT, t: 0.03 * s, hd: 0.12 + 0.04 * s,
+      la1: -1.02 - 0.04 * s, la2: 0.5, ra1: 1.02 + 0.04 * s, ra2: -0.5 }); },
+  // moonwalk: se desliza hacia atrás (se usa mientras viaja; d.face indica hacia dónde mira)
+  moonwalk(b) { const ph = Math.floor(b * 2) % 2, f = fr(b * 2), k = Math.sin(f * Math.PI);
+    return P({ cr: 0.3, t: -0.06, hd: -0.12, bx: 0.15 * (ph ? 1 : -1), lfx: ph ? -0.75 : -0.45, rfx: ph ? 0.45 : 0.75, lfy: ph ? 0.4 * k : 0, rfy: ph ? 0 : 0.4 * k,
+      la1: -0.25, la2: 0.55, ra1: 0.9 + 0.1 * k, ra2: 1.9, }); },
+  // deslizar de lado con brazos abiertos
+  deslizar(b) { const w = Math.sin(b * Math.PI), c = groove(b);
+    return P({ cr: 0.45 + 0.2 * c, bx: 0.25 * w, t: 0.12, hd: 0.15, lfx: -1.6, rfx: 0.5, lfy: 0.1 * c, la1: -1.75, la2: -1.6 + 0.2 * w, ra1: 1.3, ra2: 1.0 }); },
+  // trote para cruzar la pista
+  trote(b) { const f = fr(b * 2), up = Math.sin(f * Math.PI), ph = Math.floor(b * 2) % 2;
+    return P({ cr: 0.35, air: 0.25 * up, t: 0.1, lfx: -0.5, rfx: 0.5, lfy: ph ? 0.9 * up : 0, rfy: ph ? 0 : 0.9 * up,
+      la1: ph ? -0.9 : 0.3, la2: ph ? 0.6 : 1.4, ra1: ph ? -0.3 : 0.9, ra2: ph ? -1.4 : -0.6 }); },
+  saludo(b) { const s = Math.sin(b * TAU); return P({ ra1: 2.3, ra2: 2.8 + 0.45 * s, hd: 0.1, bx: 0.15 * s, la1: -0.2 }); },
+};
+// Especiales: duración en tiempos y pose según progreso 0..1 (con impulso antes y aterrizaje después)
+const crouchJump = (q, a, b) => q < a ? sstep(0, a, q) : q > b ? 1 - sstep(b, 1, q) : 0;      // agacharse antes / al caer
+const airArc = (q, a, b) => q <= a || q >= b ? 0 : Math.sin((q - a) / (b - a) * Math.PI);
+const SPECIAL = {
+  salto: { len: 2, f(q) { q = clamp(q, 0, 1); const c = crouchJump(q, 0.22, 0.78), j = airArc(q, 0.22, 0.78), s = sstep(0.2, 0.42, q) * (1 - sstep(0.62, 0.8, q));
+    return P({ air: 3.2 * j, cr: 0.15 + 1.2 * c, t: 0.15 * c,
+      la1: lerp(lerp(-0.2, -0.5, c), -2.4, s), la2: lerp(lerp(-0.1, -0.3, c), -2.55, s), ra1: lerp(lerp(0.2, 0.5, c), 2.4, s), ra2: lerp(lerp(0.1, 0.3, c), 2.55, s),
+      lfx: lerp(-0.8, -1.7, s), rfx: lerp(0.8, 1.7, s), lfy: 0.6 * s, rfy: 0.6 * s }); } },
+  giro: { len: 2, f(q) { q = clamp(q, 0, 1); const e = ease(q), a = Math.sin(q * Math.PI);
+    return P({ sx: Math.cos(e * TAU * 2), air: 0.25 * a, cr: 0.2 + 0.3 * (1 - a),
+      la1: lerp(-0.2, -1.55, a), la2: lerp(-0.1, -1.6, a), ra1: lerp(0.2, 1.55, a), ra2: lerp(0.1, 1.6, a), rfx: lerp(0.8, 0.25, a), rfy: 1.6 * a }); } },
+  mortal: { len: 3, f(q) { q = clamp(q, 0, 1); const c = crouchJump(q, 0.16, 0.86), j = airArc(q, 0.16, 0.86), r = ease(clamp((q - 0.2) / 0.6, 0, 1)), tuck = Math.sin(r * Math.PI);
+    return P({ air: 4.2 * j, cr: 0.15 + 1.3 * c, rot: -r * TAU, lfx: lerp(-0.8, -0.4, tuck), rfx: lerp(0.8, 0.4, tuck), lfy: 2.6 * tuck, rfy: 2.6 * tuck,
+      la1: lerp(lerp(-0.2, -0.6, c), -0.4, tuck) - 2.2 * (j > 0 ? (1 - tuck) : 0), la2: lerp(-0.1, 1.0, tuck) - 2.4 * (j > 0 ? (1 - tuck) : 0),
+      ra1: lerp(lerp(0.2, 0.6, c), 0.4, tuck) + 2.2 * (j > 0 ? (1 - tuck) : 0), ra2: lerp(0.1, -1.0, tuck) + 2.4 * (j > 0 ? (1 - tuck) : 0) }); } },
+  dab: { len: 2, f(q) { const a = sstep(0, 0.2, q) * (1 - sstep(0.8, 1, q));
+    return P({ cr: 0.15 + 0.35 * a, hd: 0.65 * a, t: 0.18 * a, bx: -0.2 * a, la1: lerp(-0.2, -2.2, a), la2: lerp(-0.1, -2.2, a), ra1: lerp(0.2, -2.4, a), ra2: lerp(0.1, 1.2, a) }); } },
+  split: { len: 3, f(q) { const a = sstep(0, 0.3, q) * (1 - sstep(0.72, 1, q));
+    return P({ lfx: lerp(-0.8, -4.25, a), rfx: lerp(0.8, 4.25, a), cr: lerp(0.15, 2.5, a), la1: lerp(-0.2, -2.6, a), la2: lerp(-0.1, -2.75, a), ra1: lerp(0.2, 2.6, a), ra2: lerp(0.1, 2.75, a), hd: 0.15 * Math.sin(q * TAU * 3) * a }); } },
+  aplausos: { len: 2, f(q) { return MOVES.aplauso(q * 2); } },
+  // patada a un regalo (hacia donde mira)
+  patada: { len: 1.5, f(q) { const w = sstep(0, 0.35, q) * (1 - sstep(0.35, 0.5, q)), k = sstep(0.32, 0.45, q) * (1 - sstep(0.6, 1, q));
+    return P({ cr: 0.2 + 0.6 * w, t: -0.25 * k + 0.1 * w, hd: -0.2 * k, lfx: -0.6, rfx: lerp(lerp(0.8, -0.2, w), 2.6, k), rfy: lerp(0.3 * w, 2.6, k),
+      la1: lerp(-0.4, -1.9, k), la2: lerp(-0.3, -2.2, k), ra1: lerp(0.6, 1.2, k), ra2: lerp(0.9, 0.8, k) }); } },
+  // rueda (voltereta lateral) mientras avanza
+  rueda: { len: 2, f(q) { q = clamp(q, 0, 1); const r = ease(clamp((q - 0.1) / 0.8, 0, 1)), a = Math.sin(r * Math.PI);
+    return P({ rot: r * TAU, air: 0.6 * a, cr: 0.2 + 0.8 * (1 - a) * (q < 0.1 || q > 0.9 ? 1 : 0),
+      la1: lerp(-0.2, -2.6, a), la2: lerp(-0.1, -2.7, a), ra1: lerp(0.2, 2.6, a), ra2: lerp(0.1, 2.7, a),
+      lfx: lerp(-0.8, -2.2, a), rfx: lerp(0.8, 2.2, a), lfy: 1.6 * a, rfy: 1.6 * a }); } },
+  // se apoya en el borde de la pantalla (mano en la pared, piernas cruzadas) y se impulsa
+  pared: { len: 4, f(q) { const a = sstep(0, 0.15, q) * (1 - sstep(0.8, 0.95, q)), push = sstep(0.82, 0.92, q) * (1 - sstep(0.92, 1, q));
+    return P({ t: 0.32 * a - 0.25 * push, hd: 0.25 * a + 0.1 * Math.sin(q * TAU * 2) * a, bx: -0.4 * a, cr: 0.15 + 0.6 * push,
+      ra1: lerp(0.2, 1.62, a), ra2: lerp(0.1, 1.45, a), la1: lerp(-0.2, 0.55, a), la2: lerp(-0.1, -1.0, a),
+      lfx: lerp(-0.8, 0.55, a), rfx: lerp(0.8, -0.2, a), lfy: 0.05 * a }); } },
+  // choque de manos (hacia donde mira el compañero)
+  chocar: { len: 2, f(q) { const a = sstep(0, 0.4, q) * (1 - sstep(0.75, 1, q)), j = airArc(q, 0.3, 0.62);
+    return P({ air: 1.2 * j, cr: 0.2 + 0.4 * (1 - a), t: 0.15 * a, hd: 0.2 * a, ra1: lerp(0.2, 2.35, a), ra2: lerp(0.1, 2.55, a), la1: lerp(-0.2, -0.6, a), la2: lerp(-0.1, 0.4, a),
+      rfx: lerp(0.8, 1.2, a), rfy: 0.7 * j, lfx: -0.8 }); } },
+  // le cayó un regalo en la cabeza: se tambalea
+  mareo: { len: 2, f(q) { const a = Math.sin(q * Math.PI), w = Math.sin(q * TAU * 3) * a;
+    return P({ cr: 0.5 * a, t: 0.25 * w, hd: -0.4 * w, bx: 0.3 * w, la1: -0.9 - 0.4 * w, la2: -0.6, ra1: 0.9 - 0.4 * w, ra2: 0.6 }); } },
+  guitarrazo: { len: 4, f(q) { return MOVES.guitarra(q * 4); } },
+};
+// Pasos disponibles por nivel
+// Todos rotan por todos los pasos (cada 8 tiempos); con más nivel hacen especiales solos más seguido
+const ROTA = ['aplauso', 'cumbia', 'brazos', 'disco', 'robot', 'floss', 'correr', 'guitarra'];
+const AUTO_SP = lvl => lvl >= 5 ? ['mortal', 'split', 'giro', 'salto', 'guitarrazo', 'dab'] : lvl >= 3 ? ['giro', 'salto', 'dab', 'aplausos'] : ['salto', 'aplausos'];
+const FIESTA_SEQ = ['brazos', 'disco', 'cumbia', 'correr'];
+// Emojis / palabras del chat → paso especial
+const EMOJI = [[/🤸|mortal|flip/i, 'mortal'], [/🎸|🤘|guitarra|rock/i, 'guitarrazo'], [/🔥|salta|jump/i, 'salto'],
+  [/💃|🩰|gira|spin/i, 'giro'], [/🕺|🪩|disco/i, 'dab'], [/👏|aplau/i, 'aplausos'], [/👯|🎶|🎵|🥳|bail|dance|baile/i, null]];
+
+const DIRIGIDO = new Set(['patada', 'pared', 'chocar', 'rueda', 'moonwalk', 'deslizar', 'trote']);
+const mirror = p => Object.assign({}, p, { sx: -p.sx, bx: -p.bx, rot: -p.rot });
+function poseLerp(a, b, t) { const o = {}; for (const k of KEYS) o[k] = a[k] + (b[k] - a[k]) * t;
+  // rotación por el camino corto
+  let d = ((b.rot - a.rot) % TAU + TAU * 1.5) % TAU - TAU / 2; o.rot = a.rot + d * t; return o; }
+
+/* ── Bailarín ─────────────────────────────────────────── */
+function makeDancer(uid, name, pic) {
+  const fan = isFan(uid), coins = DAY.coins[uid] || 0;
+  const d = { uid, name: String(name || uid).slice(0, 13), pic: pic || '', guest: !fan, coins, energy: 0, lvl: coins ? levelOf(coins) : fan ? 1 : 0,
+    x: 120 + R() * (W - 240), tx: 540, z: fan || coins ? R() * 0.4 : 0.35 + R() * 0.6, vx: 0, face: R() < 0.5 ? -1 : 1, goal: null, next: now() + 2 + R() * 3, tagYs: 0, s: 1, hue: hueOf(uid), born: now(), drop: 1,
+    move: 'brazos', moveAt: now(), slot: null, beatSlot: -1, amp: 0.88 + R() * 0.28, lag: R() * 0.06, land: 0, prev: null, prevAt: 0, special: null, spAt: 0, spB0: 0,
+    tiredAt: 0, leaving: 0, lastEmoji: 0, tag: null, tagKey: '', avatar: null, alpha: 0, leader: false, flash: 0 };
+  if (d.pic && CFG.photos) loadAvatar(d);
+  return d;
+}
+function loadAvatar(d) {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => { try { const c = document.createElement('canvas'); c.width = c.height = 96; const g = c.getContext('2d');
+    g.beginPath(); g.arc(48, 48, 48, 0, TAU); g.clip(); g.drawImage(img, 0, 0, 96, 96); d.avatar = c; dirty = true; } catch (e) {} };
+  img.onerror = () => { if (img.crossOrigin) { img.crossOrigin = null; img.src = d.pic; } };
+  img.src = d.pic;
+}
+function setMove(d, m, t) { if (d.move === m) return; d.prev = d.move; d.prevAt = t; d.move = m; d.moveAt = t; }
+function doSpecial(d, name, t) { if (!SPECIAL[name] || d.leaving) return; d.prevPose = currentPose(d, t); d.special = name; d.spAt = t; d.spB0 = beats(t); }
+
+function currentPose(d, t) {
+  const b = beats(t) - d.lag;
+  let p;
+  if (d.special) {
+    const sp = SPECIAL[d.special], q = (beats(t) - d.spB0) / sp.len;
+    if (q < 1) { p = sp.f(q); if (q < 0.12 && d.prevPose) p = poseLerp(d.prevPose, p, ease(q / 0.12)); }
+    else { if (d.special === 'salto' || d.special === 'mortal') d.land = t; d.special = null; d.prev = '__sp'; d.prevPose = sp.f(1); d.prevAt = t; }
+  }
+  if (!p) {
+    p = MOVES[d.move](b);
+    // cada bailarín con su propio "estilo": más o menos exagerado según energía
+    const amp = d.move === 'cansado' || d.move === 'caminar' ? 1 : d.amp * (0.75 + 0.25 * clamp(d.energy / 40, 0, 1));
+    if (amp !== 1) p = poseLerp(BASE, p, amp);
+    if (d.move !== 'cansado') p.hd += 0.07 * Math.sin((b - 0.12) * TAU);   // la cabeza sigue el ritmo con un poco de retraso
+    const bt = (t - d.prevAt) / 0.3;
+    if (bt < 1 && d.prev) p = poseLerp(d.prev === '__sp' ? d.prevPose : MOVES[d.prev](b), p, ease(bt));
+  }
+  if (d.face < 0 && (DIRIGIDO.has(d.special) || (!d.special && DIRIGIDO.has(d.move)))) p = mirror(p);
+  // aterrizaje al caer a la pista: se agacha y rebota
+  const lt = t - d.land; if (d.land && lt < 0.5) p.cr += 1.3 * Math.exp(-lt * 7) * Math.cos(lt * 9) ;
+  return p;
+}
+
+/* ── Llegada de eventos ───────────────────────────────── */
+// prio: 2 = fijo o alguien que regaló (puede sacar invitados y a los que descansan), 1 = invitado (solo saca a los que descansan)
+function getOrSpawn(uid, name, pic, prio) {
+  let d = byId.get(uid);
+  if (d) { if (name && d.name === d.uid && name !== uid) { d.name = String(name).slice(0, 13); d.tag = null; (DAY.names = DAY.names || {})[uid] = name; }   // volvió sin nombre guardado: tomar el nombre real
+    if (d.leaving) { d.leaving = 0; d.alpha = Math.max(d.alpha, 0.3); } if (pic && !d.pic) { d.pic = pic; if (CFG.photos) loadAvatar(d); } return d; }
+  // los permanentes (1000+ monedas) tienen su propio lugar extra: no cuentan para el máximo y nunca salen
+  if (!isVip(uid) && dancers.filter(x => !x.leaving && !isVip(x.uid)).length >= CFG.max) {
+    const pool = dancers.filter(x => !x.leaving && !x.leader && !isVip(x.uid) && ((x.energy <= 0 && (prio >= 2 || x.guest)) || (prio >= 2 && x.guest)))   // un invitado nuevo solo reemplaza a otro invitado que descansa, nunca a un donador
+      .sort((a, b) => ((a.energy > 0) - (b.energy > 0)) || (b.guest - a.guest) || (a.energy - b.energy));
+    // el que regala SIEMPRE entra: si no hay nadie descansando, sale el que tiene menos energía (vuelve cuando haga tap)
+    if (!pool[0] && prio >= 3) pool.push(...dancers.filter(x => !x.leaving && !x.leader && !isVip(x.uid)).sort((a, b) => (b.guest - a.guest) || (a.energy - b.energy)));
+    if (!pool[0]) return null;
+    leave(pool[0], true);
+  }
+  d = makeDancer(uid, name, pic);
+  dancers.push(d); byId.set(uid, d);
+  burst(d.x, FLOOR - 80 * SC, 18, d.hue, 'chispa');
+  lastRank = 0;
+  return d;
+}
+function leave(d, fast) { if (d.leaving || (isVip(d.uid) && !fast)) return; d.leaving = now() + (fast ? 0 : 1.6); if (!fast) setMove(d, 'saludo', now()); }
+
+const capOf = d => d.cap || CFG.guestCap;
+// suma segundos sin pasar del tanque; devuelve lo que sumó
+function addEnergy(d, sec) {
+  const add = clamp(Math.min(capOf(d), CFG.energyMax) - d.energy, 0, sec);
+  d.energy += add; if (d.energy > 0) d.tiredAt = 0; return add;
+}
+const fillPct = (d, pct) => addEnergy(d, capOf(d) * pct);
+const isFest = (name, id) => /\bfest\b/i.test(name || '') || CFG.fest.includes(String(name || '').toLowerCase()) || CFG.fest.includes(String(id));
+function onGiftCoins(uid, name, pic, coins, giftName, giftId) {
+  const t = now(), fanGift = isFanGift(giftName, giftId);
+  if (fanGift) { FANS[uid] = Date.now() + CFG.fixedMin * 60000; saveFans(); }
+  rollDay(); DAY.coins[uid] = (DAY.coins[uid] || 0) + coins; (DAY.names = DAY.names || {})[uid] = name; saveDay();   // antes de entrar: si llega a 1000 entra a un lugar extra sin sacar a nadie
+  const d = getOrSpawn(uid, name, pic, 3);
+  if (!d) return;
+  const lvl0 = d.lvl, wasGuest = d.guest;
+  d.coins = DAY.coins[uid]; d.lvl = levelOf(d.coins);
+  if (isFan(uid)) { d.guest = false; if (!d.lvl) d.lvl = 1; }
+  // tanque: los regalos lo agrandan (8 s por moneda, doble si es LIVE Fest); 10+ monedas lo llenan, menos = 25 % por moneda
+  const fest = isFest(giftName, giftId) ? 2 : 1, fresh = d.energy <= 0 && !d.cap;
+  const cap0 = capOf(d); d.cap = Math.min(CFG.energyMax, Math.max(cap0, CFG.giftCapMin, coins >= 10 ? coins * CFG.secPerCoin * fest : 0));
+  if (d.cap > cap0) d.energy *= d.cap / cap0;   // al agrandar el tanque la barra no baja
+  const sec = coins >= 10 || fresh ? addEnergy(d, d.cap) : fillPct(d, Math.min(1, CFG.coinPct * coins * fest));
+  d.flash = t;
+  if (fanGift) { if (wasGuest) d.tag = null; burst(d.x, FLOOR - 120 * SC, 30, 345, 'chispa'); d.tag = null; }
+  else { if (sec >= 1) floatText(d, sec, `hsl(${d.hue},90%,70%)`); }
+  if (d.lvl > lvl0 && lvl0 >= 1) { floatText(d, '¡NIVEL ' + d.lvl + '!', '#ffd54a', 1.3); burst(d.x, FLOOR - 120 * SC, 26, 48, 'chispa'); }
+  doSpecial(d, coins >= 99 ? 'mortal' : coins >= 30 ? 'split' : coins >= 5 ? 'giro' : 'salto', t);
+  if (coins >= CFG.fiestaCoins) startFiesta(t);
+  lastRank = 0; wake();
+}
+function onEmoji(uid, name, pic, text) {
+  const t = now();
+  let sp = null, hit = false;
+  for (const [re, s] of EMOJI) if (re.test(text)) { hit = true; sp = s; break; }
+  if (!hit) return;
+  if (!sp) sp = ['giro', 'salto', 'dab', 'aplausos'][Math.floor(R() * 4)];
+  let d = byId.get(uid);
+  if (d && t - d.lastEmoji < CFG.emojiCooldown) return;     // anti-spam por persona
+  if (!d && (CFG.guests || isFan(uid))) { d = getOrSpawn(uid, name, pic, isFan(uid) ? 2 : 1); if (d) addEnergy(d, capOf(d)); }   // entra con la barra llena
+  else if (d) addEnergy(d, CFG.emojiSec);
+  if (d) { d.lastEmoji = t; doSpecial(d, sp, t); }
+  wake();
+}
+function startFiesta(t) {
+  fiestaUntil = Math.max(fiestaUntil, t) + CFG.fiestaSec;
+  for (let i = 0; i < 70; i++) confetti();
+  wake();
+}
+
+/* ── Partículas y textos ──────────────────────────────── */
+function burst(x, y, n, hue, type) { for (let i = 0; i < n && parts.length < MAXP; i++) { const a = R() * TAU, v = 120 + R() * 260;
+  parts.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 120, life: 0.6 + R() * 0.5, age: 0, hue: hue + (R() - 0.5) * 40, sz: 3 + R() * 4, type }); } }
+function confetti() { if (parts.length >= MAXP) return;
+  parts.push({ x: R() * W, y: -10 - R() * 200, vx: (R() - 0.5) * 60, vy: 120 + R() * 140, life: 4, age: 0, hue: R() * 360, sz: 6 + R() * 6, type: 'confeti', spin: R() * TAU }); }
+const fmtE = n => { n = Math.round(n); return n < 60 ? '+' + n + ' s' : n < 3600 ? '+' + Math.round(n / 60) + ' min' : '+' + Math.floor(n / 3600) + ' h ' + Math.round(n % 3600 / 60) + ' min'; };
+function floatText(d, txt, col, big) {
+  const secs = typeof txt === 'number' ? txt : 0;            // número = segundos de energía ganados
+  if (secs) txt = fmtE(secs);
+  const m = secs && !big && floats.find(f => f.d === d && f.sum && now() - f.t0 < 0.6);
+  if (m) { m.sum = Math.min(CFG.energyMax, m.sum + secs); m.txt = fmtE(m.sum); m.t0 = now(); return; }
+  floats.push({ sum: secs, d, x: d.x, y: 0, txt, col, t0: now(), life: big ? 1.6 : 1.1, big: big ? 0.6 : 0 }); }
+
+/* ── Acomodo en la pista ──────────────────────────────── */
+function arrange() {
+  // ya no hay casillas: cada uno se mueve libre. El que más monedas dio lleva CORONA y prefiere el centro.
+  const live = dancers.filter(d => !d.leaving);
+  let lead = null; for (const d of live) if (d.coins > 0 && (!lead || d.coins > lead.coins)) lead = d;
+  live.forEach(d => d.leader = d === lead);
+}
+// nombres: cada uno sobre su bailarín; si choca con otro, sube un escalón (se recalcula seguido porque se mueven)
+function tagLanes() {
+  const placed = [], live = dancers.filter(d => !d.leaving).sort((a, b) => a.z - b.z);
+  for (const d of live) { const tag = tagFor(d), w = tag.width, h = tag.height + 12 * SC, base = zFloor(d.z) - (205 + 18 * d.z) * SC - (d.leader ? 22 * SC : 0);
+    let y = base, bestO = 1e9; const l = d.x - w / 2, r = d.x + w / 2;
+    for (let k = 0; k < 4; k++) { const yk = base - k * 50 * SC; let ov = 0;           // el escalón que menos tape a otros
+      for (const o of placed) if (!(r + 6 * SC <= o.l || l >= o.r + 6 * SC || yk - h >= o.y || yk <= o.y - o.h)) ov += Math.min(r, o.r) - Math.max(l, o.l) + 20;
+      if (ov < bestO - 1) { bestO = ov; y = yk; } if (!ov) break; }
+    placed.push({ l: d.x - w / 2, r: d.x + w / 2, y, h }); d.tagT = y; }
+}
+
+/* ── Etiqueta de nombre (se dibuja una sola vez y se reusa) ── */
+function tagFor(d) {
+  const key = d.name + '|' + d.lvl + '|' + d.guest + '|' + d.leader;
+  if (d.tag && d.tagKey === key) return d.tag;
+  const fs = Math.round(23 * SC), c = d.tag || document.createElement('canvas'), g = c.getContext('2d');
+  g.font = `800 ${fs}px "Segoe UI", Arial, sans-serif`;
+  const label = d.guest && !d.lvl ? d.name : d.name + '  ' + 'Nv' + d.lvl;
+  const tw = Math.ceil(g.measureText(label).width);
+  c.width = tw + 20; c.height = fs + 14;
+  g.font = `800 ${fs}px "Segoe UI", Arial, sans-serif`; g.textBaseline = 'middle'; g.textAlign = 'center';
+  g.lineJoin = 'round'; g.lineWidth = 6; g.strokeStyle = 'rgba(0,0,0,0.85)';
+  const cx = c.width / 2, cy = c.height / 2;
+  g.strokeText(label, cx, cy);
+  if (d.guest && !d.lvl) { g.fillStyle = '#d6d6d6'; g.fillText(label, cx, cy); }
+  else { g.fillStyle = d.leader ? '#ffd54a' : d.guest && !d.coins ? '#d6d6d6' : '#fff'; g.fillText(d.name, cx - g.measureText('  Nv' + d.lvl).width / 2, cy);
+    const nx = cx + (tw - g.measureText('Nv' + d.lvl).width) / 2; g.fillStyle = `hsl(${d.hue},95%,68%)`; g.fillText('Nv' + d.lvl, nx, cy); }
+  d.tag = c; d.tagKey = key; return c;
+}
+let helpCanvas = null;
+function helpTag() {
+  if (helpCanvas) return helpCanvas;
+  const fs = Math.round(24 * Math.min(1.2, SC)), c = helpCanvas = document.createElement('canvas'), g = c.getContext('2d');
+  const lines = ['❤️ Quiéreme = tu bailarín fijo    👆 Taps = energía', '🎁 Regalos = energía y nivel    💃🕺🎸 = pasos'];
+  g.font = `700 ${fs}px "Segoe UI", Arial, sans-serif`;
+  c.width = Math.min(1060, Math.ceil(Math.max(...lines.map(l => g.measureText(l).width))) + 48); c.height = fs * 2 + 34;
+  g.fillStyle = 'rgba(10,6,12,0.6)'; g.beginPath(); g.roundRect(0, 0, c.width, c.height, 22); g.fill();
+  g.font = `700 ${fs}px "Segoe UI", Arial, sans-serif`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillStyle = '#fff';
+  lines.forEach((l, i) => g.fillText(l, c.width / 2, 17 + fs / 2 + i * (fs + 4) + 1, c.width - 30));
+  return c;
+}
+// cono de luz pre-dibujado
+const beam = (() => { const c = document.createElement('canvas'); c.width = 260; c.height = 700; const g = c.getContext('2d');
+  const gr = g.createLinearGradient(0, 0, 0, 700); gr.addColorStop(0, 'rgba(255,255,255,0.55)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.beginPath(); g.moveTo(120, 0); g.lineTo(140, 0); g.lineTo(260, 700); g.lineTo(0, 700); g.closePath(); g.fill(); return c; })();
+const tintBeams = [0, 1, 2].map(i => { const c = document.createElement('canvas'); c.width = beam.width; c.height = beam.height; const g = c.getContext('2d');
+  g.drawImage(beam, 0, 0); g.globalCompositeOperation = 'source-in'; g.fillStyle = ['#ff3b5c', '#3bc8ff', '#ffd54a'][i]; g.fillRect(0, 0, c.width, c.height); return c; });
+
+/* ════════════════ DIBUJO ════════════════ */
+const zScale = z => 1 - 0.2 * z, zFloor = z => FLOOR - 95 * SC * z;    // profundidad continua: 0 = adelante, 1 = fondo
+function drawDancer(d, p, t) {
+  const sc = SC * zScale(d.z) * (d.leader ? 1.15 : 1), u = 18 * sc;
+  const floor = zFloor(d.z);
+  const TH = 2.4 * u, TO = 3.0 * u, UA = 1.7 * u, FA = 1.6 * u, HR = 0.82 * u, H0 = 4.6;
+  // caída al entrar (con gravedad)
+  const tau = 1 - d.drop, dropY = d.drop > 0 ? (1 - tau * tau) * 560 * SC : 0;
+  const hipY = floor - (p.air + H0 - p.cr) * u - dropY;
+  const hipX = d.x + p.bx * u;
+  const td = [Math.sin(p.t), -Math.cos(p.t)];
+  const sh = [td[0] * 2.7 * u, td[1] * 2.7 * u], nk = [td[0] * TO, td[1] * TO];
+  const ha = p.t + p.hd, hc = [nk[0] + Math.sin(ha) * (HR + 0.3 * u), nk[1] - Math.cos(ha) * (HR + 0.3 * u)];
+  const a = (o, ang, len) => [o[0] + Math.sin(ang) * len, o[1] + Math.cos(ang) * len];
+  const le = a(sh, p.la1, UA), lh = a(le, p.la2, FA), re = a(sh, p.ra1, UA), rh = a(re, p.ra2, FA);
+  // piernas por IK: pies donde dice el paso, rodillas hacia afuera
+  const leg = (fx, fy, side) => {
+    let F = [(fx - p.bx) * u, (H0 - p.cr - fy) * u];
+    let dd = Math.hypot(F[0], F[1]); const mx = 2 * TH * 0.999;
+    if (dd > mx) { F = [F[0] * mx / dd, F[1] * mx / dd]; dd = mx; }
+    const h = Math.sqrt(Math.max(0, TH * TH - dd * dd / 4));
+    let px = -F[1] / (dd || 1), py = F[0] / (dd || 1); if (px * side < 0) { px = -px; py = -py; }
+    return [[F[0] / 2 + px * h, F[1] / 2 + py * h], F];
+  };
+  const [LK, LF] = leg(p.lfx, p.lfy, -1), [RK, RF] = leg(p.rfx, p.rfy, 1);
+
+  if (d.lvl >= 10) { ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.35 * d.alpha; const bh = 13 * u;
+    ctx.drawImage(tintBeams[2], d.x - 2.6 * u, floor - bh, 5.2 * u, bh); ctx.restore(); }                 // foco propio (leyenda)
+  if (d.lvl >= 7) drawFlames(d.x, floor - dropY, u, t, d.lvl >= 10 ? (t * 140 + d.hue) % 360 : -1, d.alpha);
+  ctx.save();
+  ctx.globalAlpha = d.alpha;
+  ctx.translate(hipX, hipY);
+  if (p.rot) { ctx.translate(0, 0.6 * u); ctx.rotate(p.rot); ctx.translate(0, -0.6 * u); }
+  ctx.scale(Math.sign(p.sx || 1) * Math.max(0.22, Math.abs(p.sx)), 1);
+  const col = d.lvl >= 10 ? `hsl(${(t * 140 + d.hue) % 360},95%,62%)` : d.lvl >= 9 ? `hsl(45,95%,${56 + 10 * Math.sin(t * 4)}%)` : d.guest && !d.coins ? '#bdbdbd' : `hsl(${d.hue},90%,62%)`;   // gris = invitado que no ha regalado
+  // alas (nivel 8+), detrás del cuerpo
+  if (d.lvl >= 8) drawAura(nk, u, t, d.lvl >= 10 ? (t * 140 + d.hue) % 360 : d.lvl >= 9 ? 45 : d.hue, d.alpha);
+  // capa (nivel 5)
+  if (d.lvl >= 5) { const fl = Math.sin(t * 6) * 0.5 * u; ctx.fillStyle = '#c2102a'; ctx.beginPath();
+    ctx.moveTo(sh[0] - 0.9 * u, sh[1]); ctx.lineTo(sh[0] + 0.9 * u, sh[1]); ctx.lineTo(1.7 * u + fl, 1.2 * u); ctx.lineTo(-1.7 * u + fl, 1.2 * u); ctx.closePath(); ctx.fill(); }
+  // cuerpo: contorno oscuro + color
+  const path = new Path2D();
+  path.moveTo(0, 0); path.lineTo(nk[0], nk[1]);
+  path.moveTo(lh[0], lh[1]); path.lineTo(le[0], le[1]); path.lineTo(sh[0], sh[1]); path.lineTo(re[0], re[1]); path.lineTo(rh[0], rh[1]);
+  path.moveTo(LF[0] - 0.65 * u, LF[1]); path.lineTo(LF[0], LF[1]); path.lineTo(LK[0], LK[1]); path.lineTo(0, 0); path.lineTo(RK[0], RK[1]); path.lineTo(RF[0], RF[1]); path.lineTo(RF[0] + 0.65 * u, RF[1]);
+  path.moveTo(lh[0] + 0.01, lh[1]); path.arc(lh[0], lh[1], 0.12 * u, 0, TAU); path.moveTo(rh[0] + 0.01, rh[1]); path.arc(rh[0], rh[1], 0.12 * u, 0, TAU);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 0.6 * u + 5; ctx.stroke(path);
+  const fl = d.flash && t - d.flash < 0.35 ? 1 - (t - d.flash) / 0.35 : 0;
+  ctx.strokeStyle = fl ? `hsl(${d.hue},100%,${62 + 30 * fl}%)` : col; ctx.lineWidth = 0.6 * u; ctx.stroke(path);
+  // cadena de oro con púa (nivel 6+)
+  if (d.lvl >= 6) { const c = [td[0] * 1.9 * u, td[1] * 1.9 * u];
+    ctx.strokeStyle = '#ffd54a'; ctx.lineWidth = 0.16 * u; ctx.beginPath(); ctx.moveTo(sh[0] - 0.55 * u, sh[1] + 0.05 * u); ctx.quadraticCurveTo(c[0] - 0.2 * u, c[1], c[0], c[1]);
+    ctx.quadraticCurveTo(c[0] + 0.2 * u, c[1], sh[0] + 0.55 * u, sh[1] + 0.05 * u); ctx.stroke();
+    ctx.fillStyle = '#e3122b'; ctx.strokeStyle = '#ffd54a'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.moveTo(c[0] - 0.4 * u, c[1] + 0.05 * u);
+    ctx.quadraticCurveTo(c[0], c[1] - 0.15 * u, c[0] + 0.4 * u, c[1] + 0.05 * u); ctx.quadraticCurveTo(c[0] + 0.2 * u, c[1] + 0.6 * u, c[0], c[1] + 0.75 * u);
+    ctx.quadraticCurveTo(c[0] - 0.2 * u, c[1] + 0.6 * u, c[0] - 0.4 * u, c[1] + 0.05 * u); ctx.fill(); ctx.stroke(); }
+  // guitarra en el aire
+  if (d.special === 'guitarrazo' || (d.move === 'guitarra' && !d.special)) {
+    drawGuitar(lh, rh, u);
+    const arms = new Path2D();
+    arms.moveTo(re[0], re[1]); arms.lineTo(rh[0], rh[1]);                      // solo la mano que rasguea va encima; la de los trastes queda detrás del mástil
+    arms.moveTo(rh[0] + 0.01, rh[1]); arms.arc(rh[0], rh[1], 0.12 * u, 0, TAU);
+    ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 0.6 * u + 5; ctx.stroke(arms);
+    ctx.strokeStyle = fl ? `hsl(${d.hue},100%,${62 + 30 * fl}%)` : col; ctx.lineWidth = 0.6 * u; ctx.stroke(arms);
+  }
+  // cabeza
+  ctx.translate(hc[0], hc[1]); ctx.rotate(ha);
+  ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.beginPath(); ctx.arc(0, 0, HR + 3, 0, TAU); ctx.fill();
+  if (d.avatar) ctx.drawImage(d.avatar, -HR, -HR, HR * 2, HR * 2);
+  else { ctx.fillStyle = col; ctx.beginPath(); ctx.arc(0, 0, HR, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#1a1014'; const tired = d.energy <= 0;
+    ctx.fillRect(-0.38 * u, -0.2 * u, 0.16 * u, tired ? 0.06 * u : 0.22 * u); ctx.fillRect(0.22 * u, -0.2 * u, 0.16 * u, tired ? 0.06 * u : 0.22 * u);
+    ctx.beginPath(); ctx.lineWidth = 0.12 * u; ctx.strokeStyle = '#1a1014';
+    if (tired) { ctx.moveTo(-0.3 * u, 0.35 * u); ctx.lineTo(0.3 * u, 0.35 * u); } else ctx.arc(0, 0.12 * u, 0.36 * u, 0.15 * Math.PI, 0.85 * Math.PI);
+    ctx.stroke(); }
+  if (d.lvl >= 2) { ctx.fillStyle = d.lvl >= 4 ? '#111' : '#e3122b'; ctx.fillRect(-HR, -0.55 * u, HR * 2, 0.24 * u); }       // bandana
+  if (d.lvl >= 3) { ctx.fillStyle = d.lvl >= 6 ? '#e8b020' : '#0b0b0f'; ctx.beginPath(); ctx.roundRect(-0.72 * u, -0.28 * u, 0.62 * u, 0.34 * u, 0.1 * u); ctx.roundRect(0.1 * u, -0.28 * u, 0.62 * u, 0.34 * u, 0.1 * u); ctx.fill();
+    ctx.fillRect(-0.15 * u, -0.22 * u, 0.3 * u, 0.08 * u); }
+  if (d.lvl >= 4 && !d.leader) { ctx.fillStyle = '#20151a'; ctx.beginPath(); ctx.ellipse(0, -0.72 * u, 1.45 * u, 0.28 * u, 0, 0, TAU); ctx.fill();
+    ctx.beginPath(); ctx.roundRect(-0.7 * u, -1.65 * u, 1.4 * u, 1.0 * u, 0.25 * u); ctx.fill(); ctx.fillStyle = '#e3122b'; ctx.fillRect(-0.7 * u, -0.98 * u, 1.4 * u, 0.2 * u); }
+  if (d.leader) drawCrown(u, t);
+  if (d.lvl >= 9) { ctx.strokeStyle = '#ffe27a'; ctx.lineWidth = 0.22 * u; ctx.globalAlpha = d.alpha * (0.8 + 0.2 * Math.sin(t * 5)); ctx.beginPath();
+    ctx.ellipse(0, -(d.leader ? 2.35 : d.lvl >= 4 ? 2.0 : 1.35) * u, 0.95 * u, 0.28 * u, 0, 0, TAU); ctx.stroke(); ctx.globalAlpha = d.alpha; }   // aureola
+  ctx.restore();
+  // sudor si está cansado
+  if (d.energy <= 0 && !d.leaving && Math.floor(t * 3) % 2) { ctx.fillStyle = '#7fd3ff'; ctx.globalAlpha = d.alpha;
+    ctx.beginPath(); ctx.arc(hipX + hc[0] + HR + 4, hipY + hc[1] - 4, 0.22 * u, 0, TAU); ctx.fill(); ctx.globalAlpha = 1; }
+  d.hx = hipX + hc[0] * Math.sign(p.sx || 1); d.hy = hipY + hc[1]; d.hr = HR;   // cabeza (para que reboten los regalos)
+  return { floor, sc, hipY, top: hipY + Math.min(hc[1], 0) - HR };
+}
+// guitarra real = emoji 🎸 (se dibuja una vez y se reusa). El emoji viene con el mástil
+// hacia arriba a la derecha; se voltea para que el mástil vaya a la mano izquierda.
+let guitarSprite = null;
+function guitarImg() {
+  if (guitarSprite) return guitarSprite;
+  const c = guitarSprite = document.createElement('canvas'); c.width = c.height = 160; const g = c.getContext('2d');
+  g.translate(160, 0); g.scale(-1, 1);
+  g.font = '128px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('🎸', 80, 88);
+  return c;
+}
+function drawGuitar(lh, rh, u) {
+  const body = [rh[0] * 0.45 + 0.1 * u, rh[1] + 0.6 * u];          // cuerpo de la guitarra junto a la mano que rasguea
+  const dx = lh[0] - body[0], dy = lh[1] - body[1], len = Math.hypot(dx, dy);
+  const S = Math.max(3.0 * u, len * 1.2);
+  ctx.save();
+  ctx.translate((body[0] + lh[0]) / 2, (body[1] + lh[1]) / 2);
+  ctx.rotate(Math.atan2(dy, dx) + Math.PI * 3 / 4);                   // mástil del sprite está a -135°
+  ctx.drawImage(guitarImg(), -S / 2, -S / 2, S, S);
+  ctx.restore();
+}
+// aura: brillo que late alrededor de todo el cuerpo (nivel 8+)
+function drawAura(nk, u, t, hue, alpha) {
+  const pulse = 1 + 0.08 * Math.sin(t * 5), cy = nk[1] * 0.45;
+  ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = 0.85 * alpha;
+  ctx.translate(nk[0] * 0.5, cy); ctx.scale(1, 1.75);
+  const r = 4.2 * u * pulse, g = ctx.createRadialGradient(0, 0, r * 0.15, 0, 0, r);
+  g.addColorStop(0, `hsla(${hue},100%,70%,0.55)`); g.addColorStop(0.55, `hsla(${hue},100%,60%,0.28)`); g.addColorStop(1, `hsla(${hue},100%,55%,0)`);
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(0, 0, r, 0, TAU); ctx.fill();
+  ctx.globalAlpha = 0.6 * alpha; ctx.strokeStyle = `hsla(${(hue + 30) % 360},100%,80%,0.9)`; ctx.lineWidth = 0.14 * u;   // anillos de energía girando
+  ctx.beginPath(); ctx.ellipse(0, 0, r * 0.72, r * 0.72, 0, t * 3, t * 3 + 2.2); ctx.stroke();
+  ctx.beginPath(); ctx.ellipse(0, 0, r * 0.62, r * 0.62, 0, -t * 2.4 + 3, -t * 2.4 + 4.6); ctx.stroke();
+  ctx.restore();
+}
+function drawFlames(x, y, u, t, hue, alpha) {
+  ctx.save(); ctx.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 6; i++) {
+    const k = i / 5 - 0.5, fx = x + k * 3.6 * u, h = (2.3 + 1.1 * Math.sin(t * 9 + i * 1.7) + 0.5 * Math.sin(t * 13 + i)) * u * (1 - Math.abs(k) * 0.6), w = 0.55 * u;
+    const sway = Math.sin(t * 7 + i * 2) * 0.35 * u;
+    ctx.globalAlpha = 0.75 * alpha;
+    ctx.fillStyle = hue >= 0 ? `hsl(${(hue + i * 30) % 360},100%,55%)` : (i % 2 ? '#ff5a1f' : '#ff8a1f');
+    ctx.beginPath(); ctx.moveTo(fx - w, y); ctx.quadraticCurveTo(fx - w * 0.8, y - h * 0.5, fx + sway, y - h); ctx.quadraticCurveTo(fx + w * 0.8, y - h * 0.5, fx + w, y); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = hue >= 0 ? 'rgba(255,255,255,0.7)' : '#ffd54a'; ctx.globalAlpha = 0.8 * alpha;
+    ctx.beginPath(); ctx.moveTo(fx - w * 0.45, y); ctx.quadraticCurveTo(fx, y - h * 0.35, fx + sway * 0.5, y - h * 0.55); ctx.quadraticCurveTo(fx + w * 0.3, y - h * 0.3, fx + w * 0.45, y); ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+function drawCrown(u, t) {
+  const y = -0.85 * u, w = 1.5 * u, h = 0.95 * u;
+  ctx.fillStyle = '#ffd54a'; ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(-w / 2, y); ctx.lineTo(-w / 2, y - h * 0.6); ctx.lineTo(-w / 4, y - h * 0.25); ctx.lineTo(0, y - h);
+  ctx.lineTo(w / 4, y - h * 0.25); ctx.lineTo(w / 2, y - h * 0.6); ctx.lineTo(w / 2, y); ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#e3122b'; ctx.beginPath(); ctx.arc(0, y - 0.3 * u, 0.14 * u, 0, TAU); ctx.fill();
+}
+
+let floorTiles = null;
+function drawFloor(t, b, fiesta, active) {
+  if (!CFG.lights) return;
+  const y = FLOOR + 4, n = 14, tw = W / n;
+  if (!floorTiles) { floorTiles = document.createElement('canvas'); floorTiles.width = W; floorTiles.height = 46; const g = floorTiles.getContext('2d');
+    const gr = g.createLinearGradient(0, 0, 0, 46); gr.addColorStop(0, 'rgba(20,10,20,0.55)'); gr.addColorStop(1, 'rgba(20,10,20,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, W, 46); g.fillStyle = 'rgba(255,255,255,0.65)'; g.fillRect(0, 0, W, 3); }
+  ctx.drawImage(floorTiles, 0, y);
+  if (!active) return;
+  const k = Math.floor(b), f = 1 - (b % 1);
+  for (let i = 0; i < n; i++) {
+    const on = fiesta ? (i + k) % 3 === 0 : (i * 7 + k * 3) % 5 === 0;
+    if (!on) continue;
+    ctx.fillStyle = `hsla(${fiesta ? (i * 40 + k * 30) % 360 : 350},95%,60%,${(fiesta ? 0.5 : 0.28) * f})`;
+    ctx.fillRect(i * tw + 3, y + 3, tw - 6, 16);
+  }
+}
+/* ════════════════ REGALOS (entrada en parábola como Rosas 7, en 2D) ════════════════
+   El regalo sale desde abajo (el celular del espectador), grande y girando, hace el arco
+   hacia su bailarín y cae con física. Se apila en el piso DETRÁS de los bailarines
+   (pila bajita para no taparlos). Al caer, los bailarines de al lado rebotan; un regalo
+   grande hace saltar a todos.                                                          */
+const GC = {
+  size: 42 * SC * num('regalo', 1),   // radio de un regalo de 1 moneda (px) · ?regalo=1.3 los agranda
+  maxMult: 2.6, gravity: 1800, bounce: 0.25, friction: 0.35, overlap: 0.62, popBounce: 0.55,
+  max: Math.round(num('maxregalos', 60)), life: num('vida', 90), pileMax: 185 * SC,
+  maxPerGift: 30, gapMs: 90, bigCoins: 100,
+  ficha: Q.get('ficha') === '0' ? 'off' : Q.get('ficha') === 'vuelo' ? 'vuelo' : 'siempre',   // 3D también en el piso, como Rosas 7 (por defecto) · ?ficha=vuelo = 3D solo al volar · ?ficha=0 = 2D
+  grosor: 0.22, inclina: 28,
+};
+// tamaño de entrada = Rosas 7 (radio 0,09 del ancho × 3,4 al salir) aunque en la pista queden chicos
+GC.vis0 = (1080 * 0.09 * 3.4) / GC.size;
+/* ── Matrices 3×3 para las fichas 3D (igual que Rosas 7) ── */
+const mmul = (a, b) => [
+  a[0] * b[0] + a[1] * b[3] + a[2] * b[6], a[0] * b[1] + a[1] * b[4] + a[2] * b[7], a[0] * b[2] + a[1] * b[5] + a[2] * b[8],
+  a[3] * b[0] + a[4] * b[3] + a[5] * b[6], a[3] * b[1] + a[4] * b[4] + a[5] * b[7], a[3] * b[2] + a[4] * b[5] + a[5] * b[8],
+  a[6] * b[0] + a[7] * b[3] + a[8] * b[6], a[6] * b[1] + a[7] * b[4] + a[8] * b[7], a[6] * b[2] + a[7] * b[5] + a[8] * b[8]];
+const IDM = () => [1, 0, 0, 0, 1, 0, 0, 0, 1];
+const rotY = t => { const c = Math.cos(t), s = Math.sin(t); return [c, 0, s, 0, 1, 0, -s, 0, c]; };
+const rotX = t => { const c = Math.cos(t), s = Math.sin(t); return [1, 0, 0, 0, c, -s, 0, s, c]; };
+function rotAxis(x, y, z, t) { const c = Math.cos(t), s = Math.sin(t), k = 1 - c;
+  return [c + x * x * k, x * y * k - z * s, x * z * k + y * s, y * x * k + z * s, c + y * y * k, y * z * k - x * s, z * x * k - y * s, z * y * k + x * s, c + z * z * k]; }
+function ortho(m) { let ax = m[0], ay = m[3], az = m[6], l = Math.hypot(ax, ay, az) || 1; ax /= l; ay /= l; az /= l;
+  let bx = m[1], by = m[4], bz = m[7]; const d = ax * bx + ay * by + az * bz; bx -= d * ax; by -= d * ay; bz -= d * az;
+  l = Math.hypot(bx, by, bz) || 1; bx /= l; by /= l; bz /= l;
+  return [ax, bx, ay * bz - az * by, ay, by, az * bx - ax * bz, az, bz, ax * by - ay * bx]; }
+const gifts = [], gparts = [];
+let gPending = 0;
+const gSprites = {};
+const SPRG = 112;
+function gTint(draw, fill) { const c = document.createElement('canvas'); c.width = c.height = SPRG; const x = c.getContext('2d'); draw(x);
+  x.globalCompositeOperation = 'source-atop'; x.fillStyle = fill; x.fillRect(0, 0, SPRG, SPRG); return c; }
+const gParts = draw => ({ edge: gTint(draw, 'rgba(45,25,10,.6)'), back: gTint(draw, 'rgba(15,8,20,.35)') });
+function gMake(draw) { const c = document.createElement('canvas'); c.width = c.height = SPRG; const x = c.getContext('2d');
+  x.shadowColor = 'rgba(0,0,0,.45)'; x.shadowBlur = 7; x.shadowOffsetY = 3; draw(x); return c; }
+const gRose = x => { x.font = `${SPRG * 0.7}px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",serif`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('🌹', SPRG / 2, SPRG / 2 + 4); };
+const gFallback = gMake(gRose), gFallbackTok = gParts(gRose);
+function gToken(url) { const s = url && gSprites[url]; return s && s.tok ? s.tok : gFallbackTok; }
+function gSprite(url) {
+  if (!url) return gFallback;
+  let s = gSprites[url];
+  if (!s) { s = gSprites[url] = { c: null };
+    const img = new Image(); img.crossOrigin = 'anonymous';
+    img.onload = () => { const dr = x => x.drawImage(img, 8, 6, SPRG - 16, SPRG - 16); s.c = gMake(dr); s.tok = gParts(dr); wake(); };
+    img.onerror = () => { if (img.crossOrigin) { img.crossOrigin = null; img.src = url; } };
+    img.src = url; }
+  return s.c || gFallback;
+}
+const gShadow = (() => { const c = document.createElement('canvas'); c.width = 128; c.height = 32; const x = c.getContext('2d'), g = x.createRadialGradient(64, 64, 2, 64, 64, 64);
+  g.addColorStop(0, 'rgba(0,0,0,.45)'); g.addColorStop(1, 'rgba(0,0,0,0)'); x.fillStyle = g; x.scale(1, 0.25); x.fillRect(0, 0, 128, 128); return c; })();
+const gRand = (a, b) => a + R() * (b - a);
+const easeOut3 = t => 1 - Math.pow(1 - t, 3);
+const easeOutBack = x => { const c1 = 1.70158, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+
+function gSpawn(url, coins, targetX, hue) {
+  if (gifts.length >= GC.max) gFadeOldest(3);
+  const r = GC.size * Math.min(GC.maxMult, 1 + 0.45 * Math.log10(Math.max(1, coins))) * gRand(0.9, 1.1);
+  const tx = clamp(targetX + gRand(-70, 70) * SC, 30 + r, W - 30 - r);
+  const sx = W / 2 + gRand(-0.28, 0.28) * W;
+  const b = { x: sx, y: 1920 - BAND_TOP + r * 3, vx: 0, vy: 0, r, m: r * r, a: gRand(0, 6.28), av: gRand(-4, 4), url, coins, hue,
+    born: now(), rest: 0, sleep: false, fade: 0, landed: false, hits: 0, sq: 0, sqv: 0, pvy: 0,
+    thr: { t0: now(), dur: gRand(0.75, 1.0), sx, sy: 1920 - BAND_TOP + r * 3, tx, ty: FLOOR - gRand(520, 820) * SC, spin: gRand(-14, 14) } };
+  if (GC.ficha !== 'off') { const ang = gRand(0, 6.28); b.T = rotAxis(Math.cos(ang), Math.sin(ang), 0, gRand(0.2, 1.1));
+    b.wy = gRand(9, 16) * (R() < 0.5 ? -1 : 1); b.wx = gRand(-2.5, 2.5); }
+  gifts.push(b); wake();
+}
+function gFadeOldest(n) { gifts.filter(b => !b.fade && !b.thr).sort((a, b) => a.born - b.born).slice(0, n).forEach(b => b.fade = now()); }
+// combos: caen mientras el combo sigue (un regalo por cada uno nuevo, con tope)
+const gStreak = {};
+function dropGifts(key, url, coins, newCount, targetX, hue) {
+  const done = gStreak[key] || 0, n = Math.max(0, Math.min(GC.maxPerGift - done, newCount));
+  gStreak[key] = done + newCount; setTimeout(() => { if (gStreak[key] === done + newCount) delete gStreak[key]; }, 6000);
+  for (let i = 0; i < n; i++) { gPending++; setTimeout(() => { gPending--; gSpawn(url, coins, targetX(), hue); }, i * GC.gapMs); }
+}
+function gImpact(b, y) {
+  if (b.landed) return; b.landed = true;
+  for (let i = 0; i < 9 + Math.min(10, Math.round(Math.log10(Math.max(1, b.coins)) * 4)); i++) {
+    const a = gRand(0, 6.28), sp = gRand(60, 200);
+    gparts.push({ x: b.x, y: y - b.r * 0.3, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 60, life: gRand(0.35, 0.6), max: 0.6, s: gRand(b.r * 0.12, b.r * 0.28), h: b.hue + gRand(-30, 30) });
+  }
+  const t = now();
+  if (b.coins >= GC.bigCoins) { for (const d of dancers) if (!d.leaving && d.energy > 0 && !d.special) doSpecial(d, 'salto', t); }   // regalo grande: saltan todos
+  else for (const d of dancers) if (!d.leaving && Math.abs(d.x - b.x) < 90 * SC && !d.special) d.land = t;                         // el de al lado rebota
+  // los regalos vecinos de la pila saltan (palomitas)
+  const Rr = b.coins >= GC.bigCoins ? W : b.r * 3.2;
+  for (const n of gifts) { if (n === b || n.thr || n.fade) continue; const dd = Math.hypot(n.x - b.x, n.y - b.y); if (dd > Rr) continue;
+    const s = 800 * (1 - dd / Rr) * gRand(0.6, 1.1) * (b.coins >= GC.bigCoins ? 0.8 : 1); if (s < 60) continue;
+    n.sleep = false; n.rest = 0; n.vy = Math.min(n.vy, -s); n.vx += gRand(-1, 1) * s * 0.25; n.av += gRand(-8, 8); n.sqv -= Math.min(6, s * 0.006); n.hits = Math.min(n.hits, 1);
+    if (GC.ficha === 'siempre') { n.T = n.T || IDM(); n.wy = (n.wy || 0) + gRand(-1, 1) * Math.min(9, s * 0.012); n.wx = (n.wx || 0) + gRand(-2, 2); } }
+}
+function giftsBusy() { return gPending > 0 || gparts.length > 0 || gifts.some(b => !b.sleep || b.fade || b.sq || b.thr || b.tilting); }
+// giro de la ficha 3D y asentarse mirando a la cámara: en modo 'vuelo' termina plana (2D, más liviano)
+function updateTilt(b, dt) {
+  b.tilting = false; if (!b.T) return;
+  const settled = !b.thr && (b.landed || b.hits > 0 || b.sleep || b.rest > 0.1);
+  if (b.wx || b.wy) { b.T = mmul(b.T, rotY(b.wy * dt)); if (b.wx) b.T = mmul(b.T, rotX(b.wx * dt));
+    const damp = b.thr ? 1 : Math.pow(settled ? 0.04 : 0.7, dt); b.wx *= damp; b.wy *= damp; if (Math.abs(b.wx) + Math.abs(b.wy) < 0.08) b.wx = b.wy = 0;
+    b.T = ortho(b.T); b.tilting = true; }
+  if (settled) { const nx = b.T[2], ny = b.T[5], th = Math.acos(clamp(b.T[8], -1, 1)), lim = GC.ficha === 'siempre' ? GC.inclina * Math.PI / 180 : 0;
+    if (th > lim + 0.01) { let ax = ny, ay = -nx; const l = Math.hypot(ax, ay); if (l < 1e-4) { ax = 1; ay = 0; } else { ax /= l; ay /= l; }
+      b.T = mmul(rotAxis(ax, ay, 0, Math.min(th - lim, (b.sleep ? 3 : 5) * dt)), b.T); b.tilting = true; }
+    else if (!lim && !b.wx && !b.wy) { b.a += Math.atan2(b.T[3], b.T[0]); b.T = null; } }
+}
+function drawToken(b, spr, sc) {
+  const T = b.T, c = Math.cos(b.a), s = Math.sin(b.a), r = b.r * sc;
+  const e0 = (c * T[0] - s * T[3]) * r, e1 = (s * T[0] + c * T[3]) * r, f0 = (c * T[1] - s * T[4]) * r, f1 = (s * T[1] + c * T[4]) * r;
+  const th = GC.grosor * r, front = T[8] >= 0;
+  const dx = (c * T[2] - s * T[5]) * th * (front ? 1 : -1), dy = (s * T[2] + c * T[5]) * th * (front ? 1 : -1);
+  const len = Math.hypot(dx, dy), layers = len < 0.7 ? 0 : Math.min(14, Math.ceil(len / (1.1 + 2 * Math.abs(T[8]))));
+  const B = ctx.getTransform(), tok = gToken(b.url);
+  for (let i = 0; i <= layers; i++) { const k = layers ? i / layers - 0.5 : 0.5, ox = dx * k, oy = dy * k, last = i === layers;
+    ctx.setTransform(B.a * e0 + B.c * e1, B.b * e0 + B.d * e1, B.a * f0 + B.c * f1, B.b * f0 + B.d * f1, B.a * ox + B.c * oy + B.e, B.b * ox + B.d * oy + B.f);
+    ctx.drawImage(last ? (front ? spr : tok.back) : tok.edge, -1, -1, 2, 2); }
+  ctx.setTransform(B);
+}
+function updateGifts(dt) {
+  const tn = now();
+  for (const b of gifts) {                                   // vuelo en parábola
+    const T = b.thr; if (!T) continue;
+    const q = Math.min(1, (tn - T.t0) / T.dur), e = easeOut3(q), px = b.x, py = b.y;
+    b.x = T.sx + (T.tx - T.sx) * e;
+    b.y = T.sy + (T.ty - T.sy) * e - 307 * Math.sin(Math.PI * q);
+    b.a += T.spin * (1 - q) * 0.016;
+    b.vis = 1 + (GC.vis0 - 1) * (1 - e);               // entra del mismo tamaño que en Rosas 7 y se achica hasta la pista lejana
+    if (q >= 1) { b.thr = null; b.vis = 1; b.vx = (b.x - px) / Math.max(dt, 0.008); b.vy = Math.max(60, (b.y - py) / Math.max(dt, 0.008)); b.av = T.spin * 0.2; }
+  }
+  for (const b of gifts) { if (b.sleep || b.thr) continue; b.vy += GC.gravity * dt; b.vx *= 0.999; b.av *= 0.985; b.x += b.vx * dt; b.y += b.vy * dt; b.a += b.av * dt; }
+  // choques (rejilla)
+  const cell = GC.size * GC.maxMult * 2, grid = new Map();
+  for (let i = 0; i < gifts.length; i++) { const b = gifts[i]; if (b.fade || b.thr) continue; const k = Math.floor(b.x / cell) + ',' + Math.floor(b.y / cell); (grid.get(k) || grid.set(k, []).get(k)).push(i); }
+  for (let it = 0; it < 3; it++) for (let i = 0; i < gifts.length; i++) {
+    const a = gifts[i]; if (a.fade || a.thr) continue;
+    const cx = Math.floor(a.x / cell), cy = Math.floor(a.y / cell);
+    for (let gx = cx - 1; gx <= cx + 1; gx++) for (let gy = cy - 1; gy <= cy + 1; gy++) {
+      const list = grid.get(gx + ',' + gy); if (!list) continue;
+      for (const j of list) { if (j <= i) continue; const b = gifts[j]; if (b.fade || b.thr || (a.sleep && b.sleep)) continue;
+        const dx = b.x - a.x, dy = b.y - a.y, mn = (a.r + b.r) * GC.overlap, d2 = dx * dx + dy * dy; if (d2 >= mn * mn || d2 === 0) continue;
+        const d = Math.sqrt(d2), nx = dx / d, ny = dy / d, over = mn - d;
+        const ia = a.sleep ? 0 : 1 / a.m, ib = b.sleep ? 0 : 1 / b.m, s = ia + ib; if (!s) continue;
+        a.x -= nx * over * ia / s; a.y -= ny * over * ia / s; b.x += nx * over * ib / s; b.y += ny * over * ib / s;
+        const rvx = b.vx - a.vx, rvy = b.vy - a.vy, vn = rvx * nx + rvy * ny;
+        if (vn < 0) { const j2 = -(1 + GC.bounce) * vn / s;
+          a.vx -= j2 * nx * ia; a.vy -= j2 * ny * ia; b.vx += j2 * nx * ib; b.vy += j2 * ny * ib;
+          const tx = -ny, ty = nx, vt = rvx * tx + rvy * ty; let jt = -vt / s; const lim = GC.friction * j2; jt = clamp(jt, -lim, lim);
+          a.vx -= jt * tx * ia; a.vy -= jt * ty * ia; b.vx += jt * tx * ib; b.vy += jt * ty * ib;
+          a.av -= vt / a.r * 0.15; b.av += vt / b.r * 0.15; a.contact = b.contact = true;
+          if (Math.abs(vn) > 250) { a.sleep = false; b.sleep = false; }
+          if (-vn > 300) { if (!a.landed && a.vy > b.vy) gImpact(a, a.y + a.r * 0.5); else if (!b.landed && b.vy > a.vy) gImpact(b, b.y + b.r * 0.5); }
+          if (-vn > 150) { a.sqv += Math.min(5, -vn * 0.003); b.sqv += Math.min(5, -vn * 0.003); } } }
+    }
+  }
+  for (const b of gifts) {                                    // piso y paredes
+    if (b.sleep || b.fade || b.thr) continue;
+    const k = GC.overlap;
+    if (b.y + b.r * k > FLOOR) { const hit = b.vy; b.y = FLOOR - b.r * k;
+      const e = (hit > 120 && b.hits < 3) ? GC.popBounce * Math.pow(0.55, b.hits) : GC.bounce; if (b.vy > 0) b.vy = -b.vy * e;
+      if (hit > 120) { b.hits++; b.sqv += Math.min(9, hit * 0.006); }
+      b.vx *= 0.9; b.av = b.av * 0.6 + (b.vx / b.r) * 0.4;
+      if (!b.landed && hit > 300) gImpact(b, FLOOR - 4); }
+    if (b.x - b.r * k < 10) { b.x = 10 + b.r * k; b.vx = Math.abs(b.vx) * GC.bounce; }
+    if (b.x + b.r * k > W - 10) { b.x = W - 10 - b.r * k; b.vx = -Math.abs(b.vx) * GC.bounce; }
+    if (!b.landed && b.pvy > 300 && b.vy < b.pvy * 0.35) gImpact(b, b.y + b.r * 0.5);
+    b.pvy = b.vy;
+    if (b.contact) b.av *= 0.9; b.contact = false;
+    b.rest = Math.abs(b.vx) + Math.abs(b.vy) < 40 ? b.rest + dt : 0;
+    if (b.rest > 0.6) { b.sleep = true; b.vx = b.vy = b.av = 0; }
+  }
+  for (const b of gifts) updateTilt(b, dt);
+  for (const b of gifts) { if (!b.sq && !b.sqv) continue; b.sqv += (-b.sq * 180 - b.sqv * 14) * dt; b.sq += b.sqv * dt * 0.06;
+    b.sq = clamp(b.sq, -0.35, 0.35); if (Math.abs(b.sq) < 0.003 && Math.abs(b.sqv) < 0.05) { b.sq = 0; b.sqv = 0; } }
+  // pila bajita (no tapa a los bailarines), vida y desvanecer
+  if (gifts.some(b => b.sleep && !b.fade && b.y - b.r < FLOOR - GC.pileMax)) gFadeOldest(2);
+  for (const b of gifts) if (!b.fade && !b.thr && tn - b.born > GC.life) b.fade = tn;
+  for (let i = gifts.length - 1; i >= 0; i--) if (gifts[i].fade && tn - gifts[i].fade > 0.6) gifts.splice(i, 1);
+  if (gifts.some(b => b.fade)) for (const b of gifts) if (b.sleep && !b.fade) { b.sleep = false; b.rest = 0; }
+  for (const p of gparts) { p.vy += 300 * dt; p.vx *= 0.94; p.vy *= 0.94; p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; }
+  for (let i = gparts.length - 1; i >= 0; i--) if (gparts[i].life <= 0) gparts.splice(i, 1);
+}
+function drawGift(b, tn) {
+  const f = b.fade ? 1 - (tn - b.fade) / 0.6 : 1, sc = (b.fade ? 0.6 + 0.4 * f : 1) * (b.vis || 1), spr = gSprite(b.url), q = b.sq || 0;
+  if (b.thr) { const T = b.thr, t = Math.min(1, (tn - T.t0) / T.dur);                   // estela
+    for (let k = 3; k >= 1; k--) { const tk = Math.max(0, t - k * 0.05), ek = easeOut3(tk);
+      const gx = T.sx + (T.tx - T.sx) * ek, gy = T.sy + (T.ty - T.sy) * ek - 307 * Math.sin(Math.PI * tk), gs = 1 + (GC.vis0 - 1) * (1 - ek);
+      ctx.globalAlpha = 0.12 * (4 - k); ctx.drawImage(spr, gx - b.r * gs, gy - b.r * gs, b.r * 2 * gs, b.r * 2 * gs); } }
+  ctx.globalAlpha = Math.max(0, f);
+  ctx.save(); ctx.translate(b.x, b.y + b.r * q * 0.6); if (q) ctx.scale(1 + q, 1 - q);
+  if (b.T) drawToken(b, spr, sc); else { ctx.rotate(b.a); ctx.scale(sc, sc); ctx.drawImage(spr, -b.r, -b.r, b.r * 2, b.r * 2); }
+  ctx.restore(); ctx.globalAlpha = 1;
+}
+function drawGiftPile(tn) {                                   // sombras + pila (detrás de los bailarines)
+  for (const b of gifts) { if (b.thr) continue; const gap = FLOOR - (b.y + b.r * GC.overlap); if (gap > b.r * 2) continue;
+    ctx.globalAlpha = Math.max(0, 1 - gap / (b.r * 2)) * (b.fade ? 0.4 : 0.8); ctx.drawImage(gShadow, b.x - b.r * 1.1, FLOOR - b.r * 0.22, b.r * 2.2, b.r * 0.55); }
+  ctx.globalAlpha = 1;
+  for (const b of gifts) if (!b.thr) drawGift(b, tn);
+}
+function drawGiftFlying(tn) {                                 // lo que viene volando va delante de todo
+  for (const b of gifts) if (b.thr) drawGift(b, tn);
+  for (const p of gparts) { const k = p.life / p.max; ctx.globalAlpha = Math.max(0, k) * 0.95; ctx.fillStyle = `hsl(${p.h},95%,65%)`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.s * (0.5 + k * 0.5), 0, TAU); ctx.fill(); }
+  ctx.globalAlpha = 1;
+}
+
+/* ════════════════ PISTA LIBRE: a dónde va cada uno ════════════════ */
+const EDGE = 58, SPEED = { caminar: 230, trote: 360, moonwalk: 150, deslizar: 280 };
+function freeGift(d) {                                 // regalo quieto en el piso, cerca, que nadie está pateando
+  let best = null, bd = 380 * SC;
+  for (const g of gifts) { if (g.thr || g.fade || !g.sleep || g.kicked || g.y < FLOOR - g.r * 1.6) continue; const dd = Math.abs(g.x - d.x); if (dd < bd) { bd = dd; best = g; } }
+  return best;
+}
+function pickGoal(d, t) {
+  const r = R(), lvl = d.lvl || 0;
+  const zPref = d.leader ? 0.05 : d.guest && !d.coins ? 0.35 + R() * 0.65 : R() * 0.55;
+  const g = d.z < 0.5 ? freeGift(d) : null;
+  if (d.leader) { d.goal = { k: 'ir', x: 540 + (R() - 0.5) * 300, z: 0, mv: R() < 0.5 ? 'moonwalk' : 'deslizar' }; return; }
+  if (g && r < 0.35) { d.goal = { k: 'patear', g }; g.kicked = d; return; }
+  if (r >= 0.35 && r < 0.45) { const side = d.x < 540 ? -1 : 1; d.goal = { k: 'pared', side }; return; }
+  if (r < 0.68) { const o = dancers.find(o => o !== d && !o.leaving && !o.goal && !o.special && o.energy > 0 && o.drop <= 0 && Math.abs(o.z - d.z) < 0.3 && Math.abs(o.x - d.x) < 420 * SC);
+    if (o) { d.goal = { k: 'chocar', o }; o.goal = { k: 'chocar', o: d }; return; } }
+  // a dónde ir: entre varios lugares al azar, el menos lleno (así se reparten por toda la pista)
+  let x = d.x, best = 1e9;
+  for (let k = 0; k < 6; k++) { const cx = clamp(d.x + (R() < 0.5 ? -1 : 1) * (150 + R() * 480) * SC, EDGE + 30, W - EDGE - 30);
+    let c = 0; for (const o of dancers) if (o !== d && !o.leaving && Math.abs(o.z - zPref) < 0.35) c += Math.max(0, 1 - Math.abs(o.x - cx) / (160 * SC));
+    if (c < best) { best = c; x = cx; } }
+  d.goal = { k: 'ir', x, z: zPref, mv: lvl >= 3 && R() < 0.35 ? 'rueda' : pick(['caminar', 'trote', 'moonwalk', 'deslizar']) };
+}
+function endGoal(d, t) { if (d.goal && d.goal.g) d.goal.g.kicked = null; d.goal = null; d.next = t + 3 + R() * 5; }
+// devuelve el paso de viaje (o null si está bailando en su lugar)
+function brain(d, t, dt) {
+  if (d.drop > 0 || d.energy <= 0) { if (d.goal) endGoal(d, t); return null; }
+  if (d.special) return null;
+  if (!d.goal && t > (d.crowdAt || 0)) { d.crowdAt = t + 1.5;                   // muy apretado: se busca otro lugar antes
+    let c = 0; for (const o of dancers) if (o !== d && !o.leaving && Math.abs(o.z - d.z) < 0.35) c += Math.max(0, 1 - Math.abs(o.x - d.x) / (110 * SC));
+    if (c > 1.2) d.next = Math.min(d.next, t); }
+  if (!d.goal) { if (t > d.next) pickGoal(d, t); if (!d.goal) return null; }
+  const G = d.goal;
+  let tx, tz = d.z, mv = 'caminar', near = 14;
+  if (G.k === 'ir') { tx = G.x; tz = G.z; mv = G.mv; }
+  else if (G.k === 'pared') { tx = G.side < 0 ? EDGE : W - EDGE; mv = 'trote'; near = 6; }
+  else if (G.k === 'patear') { const g = G.g; if (!gifts.includes(g) || g.fade || !g.sleep) { endGoal(d, t); return null; }
+    const side = d.x < g.x ? -1 : 1; tx = g.x + side * (g.r * 0.7 + 34 * SC); tz = Math.min(d.z, 0.15); near = 10; }
+  else if (G.k === 'chocar') { const o = G.o; if (o.leaving || o.energy <= 0 || !o.goal || o.goal.o !== d) { endGoal(d, t); return null; }
+    tx = o.x + (d.x < o.x ? -1 : 1) * 78 * SC * zScale(d.z); tz = (d.z + o.z) / 2; near = 10; }
+  if (mv === 'rueda') { const dir = Math.sign(tx - d.x) || 1; d.face = dir; doSpecial(d, 'rueda', t); d.vx = dir * 400 * SC; d.goal = null; d.next = t + 3 + R() * 4; return null; }
+  const dx = tx - d.x, dz = tz - d.z;
+  d.z = clamp(d.z + clamp(dz, -0.45 * dt, 0.45 * dt), 0, 1);
+  if (Math.abs(dx) <= near) {                                   // llegó
+    if (G.k === 'pared') { d.face = G.side; doSpecial(d, 'pared', t); d.wallPush = G.side; endGoal(d, t); burst(d.x + G.side * 30 * SC, zFloor(d.z) - 120 * SC, 6, 50, 'polvo'); return null; }
+    if (G.k === 'patear') { d.face = Math.sign(G.g.x - d.x) || 1; doSpecial(d, 'patada', t); d.kick = { g: G.g, at: t + 0.42 * 60 / bpm * 1.5 }; d.goal = null; d.next = t + 4 + R() * 4; return null; }
+    if (G.k === 'chocar') { const o = G.o; d.face = Math.sign(o.x - d.x) || 1;
+      if (o.goal && Math.abs(o.x - (d.x + d.face * 78 * SC * zScale(d.z))) < 40 * SC) { o.face = -d.face; doSpecial(d, 'chocar', t); doSpecial(o, 'chocar', t);
+        d.five = { at: t + 0.45 * 60 / bpm * 2, o }; endGoal(o, t); endGoal(d, t); }
+      return null; }
+    endGoal(d, t); return null;
+  }
+  const dir = Math.sign(dx), sp = (SPEED[mv] || 230) * SC * zScale(d.z);
+  d.x += dir * Math.min(Math.abs(dx), sp * dt);
+  d.face = mv === 'moonwalk' ? -dir : mv === 'deslizar' ? dir : dir;
+  return mv;
+}
+function physicsFree(t, dt) {
+  const live = dancers.filter(d => !d.leaving && d.drop <= 0);
+  // empuje suave para no encimarse (solo si están a profundidad parecida)
+  for (let i = 0; i < live.length; i++) for (let j = i + 1; j < live.length; j++) {
+    const a = live[i], b = live[j]; if (Math.abs(a.z - b.z) > 0.4) continue;
+    const mn = 76 * SC * zScale((a.z + b.z) / 2), dx = b.x - a.x; if (Math.abs(dx) >= mn) continue;
+    const push = (mn - Math.abs(dx)) * Math.min(1, dt * 5) / 2, s = dx === 0 ? (R() < 0.5 ? -1 : 1) : Math.sign(dx);
+    a.x -= s * push; b.x += s * push; }
+  for (const d of live) {
+    if (d.vx) { d.x += d.vx * dt; if (!d.special || d.special !== 'rueda') d.vx *= Math.pow(0.02, dt); if (Math.abs(d.vx) < 5) d.vx = 0; }
+    // bordes de la pantalla: rebota (si venía rápido da un giro y polvo)
+    if (d.x < EDGE || d.x > W - EDGE) { const side = d.x < EDGE ? -1 : 1; d.x = side < 0 ? EDGE : W - EDGE;
+      if (Math.abs(d.vx) > 150 * SC) { d.vx = -d.vx * 0.5; burst(d.x + side * 24 * SC, zFloor(d.z) - 60 * SC, 8, 40, 'polvo'); if (!d.special) doSpecial(d, 'giro', t); }
+      else d.vx = 0; }
+    // después de apoyarse en la pared, se impulsa hacia el centro
+    if (d.wallPush && d.special !== 'pared') { d.vx = -d.wallPush * 520 * SC; d.face = -d.wallPush; d.wallPush = 0; }
+    // patada: el regalo sale volando
+    if (d.kick && t >= d.kick.at) { const g = d.kick.g; d.kick = null;
+      if (gifts.includes(g) && !g.fade) { g.sleep = false; g.rest = 0; g.hits = 0; g.landed = false; g.vx = d.face * gRand(650, 950); g.vy = -gRand(650, 950); g.av = d.face * gRand(8, 14); g.kicked = null; g.sqv += 4;
+        burst(g.x, g.y, 10, g.hue || 40, 'chispa'); } }
+    // choque de manos: chispas entre los dos
+    if (d.five && t >= d.five.at) { const o = d.five.o; d.five = null; if (!o.leaving) burst((d.x + o.x) / 2, zFloor(d.z) - 175 * SC * zScale(d.z), 16, 50, 'chispa'); }
+    // al caminar por encima de un regalo quieto lo empuja un poco
+    if (d.z < 0.35) for (const g of gifts) { if (g.thr || g.fade || !g.sleep || g.y < FLOOR - g.r * 1.6 || g.kicked) continue;
+      if (Math.abs(g.x - d.x) < g.r * 0.6 + 14 * SC && t - (g.nudge || 0) > 0.6) { g.nudge = t; g.sleep = false; g.rest = 0; g.vx = (Math.sign(g.x - d.x) || 1) * gRand(160, 260); g.vy = -gRand(140, 240); g.av = gRand(-6, 6); } }
+  }
+}
+// regalos que caen sobre una cabeza: rebotan (y el bailarín se marea o lo cabecea)
+function headBounces(t) {
+  for (const b of gifts) { if (b.thr || b.fade || b.sleep || b.vy < 150 || (b.heads || 0) >= 2) continue;
+    for (const d of dancers) { if (d.leaving || d.drop > 0 || d.hy == null || d.z > 0.6) continue;
+      const rr = b.r * GC.overlap + d.hr, dx = b.x - d.hx, dy = b.y - d.hy; if (dx * dx + dy * dy > rr * rr || dy > 0) continue;
+      b.heads = (b.heads || 0) + 1; b.y = d.hy - rr; b.vy = -Math.max(420, b.vy * 0.75); b.vx += dx * 6 + gRand(-80, 80); b.av += gRand(-10, 10); b.sqv += 3;
+      if (!d.special) doSpecial(d, d.lvl >= 3 || R() < 0.5 ? 'salto' : 'mareo', t);
+      burst(d.hx, d.hy - d.hr, 8, 55, 'chispa'); break; } }
+}
+
+/* ════════════════ BUCLE ════════════════ */
+let running = false, lastT = now(), lastSave = 0, lastHelp = -999, lastFrame = 0;
+function wake() { dirty = true; if (!running) { running = true; lastT = now(); requestAnimationFrame(frame); } }
+function frame() {
+  const t = now();
+  if (CFG.fps > 0 && t - lastFrame < 1 / CFG.fps - 0.002) { requestAnimationFrame(frame); return; }
+  lastFrame = t;
+  const dt = Math.min(0.1, t - lastT); lastT = t;
+  update(t, dt);
+  updateGifts(dt);
+  headBounces(t);
+  render(t);
+  if (t - lastSave > 3) { lastSave = t; save(); }
+  const idle = !dancers.length && !parts.length && !floats.length && !inFiesta(t) && !giftsBusy();
+  if (idle && !Q.has('demo')) { running = false; render(t); return; }     // nada que animar → se detiene (0% CPU)
+  requestAnimationFrame(frame);
+}
+function update(t, dt) {
+  const fiesta = inFiesta(t), b = beats(t);
+  if (t - lastRank > 2.5) { lastRank = t; arrange(); }
+  for (let i = dancers.length - 1; i >= 0; i--) {
+    const d = dancers[i];
+    if (d.drop > 0) { d.drop = Math.max(0, d.drop - dt * 2.2); if (!d.drop) { d.land = t; burst(d.x, zFloor(d.z), 10, 30, 'polvo'); } }
+    if (d.leaving) { if (t > d.leaving) { d.alpha -= dt * 3; if (d.alpha <= 0) { burst(d.x, FLOOR - 90 * SC, 14, d.hue, 'chispa'); dancers.splice(i, 1); if (byId.get(d.uid) === d) byId.delete(d.uid); lastRank = 0; } } continue; }
+    d.alpha = Math.min(1, d.alpha + dt * 4);
+    if (!d.guest && !isFan(d.uid)) { d.guest = true; d.tag = null; d.tiredAt = d.energy <= 0 ? t : 0; }   // se acabaron sus 15 min de fijo
+    if (isFan(d.uid) || isVip(d.uid)) { if (d.energy < capOf(d)) { if (d.energy <= 0) d.tiredAt = 0; d.energy = capOf(d); } }   // Quiéreme: baila sin cansarse todos sus 15 min
+    else if (!fiesta) d.energy = Math.max(0, d.energy - dt);
+    // moverse libre por la pista
+    const travel = brain(d, t, dt), walking = !!travel;
+    // elegir paso
+    if (d.energy <= 0) { if (!d.tiredAt) d.tiredAt = t; setMove(d, 'cansado', t); if (d.guest && t - d.tiredAt > CFG.tiredSec) leave(d); continue; }   // los fijos se quedan descansando
+    if (walking && d.drop <= 0) { setMove(d, travel, t); continue; }
+    if (window.__forceMove) { setMove(d, window.__forceMove, t); continue; }
+    if (fiesta) { setMove(d, FIESTA_SEQ[Math.floor(b / 8) % FIESTA_SEQ.length], t); continue; }
+    if (d.energy < 12) { setMove(d, 'sway', t); continue; }
+    const slot = Math.floor((b + (d.hue % 4)) / 8);                  // cambia de paso cada 8 tiempos
+    if (d.beatSlot !== slot || SPEED[d.move] || d.move === 'sway' || d.move === 'cansado' || d.move === 'saludo') {
+      const turned = d.beatSlot !== slot && d.beatSlot !== -1; d.beatSlot = slot;
+      setMove(d, ROTA[(slot + d.hue) % ROTA.length], t);
+      if (turned && !d.special && R() < 0.2 + 0.05 * Math.min(10, d.lvl)) doSpecial(d, pick(AUTO_SP(d.lvl)), t);   // especial solo
+    }
+  }
+  physicsFree(t, dt);
+  if (t - (window.__tagT || 0) > 0.2) { window.__tagT = t; tagLanes(); }
+  for (let i = parts.length - 1; i >= 0; i--) { const p = parts[i]; p.age += dt; if (p.age > p.life) { parts.splice(i, 1); continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt; if (p.type === 'chispa') p.vy += 500 * dt; else if (p.type === 'polvo') { p.vx *= 1 - 4 * dt; p.vy = p.vy * (1 - 5 * dt) - 20 * dt; } else { p.spin += dt * 6; p.x += Math.sin(p.age * 4 + p.hue) * 40 * dt; } }
+  if (fiesta && R() < dt * 25) confetti();
+  for (let i = floats.length - 1; i >= 0; i--) if (t - floats[i].t0 > floats[i].life) floats.splice(i, 1);
+}
+function render(t) {
+  ctx.clearRect(0, 0, W, BH);
+  const b = beats(t), fiesta = inFiesta(t), active = dancers.length > 0;
+  if (fiesta) {                                       // luces
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 3; i++) { const ang = Math.sin(t * 1.3 + i * 2.1) * 0.55, x = 180 + i * 360;
+      ctx.save(); ctx.globalAlpha = 0.35 + 0.15 * Math.sin(b * Math.PI); ctx.translate(x, FLOOR - BAND_UP + 20); ctx.rotate(ang);
+      ctx.drawImage(tintBeams[i], -130, 0, 260, BAND_UP); ctx.restore(); }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  drawFloor(t, b, fiesta, active);
+  drawGiftPile(t);
+  // fila de atrás primero
+  const order = dancers.slice().sort((a, c) => (c.z - a.z) || (a.leader - c.leader));
+  const info = new Map();
+  for (const d of order) info.set(d, drawDancer(d, currentPose(d, t), t));
+  // nombres + energía
+  for (const d of order) {
+    const inf = info.get(d), tag = tagFor(d);
+    // carriles fijos: adelante 2 alturas, atrás 2 alturas más arriba (no se mueven con los saltos, así no se pisan)
+    if (d.tagT == null) tagLanes();
+    d.tagYs = d.tagYs ? d.tagYs + (d.tagT - d.tagYs) * 0.18 : d.tagT; const ty = d.tagYs;
+    d.tagY = ty - tag.height;
+    ctx.globalAlpha = d.alpha;
+    const tx = clamp(d.x, tag.width / 2 + 4, W - tag.width / 2 - 4);   // que el nombre no se salga por los bordes
+    ctx.drawImage(tag, Math.round(tx - tag.width / 2), Math.round(ty - tag.height));
+    const bw = 84 * inf.sc, e = isFan(d.uid) || isVip(d.uid) ? 1 : clamp(d.energy / capOf(d), 0, 1);   // barra = tanque (celeste si tiene más de 10 min)
+    ctx.fillStyle = 'rgba(0,0,0,0.65)'; ctx.fillRect(tx - bw / 2 - 2, ty - 1, bw + 4, 9);
+    ctx.fillStyle = d.energy > 600 ? '#5fd8ff' : e > 0.4 ? '#36e07a' : e > 0.12 ? '#ffd54a' : '#ff4b4b'; ctx.fillRect(tx - bw / 2, ty + 1, bw * Math.max(e, d.energy > 0 ? 0.03 : 0), 5);
+    ctx.globalAlpha = 1;
+  }
+  drawGiftFlying(t);
+  // partículas
+  for (const p of parts) { const a = 1 - p.age / p.life; ctx.globalAlpha = a; ctx.fillStyle = p.type === 'polvo' ? 'rgba(235,225,215,0.8)' : `hsl(${p.hue},95%,62%)`;
+    if (p.type === 'confeti') { ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.spin); ctx.fillRect(-p.sz / 2, -p.sz / 4, p.sz, p.sz / 2); ctx.restore(); }
+    else ctx.fillRect(p.x - p.sz / 2, p.y - p.sz / 2, p.sz, p.sz); }
+  ctx.globalAlpha = 1;
+  // textos flotantes
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineJoin = 'round';
+  for (const f of floats) { const q = (t - f.t0) / f.life;
+    const x = f.d ? f.d.x : f.x, y = f.d ? (f.d.tagY != null ? f.d.tagY - 24 * SC : FLOOR - 290 * SC) - q * 70 * SC : f.y;
+    const fs = Math.round((f.big >= 1 ? 92 : f.big ? 40 : 32) * SC * (f.big >= 1 ? 1 + 0.08 * Math.sin(b * TAU) : 1));
+    ctx.globalAlpha = q < 0.8 ? 1 : (1 - q) / 0.2;
+    ctx.font = `900 ${fs}px "Segoe UI", Arial, sans-serif`; ctx.lineWidth = fs / 6; ctx.strokeStyle = 'rgba(0,0,0,0.85)';
+    ctx.strokeText(f.txt, x, y); ctx.fillStyle = f.big >= 1 ? `hsl(${(t * 220) % 360},95%,65%)` : f.col; ctx.fillText(f.txt, x, y); }
+  ctx.globalAlpha = 1;
+  // cómo jugar: siempre si la pista está vacía, si no 8 s cada minuto
+  if (CFG.help) { const show = !active || (t - lastHelp) < 8; if (active && t - lastHelp > 60) lastHelp = t;
+    if (show) { const h = helpTag(); ctx.drawImage(h, Math.round(540 - h.width / 2), FLOOR + 48 * Math.min(1, SC)); } }
+}
+
+/* ── Los permanentes (1000+ monedas hoy) siempre vuelven a la pista ── */
+function bringVips() {
+  const t = Date.now(); if (!(DAY.act && t - DAY.act <= DAY_GAP_MIN * 60e3) && DAY.day !== dayKey(t)) return;   // ya es otro día: no traer a los de ayer
+  let n = dancers.filter(x => !x.leaving && isVip(x.uid)).length;
+  for (const uid in DAY.coins) {
+    if (!isVip(uid) || n >= CFG.vipExtra) continue;
+    const d = byId.get(uid);
+    if (d && !d.leaving) continue;
+    const nd = getOrSpawn(uid, (DAY.names && DAY.names[uid]) || uid, '', 3); if (!nd) continue;
+    addEnergy(nd, capOf(nd)); n++; wake();
+  }
+}
+setInterval(bringVips, 4000);
+/* ── Guardar (si OBS recarga la fuente, la pista sigue) ── */
+const SKEY = 'bailelib_pista_v1';
+function save() { try { localStorage.setItem(SKEY, JSON.stringify({ at: Date.now(), bpm,
+  d: dancers.filter(d => !d.leaving).map(d => ({ uid: d.uid, name: d.name, pic: d.pic, guest: d.guest, coins: d.coins, energy: d.energy, cap: d.cap, x: d.x })) })); } catch (e) {} }
+function load() { try { const s = JSON.parse(localStorage.getItem(SKEY) || 'null');
+  if (!s || Date.now() - s.at > 3 * 60 * 1000 || Q.has('test') || Q.has('demo')) return;
+
+  for (const o of s.d || []) { const d = makeDancer(o.uid, o.name, o.pic); Object.assign(d, { coins: Math.max(d.coins, o.coins || 0), energy: Math.max(o.energy, 6), cap: o.cap || 0, x: o.x, drop: 0 });
+    d.lvl = d.coins ? levelOf(d.coins) : (d.guest ? 0 : 1); dancers.push(d); byId.set(d.uid, d);
+    if (d.coins) (DAY.names = DAY.names || {})[d.uid] = d.name; } } catch (e) {} }
+
+/* ── TikFinity ────────────────────────────────────────── */
+const combos = new Map(), seen = new Set();
+function onGift(d) {
+  const uid = (d.uniqueId || d.userId || '').toString(); if (!uid) return;
+  const coins = parseInt(d.diamondCount ?? d.gift?.diamond_count ?? 0, 10) || 0; if (!coins) return;
+  const cnt = parseInt(d.repeatCount || d.gift?.repeat_count || 1, 10) || 1;
+  const key = uid + '|' + (d.giftId ?? d.giftName ?? '?') + '|' + (d.groupId || '');
+  // los combos llegan como 1,2,3…: se suma solo lo nuevo para que el bailarín reaccione en vivo
+  const prev = combos.get(key); const was = prev ? prev.n : 0;
+  const delta = Math.max(0, cnt - was);
+  if (d.repeatEnd === false) combos.set(key, { n: cnt, t: Date.now() }); else combos.delete(key);
+  if (!delta) return;
+  const u2 = uid.toLowerCase();
+  onGiftCoins(u2, d.nickname || uid, d.profilePictureUrl || '', coins * delta, d.giftName, d.giftId);
+  const who2 = byId.get(u2);
+  dropGifts(key, d.giftPictureUrl || d.gift?.giftPictureUrl || '', coins, delta, () => { const x = byId.get(u2); return x ? x.tx : 540; }, who2 ? who2.hue : 350);
+}
+function onLike(d) {
+  const uid = (d.uniqueId || d.userId || '').toString().toLowerCase(); if (!uid) return;
+  const n = parseInt(d.likeCount || 1, 10) || 1;
+  DAY.act = Date.now();
+  let x = byId.get(uid);
+  if (x && x.name === x.uid && d.nickname && d.nickname.toLowerCase() !== uid) { x.name = String(d.nickname).slice(0, 13); x.tag = null; (DAY.names = DAY.names || {})[uid] = d.nickname; }
+  if (!x) { if (!CFG.guests && !isFan(uid)) return; x = getOrSpawn(uid, d.nickname || uid, d.profilePictureUrl || '', isFan(uid) ? 2 : 1); if (!x) return; addEnergy(x, capOf(x)); x.lastTap = now(); wake(); return; }   // entra con la barra llena
+  const tn = now(); if (tn - (x.lastTap || 0) < CFG.tapGap) return; x.lastTap = tn;
+  const was = x.energy; addEnergy(x, CFG.tapPct * Math.min(capOf(x), CFG.giftCapMin));
+  if (was <= 0 && x.energy > 0) doSpecial(x, 'salto', now());           // se levanta de descansar
+  wake();
+}
+function onChat(d) {
+  const uid = (d.uniqueId || d.userId || '').toString().toLowerCase(), txt = (d.comment || '').trim();
+  if (txt.startsWith('!') && OWNERS.includes(uid)) {
+    const m = txt.toLowerCase().match(/^!bpm\s+(\d{2,3})/); if (m) { const nb = clamp(+m[1], 60, 200); beat0 = now() - beats(now()) * 60 / nb; bpm = nb; return; }
+    if (txt.toLowerCase() === '!fiesta') { if (dancers.length) startFiesta(now()); return; }
+    if (txt.toLowerCase() === '!limpiar') { dancers.forEach(x => leave(x, true)); fiestaUntil = 0; wake(); return; }
+  }
+  onEmoji(uid, d.nickname || uid, d.profilePictureUrl || '', txt);
+}
+function handle(ev, d) {
+  if (ev === 'gift') onGift(d);
+  else if (ev === 'like') onLike(d);
+  else if (ev === 'chat') onChat(d);
+}
+let ws = null, reTimer = null;
+function connect() {
+  try { ws = new WebSocket(CFG.wsUrl); } catch (e) { return retry(); }
+  ws.onopen = () => console.log('[Baile] Conectado a TikFinity');
+  ws.onmessage = e => { let m; try { m = JSON.parse(e.data); } catch { return; } const d = m.data || {};
+    if (d.msgId) { const k = m.event + '|' + d.msgId + '|' + (d.uniqueId || '') + '|' + (d.likeCount || '') + '|' + (d.repeatCount || '') + '|' + d.repeatEnd;
+      if (seen.has(k)) return; seen.add(k); if (seen.size > 3000) seen.clear(); }
+    handle(m.event, d); };
+  ws.onerror = () => {}; ws.onclose = retry;
+}
+function retry() { clearTimeout(reTimer); reTimer = setTimeout(connect, 5000); }
+setInterval(() => { const t = Date.now(); for (const [k, v] of combos) if (t - v.t > 30000) combos.delete(k); }, 10000);
+
+/* ── Pruebas sin live ─────────────────────────────────── */
+const FAKE = ['Andrea', 'Lokito_23', 'Sumo', 'Luz', 'MarcoElPro', 'Kathy', 'Rolo', 'Vale', 'Pancho', 'Mery', 'Tito', 'Juanca', 'Nico', 'Flor', 'GuitarFan'];
+// en pruebas: las imágenes reales de regalos que están en el repo (las mismas del demo de Rosas 7);
+// los que no están se dibujan con emoji. En el live se usa la imagen que manda TikTok (giftPictureUrl).
+const REPO_IMG = 'https://raw.githubusercontent.com/srdwly/testoverlay/main/img/';
+const TEST_IMG = { 99: REPO_IMG + 'sombrero.png', 199: REPO_IMG + 'amplificado.png', 500: REPO_IMG + 'pistola.png', 1000: REPO_IMG + 'galaxia.png' };
+for (const [c, e] of [[5, '💖'], [10, '🍩'], [30, '🎸']]) {
+  const cc = document.createElement('canvas'); cc.width = cc.height = 112; const x = cc.getContext('2d');
+  x.font = '80px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(e, 56, 60);
+  TEST_IMG[c] = cc.toDataURL(); }
+const pick = a => a[Math.floor(R() * a.length)];
+let testName = '';
+function who() { const n = testName || pick(FAKE); return { uniqueId: n.toLowerCase(), nickname: n }; }
+function fakeGift(coins, name, count) { const b = { ...who(), giftPictureUrl: TEST_IMG[coins] || '' }; const gid = 'g' + coins;
+  if (count > 1) { let c = 0; const iv = setInterval(() => { c++; handle('gift', { ...b, giftName: name, giftId: gid, diamondCount: coins, repeatCount: c, repeatEnd: false, giftType: 1 });
+    if (c >= count) { clearInterval(iv); handle('gift', { ...b, giftName: name, giftId: gid, diamondCount: coins, repeatCount: c, repeatEnd: true, giftType: 1 }); } }, 250); }
+  else handle('gift', { ...b, giftName: name, giftId: gid, diamondCount: coins, repeatCount: 1, giftType: 2 }); }
+const TESTS = [
+  ['q', 'Quiéreme ❤️', () => fakeGift(1, 'Heart Me', 1)],
+  ['1', 'Rosa (1)', () => fakeGift(1, 'Rose', 1)],
+  ['2', '10 rosas', () => fakeGift(1, 'Rose', 10)],
+  ['3', 'Corazón (5)', () => fakeGift(5, 'Finger Heart', 1)],
+  ['4', 'Sombrero (99)', () => fakeGift(99, 'Hat and Mustache', 1)],
+  ['5', 'Regalo 500', () => fakeGift(500, 'Money Gun', 1)],
+  ['6', 'Galaxia (1000)', () => fakeGift(1000, 'Galaxy', 1)],
+  ['e', 'Emoji 💃', () => handle('chat', { ...who(), comment: pick(['💃', '🕺', '🎸', '🔥', '🤸', '👏', 'baila!']) })],
+  ['l', 'Taps 👆', () => handle('like', { ...who(), likeCount: 15 })],
+  ['f', '¡Fiesta!', () => { if (!dancers.length) fakeGift(1, 'Rose', 1); setTimeout(() => startFiesta(now()), 50); }],
+  ['c', 'Limpiar', () => { dancers.forEach(x => leave(x, true)); fiestaUntil = 0; wake(); }],
+];
+addEventListener('keydown', e => { const k = e.key.toLowerCase(); const t = TESTS.find(x => x[0] === k); if (t && e.target.tagName !== 'INPUT') t[2](); });
+if (Q.get('test') === '1') {
+  const box = document.createElement('div'); box.id = 'test';
+  const inp = document.createElement('input'); inp.placeholder = 'nombre (opcional)'; inp.oninput = () => testName = inp.value.trim(); box.appendChild(inp);
+  for (const [k, label, fn] of TESTS) { const bt = document.createElement('button'); bt.textContent = label + ' [' + k.toUpperCase() + ']'; bt.onclick = fn; box.appendChild(bt); }
+  document.body.appendChild(box);
+}
+function startDemo() {
+  setInterval(() => { const r = R();
+    if (r < 0.45) handle('like', { ...who(), likeCount: 5 + Math.floor(R() * 40) });
+    else if (r < 0.52) fakeGift(1, 'Heart Me', 1);
+    else if (r < 0.75) handle('chat', { ...who(), comment: pick(['💃', '🕺', '🎸', '🔥', '🤸', '👏', 'hola', 'baila']) });
+    else if (r < 0.97) fakeGift(pick([1, 1, 1, 5, 10, 30]), 'Rose', R() < 0.4 ? 3 + Math.floor(R() * 8) : 1);
+    else fakeGift(pick([99, 199, 500, 1000]), 'Big', 1);
+  }, 900);
+}
+window.__baile = { handle, startFiesta, doSpecial: (d, n) => doSpecial(d, n, now()), get dancers() { return dancers; }, get fijos() { return FANS; }, CFG };
+
+/* ── Inicio ───────────────────────────────────────────── */
+load();
+arrange();
+if (Q.get('demo') === '1') startDemo(); else if (Q.get('test') !== '1' || Q.get('ws') === '1') connect();
+wake();
+</script>
+</body>
+</html>

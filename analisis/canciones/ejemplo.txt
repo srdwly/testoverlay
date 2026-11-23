@@ -1,0 +1,32 @@
+# ============================================================
+#  CANCIÓN DE EJEMPLO  (copia este archivo para cada video)
+#  Líneas con # son comentarios.
+# ============================================================
+titulo: Progresión de ejemplo
+artista: Demo del sistema
+tonalidad: C
+bpm: 88
+compas: 4
+inicio: 3.5
+gancho: ¿Por qué este acorde te pone la piel de gallina?
+cierre: ¿Qué canción analizo ahora? Déjala en comentarios
+# video: tocando.mp4     (tu toma vertical tocando; opcional)
+# audio: audio.wav       (si no hay video; opcional)
+---
+[Intro]
+> Estamos en Do mayor. Mira los colores: tónica, subdominante y dominante.
+C | Am | F | G
+
+[Estrofa]
+> El clásico I – vi – IV – V
+C | Am | F | G
+> Aquí aparece un acorde que NO es de la tonalidad...
+C | E7 | Am | Am
+> ...y este Fm prestado de Do menor es la "piel de gallina"
+F | Fm | C | G7
+
+[Coro]
+> El D7 empuja hacia el G: dominante de la dominante
+F | G | Em | Am
+Dm7 | D7 | G | G7
+Bb | F | C | C

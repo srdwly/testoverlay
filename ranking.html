@@ -48,8 +48,8 @@ const CFG = {
   coinsTop: 3,
   coinsDaily: true,                          // top 3 de monedas = acumulado del DÍA (todos los lives). false = solo este live
   showDayBlock: false,                       // bloque "TOP DEL DÍA" aparte (oculto: con coinsDaily repetiría el #1). ?ver=dia lo muestra igual
-  tapsTop: 7,
-  size: 0.9,                                 // tamaño de los rankings (0.9 = 10% más chico)
+  tapsTop: 15,
+  size: 0.765,                               // tamaño de los rankings (0.9 × 0.85: 10% y luego 15% más chico)
   shiftX: 15,                                // mover todo N px a la derecha (en el lienzo 1080×1920)
   comboTimeoutSec: 20,                       // si un combo no avisa que terminó, se guarda igual a los 20 s
   // Posición de cada panel en el lienzo 1080×1920 (si usas la fuente completa)
@@ -223,7 +223,7 @@ const CFG = {
 
   /* Top de monedas: nombres 36% más angostos (2 reducciones de 20%); si no entran, pasan a 2 líneas (y luego "…") */
   body.lista #p-monedas .row .name {
-    max-width: 232px; white-space: normal; overflow-wrap: anywhere; line-height: 1.1;
+    max-width: 162px; white-space: normal; overflow-wrap: anywhere; line-height: 1.1;
     display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; text-overflow: ellipsis;
   }
 </style>

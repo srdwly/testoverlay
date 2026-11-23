@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stickman 3D</title>
+<script>
+/* ════════════════════════════════════════════════════════════════
+   STICKMAN 3D — laboratorio de bailes (todavía NO está en ningún overlay).
+
+   Esqueleto 3D con volumen (huesos redondeados, sombreado tipo caricatura y borde negro).
+   Manos y pies van a un punto exacto con IK de dos huesos: los pies se quedan plantados
+   en el piso aunque el cuerpo baje, y al saltar las piernas cuelgan solas.
+
+   Bailes (todos al mismo pulso, ?bpm=110):
+     paso básico, cumbia, caporal, robot, disco, running man, moonwalk,
+     guitarra al aire, floss, manos arriba, giro, salto con aplauso.
+
+   ENLACE: stickman-3d.html          → 5 bailando juntos; cambian de baile cada 8 tiempos
+     ?galeria=1   todos los bailes a la vez, cada uno en su cuadro (vista de 3/4)
+     ?n=5         cuántos stickmans (1 a 8)
+     ?baile=cumbia  fija un baile · ?mezcla=1 cada uno baila algo distinto
+     ?bpm=110     velocidad · ?panel=0 sin botones · ?fondo=1 fondo oscuro
+     ?escala=1    tamaño · ?altura=3 cámara más arriba (más vista desde arriba)
+
+   Usa three.js desde cdn.jsdelivr.net (como MediaPipe en los otros overlays).
+   ════════════════════════════════════════════════════════════════ */
+</script>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: transparent; overflow: hidden; }
+  body.fondo { background: linear-gradient(#36475a, #161c24); }
+  #stage { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; transform-origin: 0 0; }
+  #gl, #ui { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; }
+  #panel { position: absolute; left: 16px; top: 16px; display: flex; flex-wrap: wrap; gap: 10px; max-width: 1040px; z-index: 5; }
+  #panel button { font: 700 24px system-ui, Arial; padding: 10px 16px; border-radius: 14px; border: 0; background: rgba(20,20,30,.75); color: #fff; cursor: pointer; }
+  #panel button.on, #panel button:hover { background: #e3122b; }
+</style>
+<script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js" } }</script>
+</head>
+<body>
+<div id="stage"><canvas id="gl"></canvas><canvas id="ui"></canvas><div id="panel"></div></div>
+<script type="module">
+import * as THREE from 'three';
+
+const Q = new URLSearchParams(location.search);
+const num = (k, d) => { const v = parseFloat(Q.get(k)); return isFinite(v) ? v : d; };
+if (Q.get('fondo') === '1') document.body.classList.add('fondo');
+const W = 1080, H = 1920, GAL = Q.get('galeria') === '1';
+const stage = document.getElementById('stage');
+function fit() { stage.style.transform = `scale(${innerWidth / 1080})`; }
+addEventListener('resize', fit); fit();
+
+const PI = Math.PI, TAU = PI * 2;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v, lerp = (a, b, t) => a + (b - a) * t;
+const fr = x => x - Math.floor(x);
+const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const ease = t => t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+const backOut = x => { const c1 = 1.7, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+const onBeat = b => (1 + Math.cos(TAU * b)) / 2;              // 1 justo en el tiempo, 0 entre tiempos
+const lerp3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+
+/* ════════════════ MEDIDAS (en metros, más o menos) ════════════════ */
+const L1 = 0.46, L2 = 0.46, SPINE = 0.5, NECK = 0.09, HEADR = 0.17, UA = 0.3, FA = 0.29, SHW = 0.16, HPW = 0.095, STAND = 0.9, ANK = 0.05;
+const BPM = num('bpm', 110), BPS = BPM / 60;
+
+/* ════════════════ POSE ════════════════
+   Todo se mide desde el piso, mirando hacia +z (hacia la cámara). "Afuera" = hacia el lado de ese brazo/pierna.
+     mx, mz     mover todo el cuerpo por el piso          yaw   girar todo el cuerpo
+     px py pz   cadera (py = cuánto baja/sube)           hipYaw, hipRoll  cadera girada / ladeada
+     lean       espalda hacia adelante                    roll  espalda ladeada · twist  hombros girados
+     nod turn tilt   cabeza (asentir, girar, ladear)
+     hL hR      mano [afuera, arriba, adelante] desde el hombro, en el marco del pecho
+     fL fR      pie [afuera, alto, adelante] desde el centro, en el marco del cuerpo
+     pL pR      hacia dónde apunta el codo (opcional)      guitar  1 = con guitarra       */
+function base() {
+  return { mx: 0, mz: 0, yaw: 0, px: 0, py: 0, pz: 0, hipYaw: 0, hipRoll: 0, lean: 0.04, roll: 0, twist: 0, nod: 0, turn: 0, tilt: 0,
+    hL: [0.05, -0.56, 0.06], hR: [0.05, -0.56, 0.06], fL: [0.11, 0, 0.02], fR: [0.11, 0, 0.02], pL: null, pR: null, guitar: 0 };
+}
+const NUMK = ['mx', 'mz', 'yaw', 'px', 'py', 'pz', 'hipYaw', 'hipRoll', 'lean', 'roll', 'twist', 'nod', 'turn', 'tilt', 'guitar'];
+const ARRK = ['hL', 'hR', 'fL', 'fR'];
+function mixPose(A, B, t) {
+  const o = base();
+  for (const k of NUMK) o[k] = lerp(A[k], B[k], t);
+  for (const k of ARRK) o[k] = lerp3(A[k], B[k], t);
+  for (const k of ['pL', 'pR']) o[k] = A[k] && B[k] ? lerp3(A[k], B[k], t) : (t < 0.5 ? A[k] : B[k]);
+  return o;
+}
+// pies con x absoluta (centro del cuerpo): izquierda = +x
+function feetAbs(p, lx, rx, ly = 0, ry = 0, lz = 0.02, rz = 0.02) { p.fL = [lx, ly, lz]; p.fR = [-rx, ry, rz]; }
+// paso a un lado y junta (4 tiempos): devuelve x de cada pie, el centro y cuál pie se levanta
+function stepTouch(b, w) {
+  const i = Math.floor(b) % 4, s = fr(b), e = ease(s), lift = 0.07 * Math.sin(PI * s);
+  let L, R, lL = 0, lR = 0;
+  if (i === 0) { L = lerp(-w + 0.11, w + 0.11, e); R = -w - 0.11; lL = lift; }
+  else if (i === 1) { L = w + 0.11; R = lerp(-w - 0.11, w - 0.11, e); lR = lift; }
+  else if (i === 2) { L = w + 0.11; R = lerp(w - 0.11, -w - 0.11, e); lR = lift; }
+  else { L = lerp(w + 0.11, -w + 0.11, e); R = -w - 0.11; lL = lift; }
+  return { L, R, lL, lR, c: (L + R) / 2 };
+}
+
+/* ════════════════ BAILES ════════════════ */
+const ROBOT = [
+  { hL: [0.08, -0.3, 0.3], hR: [0.08, -0.3, 0.3] },
+  { hL: [0.3, 0.28, 0.02], hR: [0.08, -0.3, 0.3], turn: 0.7 },
+  { hL: [0.08, -0.3, 0.3], hR: [0.3, 0.28, 0.02], turn: -0.7 },
+  { hL: [0.55, 0.0, 0.05], hR: [0.55, 0.0, 0.05], py: -0.1, nod: 0.25 },
+  { hL: [0.04, -0.02, 0.57], hR: [0.04, -0.02, 0.57], yaw: 0.8, turn: -0.8 },
+  { hL: [0.04, -0.02, 0.57], hR: [0.3, 0.28, 0.02], yaw: 0.8, turn: -0.8, tilt: 0.35 },
+  { hL: [0.3, -0.3, 0.0], hR: [0.3, 0.28, 0.02], yaw: -0.8, turn: 0.8, twist: 0.2 },
+  { hL: [0.3, 0.28, 0.02], hR: [0.3, 0.28, 0.02], py: -0.16, nod: -0.25 },
+].map(k => Object.assign(base(), { lean: 0, fL: [0.17, 0, 0.02], fR: [0.17, 0, 0.02] }, k));
+
+const DANCE = {
+  basico(b) {
+    const p = base(), d = onBeat(b), sw = Math.sin(PI * b), st = stepTouch(b, 0.14);
+    feetAbs(p, st.L, st.R, st.lL, st.lR); p.px = st.c;
+    p.py = -0.08 * d; p.nod = 0.13 * d - 0.04; p.roll = -0.06 * sw; p.twist = 0.14 * sw; p.hipRoll = 0.05 * sw;
+    p.hL = [0.1, -0.38 + 0.05 * d, 0.2 + 0.12 * sw]; p.hR = [0.1, -0.38 + 0.05 * d, 0.2 - 0.12 * sw];
+    return p;
+  },
+  cumbia(b) {
+    const p = base(), i = Math.floor(b) % 4, s = fr(b), e = ease(s), d = onBeat(b);
+    const kL = i === 0 ? e : i === 1 ? 1 - e : 0, kR = i === 2 ? e : i === 3 ? 1 - e : 0, up = 0.06 * Math.sin(PI * s);
+    p.fL = [0.13 + 0.03 * kL, i < 2 ? up : 0, 0.04 - 0.3 * kL]; p.fR = [0.13 + 0.03 * kR, i >= 2 ? up : 0, 0.04 - 0.3 * kR];
+    p.hipYaw = 0.32 * (kL - kR); p.twist = -0.2 * (kL - kR); p.py = -0.1 - 0.05 * d; p.hipRoll = 0.07 * Math.sin(PI * b / 2);
+    p.yaw = 0.35 * Math.sin(TAU * b / 16); p.roll = 0.06 * Math.sin(PI * b); p.nod = 0.07 * d; p.tilt = 0.1 * Math.sin(PI * b / 2);
+    p.hL = [0.15, -0.3 + 0.04 * d, 0.22 + 0.13 * (kR - kL)]; p.hR = [0.15, -0.3 + 0.04 * d, 0.22 + 0.13 * (kL - kR)];
+    return p;
+  },
+  caporal(b) {
+    const p = base(), k = Math.floor(b) % 2, s = fr(b), hop = Math.sin(PI * s);
+    p.py = 0.2 * hop - 0.1 * (1 - hop);
+    const lifted = [0.11, 0.48 * hop, 0.3 * hop], stand = [0.11, 0, 0];
+    p.fL = k ? stand : lifted; p.fR = k ? lifted : stand;
+    const upA = [0.24, -0.5 + 0.95 * hop, 0.22 + 0.22 * hop], backA = [0.2, -0.5, -0.28 * hop];
+    p.hR = k ? backA : upA; p.hL = k ? upA : backA;
+    p.lean = -0.12 * hop; p.nod = -0.12 * hop; p.twist = (k ? 0.2 : -0.2) * hop;
+    p.yaw = 0.45 * Math.tanh(3 * Math.sin(PI * b / 4));
+    const T = b % 16; if (T > 14) p.yaw += TAU * ease((T - 14) / 2);          // vuelta completa cada 16 tiempos
+    return p;
+  },
+  robot(b) {
+    const i = Math.floor(b) % 8, s = fr(b), q = backOut(clamp(s / 0.18, 0, 1));
+    const p = mixPose(ROBOT[(i + 7) % 8], ROBOT[i], 1);
+    const A = ROBOT[(i + 7) % 8], B = ROBOT[i];                                // cambio de golpe con rebotito
+    for (const k of NUMK) p[k] = lerp(A[k], B[k], q);
+    for (const k of ARRK) p[k] = lerp3(A[k], B[k], q);
+    p.py += -0.03 * onBeat(b);
+    return p;
+  },
+  disco(b) {
+    const p = base(), up = Math.floor(b) % 2 === 0, s = fr(b), q0 = sstep(0, 0.3, s), q = up ? q0 : 1 - q0;
+    p.yaw = -0.3; p.hR = lerp3([-0.14, -0.45, 0.26], [0.34, 0.44, 0.22], q);
+    p.hL = [-0.01, -0.4, -0.02]; p.pL = [1, 0.1, -0.3];                                        // mano en la cintura
+    p.hipRoll = -0.12 * (2 * q - 1); p.px = 0.06 * (2 * q - 1); p.roll = 0.08 * (2 * q - 1);
+    p.turn = -0.35 * q + 0.1; p.nod = -0.35 * q + 0.15; p.py = -0.05 * (1 - q);
+    p.fL = [0.15, 0, 0.02]; p.fR = [0.11, 0.05 * q, 0.08];
+    return p;
+  },
+  runningman(b) {
+    const p = base(), k = Math.floor(b) % 2, s = fr(b);
+    const up = [0.11, 0.38 * Math.sin(PI * s), lerp(-0.35, 0.18, ease(s))], slide = [0.11, 0, lerp(0.18, -0.35, s)];
+    p.fL = k ? slide : up; p.fR = k ? up : slide;
+    p.yaw = 0.55; p.lean = 0.14; p.py = -0.07 - 0.05 * Math.cos(TAU * s);
+    const fw = Math.sin(PI * b);
+    p.hL = [0.12, -0.25 - 0.1 * fw, 0.2 - 0.15 * fw]; p.hR = [0.12, -0.25 + 0.1 * fw, 0.2 + 0.15 * fw];
+    p.nod = 0.1 * onBeat(b);
+    return p;
+  },
+  moonwalk(b) {
+    const p = base(), T = b % 16, k = Math.floor(b) % 2, s = fr(b), rise = sstep(0, 0.25, s);
+    const f = T < 7.5 ? 1 : T < 8.5 ? lerp(1, -1, ease(T - 7.5)) : T < 15.5 ? -1 : lerp(-1, 1, ease(T - 15.5));
+    p.yaw = f * PI / 2;                                                        // de perfil; gira de frente al cambiar de lado
+    p.mx = T < 8 ? 0.9 - 0.225 * T : -0.9 + 0.225 * (T - 8);                    // se desliza hacia atrás
+    const flat = [0.07, 0.06 * (1 - rise), 0.12 - 0.24 * s], toe = [0.07, 0.06 * rise, -0.12 + 0.24 * s];
+    p.fL = k ? toe : flat; p.fR = k ? flat : toe;
+    const w = Math.sin(PI * b);
+    p.py = -0.03; p.lean = 0.06; p.nod = 0.08 * w;
+    p.hL = [0.06, -0.5, 0.1 + 0.1 * w]; p.hR = [0.06, -0.5, 0.1 - 0.1 * w];
+    return p;
+  },
+  guitarra(b) {
+    const p = base(), bang = onBeat(b) ** 2, T = b % 8;
+    p.guitar = 1; p.yaw = 0.35;
+    p.fL = [0.25, 0, 0.1]; p.fR = [0.25, 0, -0.06];
+    p.py = -0.15 - 0.04 * bang; p.lean = 0.14 + 0.12 * bang; p.nod = 0.5 * bang - 0.12;
+    p.hL = [0.3, -0.14 + 0.03 * Math.sin(PI * b), 0.36]; p.hR = [-0.14, -0.4 + 0.08 * Math.sin(2 * TAU * b), 0.2];
+    p.pL = [0.4, -0.6, -0.4];
+    if (T > 6 && T < 7.6) { const q = (T - 6) / 1.6, j = Math.sin(PI * q); p.py += 0.5 * j; p.fL[1] += 0.25 * j; p.fR[1] += 0.3 * j; p.lean -= 0.2 * j; p.nod -= 0.3 * j; }
+    return p;
+  },
+  floss(b) {
+    const p = base(), side = -Math.cos(PI * b), c = Math.sin(PI * b), X = 0.34 * side;
+    p.hL = [X - SHW, -0.5, 0.2 * c]; p.hR = [-SHW - X, -0.5, -0.2 * c];
+    p.px = -0.07 * side; p.hipRoll = 0.14 * side; p.hipYaw = -0.12 * side; p.roll = -0.05 * side;
+    p.py = -0.05 * onBeat(b); p.lean = 0.05; p.nod = 0.06 * onBeat(b);
+    p.fL = [0.13, 0, 0.02]; p.fR = [0.13, 0, 0.02];
+    return p;
+  },
+  manos(b) {
+    const p = base(), st = stepTouch(b, 0.14), sw = Math.sin(PI * b / 2 + PI / 2 * 0), d = onBeat(b);
+    feetAbs(p, st.L, st.R, st.lL, st.lR); p.px = st.c;
+    const swing = Math.sin(PI * (b - 0.5) / 2);
+    p.roll = -0.22 * swing; p.hipRoll = 0.1 * swing; p.py = -0.06 * d; p.nod = -0.15 + 0.08 * d;
+    p.hL = [0.06 - 0.12 * swing, 0.5, 0.06]; p.hR = [0.06 + 0.12 * swing, 0.5, 0.06];
+    return p;
+  },
+  giro(b) {
+    const T = b % 4; if (T < 2) return DANCE.basico(b);
+    const p = base(), q = (T - 2) / 2, e = ease(q), j = Math.sin(PI * q);
+    p.yaw = TAU * e; p.py = 0.03 * j;
+    p.hL = [0.5 - 0.1 * j, 0.05, 0.18]; p.hR = [0.5 - 0.1 * j, 0.05, 0.18];
+    p.fL = [0.09, 0, 0.0]; p.fR = [0.06, 0.38 * j, 0.06]; p.nod = -0.1 * j;
+    return p;
+  },
+  salto(b) {
+    const p = base(), T = b % 2;
+    let crouch = 0, air = 0, clap = 0;
+    if (T < 0.45) crouch = sstep(0, 0.45, T);
+    else if (T < 1.4) { air = Math.sin(PI * (T - 0.45) / 0.95); clap = sstep(0.55, 0.85, T) * (1 - sstep(1.2, 1.4, T)); crouch = 1 - sstep(0.45, 0.6, T); }
+    else crouch = Math.sin(PI * clamp((T - 1.4) / 0.6, 0, 1)) * 0.7;
+    p.py = -0.22 * crouch + 0.5 * air; p.lean = 0.3 * crouch - 0.08 * air; p.nod = 0.2 * crouch - 0.25 * air;
+    p.fL = [0.13, 0.2 * air, 0.02]; p.fR = [0.13, 0.2 * air, 0.02];
+    const low = [0.15, -0.45, -0.28], high = [0.15, 0.48, 0.12], meet = [-SHW + 0.04, 0.52, 0.12];
+    const h = lerp3(lerp3([0.06, -0.55, 0.06], low, crouch), high, air);
+    p.hL = lerp3(h, meet, clap); p.hR = lerp3(h, meet, clap);
+    return p;
+  },
+};
+const ORDER = ['basico', 'cumbia', 'caporal', 'robot', 'disco', 'runningman', 'moonwalk', 'guitarra', 'floss', 'manos', 'giro', 'salto'];
+const NAME = { basico: 'Paso básico', cumbia: 'Cumbia', caporal: 'Caporal', robot: 'Robot', disco: 'Disco', runningman: 'Running man',
+  moonwalk: 'Moonwalk', guitarra: 'Guitarra al aire', floss: 'Floss', manos: 'Manos arriba', giro: 'Giro', salto: 'Salto y aplauso' };
+
+/* ════════════════ ESQUELETO 3D ════════════════ */
+const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+const qE = (x, y, z) => new THREE.Quaternion().setFromEuler(new THREE.Euler(x, y, z, 'YXZ'));
+function ik(A, T, l1, l2, pole) {                    // devuelve el codo/rodilla; acorta T si no alcanza
+  const d = T.clone().sub(A); let dist = d.length();
+  const max = (l1 + l2) * 0.999;
+  if (dist > max) { d.multiplyScalar(max / dist); dist = max; T.copy(A).add(d); }
+  dist = Math.max(dist, Math.abs(l1 - l2) + 0.02);
+  const dir = d.normalize(), cosA = clamp((l1 * l1 + dist * dist - l2 * l2) / (2 * l1 * dist), -1, 1), sinA = Math.sqrt(1 - cosA * cosA);
+  const perp = pole.clone().sub(dir.clone().multiplyScalar(pole.dot(dir))).normalize();
+  return A.clone().add(dir.multiplyScalar(l1 * cosA)).add(perp.multiplyScalar(l1 * sinA));
+}
+function solve(p, origin) {
+  const rootQ = qE(0, p.yaw, 0), root = origin.clone().add(V(p.mx, 0, p.mz));
+  const toRoot = v => v.applyQuaternion(rootQ).add(root);
+  const pelvisQ = qE(0, p.yaw + p.hipYaw, p.hipRoll), chestQ = qE(p.lean, p.yaw + p.hipYaw + p.twist, p.roll);
+  const headQ = chestQ.clone().multiply(qE(p.nod, p.turn, p.tilt));
+  const P = toRoot(V(p.px, STAND + p.py, p.pz));
+  const N = P.clone().add(V(0, SPINE, 0).applyQuaternion(chestQ));
+  const Hd = N.clone().add(V(0, NECK + HEADR, 0).applyQuaternion(headQ));
+  const S = { P, N, H: Hd, headQ, chestQ, rootQ };
+  for (const [s, k] of [[1, 'L'], [-1, 'R']]) {
+    const sh = P.clone().add(V(s * SHW, SPINE - 0.05, 0).applyQuaternion(chestQ));
+    const h = p['h' + k], hand = sh.clone().add(V(s * h[0], h[1], h[2]).applyQuaternion(chestQ));
+    const pp = p['p' + k] || [0.35, -0.3, -0.7], pole = V(s * pp[0], pp[1], pp[2]).applyQuaternion(chestQ);
+    const el = ik(sh, hand, UA, FA, pole);
+    const hip = P.clone().add(V(s * HPW, 0, 0).applyQuaternion(pelvisQ));
+    const f = p['f' + k], ank = toRoot(V(s * f[0], f[1] + ANK, f[2]));
+    const kn = ik(hip, ank, L1, L2, V(s * 0.18, 0, 1).applyQuaternion(pelvisQ));
+    const toe = ank.clone().add(V(s * 0.03, -0.03, 0.13).applyQuaternion(rootQ));
+    S['sh' + k] = sh; S['el' + k] = el; S['ha' + k] = hand; S['hip' + k] = hip; S['kn' + k] = kn; S['an' + k] = ank; S['to' + k] = toe;
+  }
+  return S;
+}
+
+/* ════════════════ DIBUJO (three.js) ════════════════ */
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: true, alpha: true, preserveDrawingBuffer: true });
+renderer.setPixelRatio(1); renderer.setSize(W, H, false); renderer.setClearColor(0x000000, 0);
+const scene = new THREE.Scene();
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8a7f99, 1.25));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(-3, 6, 5); scene.add(sun);
+const grad = new THREE.DataTexture(new Uint8Array([90, 90, 90, 255, 175, 175, 175, 255, 255, 255, 255, 255]), 3, 1);
+grad.minFilter = grad.magFilter = THREE.NearestFilter; grad.needsUpdate = true;
+const CYL = new THREE.CylinderGeometry(1, 1, 1, 14, 1, true), SPH = new THREE.SphereGeometry(1, 18, 12);
+const OUTM = new THREE.MeshBasicMaterial({ color: 0x14090d, side: THREE.BackSide });
+const OL = 0.022;                                                        // grosor del borde negro
+const HUES = [355, 200, 45, 140, 290, 25, 175, 320];
+const shadowTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d');
+  const r = g.createRadialGradient(32, 32, 0, 32, 32, 32); r.addColorStop(0, 'rgba(0,0,0,0.45)'); r.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = r; g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c); })();
+
+function makeGuitar() {
+  const g = new THREE.Group();
+  const red = new THREE.MeshToonMaterial({ color: 0xe3122b, gradientMap: grad }), wood = new THREE.MeshToonMaterial({ color: 0xc9a36b, gradientMap: grad }), blk = new THREE.MeshToonMaterial({ color: 0x14090d, gradientMap: grad });
+  const add = (geo, mat, x, y, z, sx = 1, sy = 1, sz = 1) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); g.add(m);
+    const o = new THREE.Mesh(geo, OUTM); o.position.copy(m.position); o.scale.set(sx + OL, sy + OL, sz + OL); g.add(o); return m; };
+  const disc = new THREE.CylinderGeometry(1, 1, 1, 24); disc.rotateX(PI / 2);
+  add(disc, red, -0.1, 0, 0, 0.17, 0.17, 0.07); add(disc, red, 0.08, 0, 0, 0.13, 0.13, 0.07); add(disc, blk, 0.0, 0, 0.04, 0.05, 0.05, 0.01);
+  const box = new THREE.BoxGeometry(1, 1, 1); add(box, wood, 0.42, 0, 0, 0.55, 0.045, 0.03); add(box, blk, 0.73, 0, 0, 0.1, 0.08, 0.035);
+  g.visible = false; return g;
+}
+
+class Dancer {
+  constructor(i, origin) {
+    this.origin = origin; this.grp = new THREE.Group(); scene.add(this.grp);
+    const col = new THREE.Color().setHSL(HUES[i % HUES.length] / 360, 0.85, 0.58);
+    this.mat = new THREE.MeshToonMaterial({ color: col, gradientMap: grad });
+    this.bones = []; this.joints = [];
+    const mk = (geo, mat) => { const m = new THREE.Mesh(geo, mat); this.grp.add(m); return m; };
+    const bone = r => { const b = { r, m: mk(CYL, this.mat), o: mk(CYL, OUTM) }; this.bones.push(b); return b; };
+    const joint = r => { const j = { r, m: mk(SPH, this.mat), o: mk(SPH, OUTM) }; this.joints.push(j); return j; };
+    this.B = { torso: bone(0.062), clav: bone(0.045), hipb: bone(0.05) };
+    for (const k of ['L', 'R']) { this.B['ua' + k] = bone(0.043); this.B['fa' + k] = bone(0.04); this.B['th' + k] = bone(0.052); this.B['sh' + k] = bone(0.048); this.B['ft' + k] = bone(0.045); }
+    this.J = {};
+    for (const k of ['N', 'P']) this.J[k] = joint(0.062);
+    for (const k of ['L', 'R']) { this.J['sh' + k] = joint(0.045); this.J['el' + k] = joint(0.043); this.J['ha' + k] = joint(0.058); this.J['hip' + k] = joint(0.052);
+      this.J['kn' + k] = joint(0.052); this.J['an' + k] = joint(0.048); this.J['to' + k] = joint(0.045); }
+    this.head = joint(HEADR);
+    const eyeM = new THREE.MeshBasicMaterial({ color: 0x14090d });
+    this.eyes = [mk(SPH, eyeM), mk(SPH, eyeM)]; this.eyes.forEach(e => e.scale.setScalar(0.024));
+    this.mouth = mk(new THREE.TorusGeometry(0.06, 0.013, 6, 14, PI), eyeM);
+    this.guitar = makeGuitar(); this.grp.add(this.guitar);
+    this.shadow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false }));
+    this.shadow.rotation.x = -PI / 2; this.grp.add(this.shadow);
+    this.dance = 'basico'; this.prev = null; this.switchB = -9;
+  }
+  setBone(b, a, c) {
+    const d = c.clone().sub(a), len = d.length(), mid = a.clone().add(c).multiplyScalar(0.5);
+    const q = new THREE.Quaternion().setFromUnitVectors(V(0, 1, 0), len > 1e-6 ? d.divideScalar(len) : V(0, 1, 0));
+    for (const [m, r] of [[b.m, b.r], [b.o, b.r + OL]]) { m.position.copy(mid); m.quaternion.copy(q); m.scale.set(r, len, r); }
+  }
+  setJoint(j, pos) { j.m.position.copy(pos); j.m.scale.setScalar(j.r); j.o.position.copy(pos); j.o.scale.setScalar(j.r + OL); }
+  draw(p) {
+    const S = solve(p, this.origin), B = this.B, J = this.J;
+    this.setBone(B.torso, S.P, S.N); this.setBone(B.clav, S.shL, S.shR); this.setBone(B.hipb, S.hipL, S.hipR);
+    for (const k of ['L', 'R']) {
+      this.setBone(B['ua' + k], S['sh' + k], S['el' + k]); this.setBone(B['fa' + k], S['el' + k], S['ha' + k]);
+      this.setBone(B['th' + k], S['hip' + k], S['kn' + k]); this.setBone(B['sh' + k], S['kn' + k], S['an' + k]); this.setBone(B['ft' + k], S['an' + k], S['to' + k]);
+      for (const n of ['sh', 'el', 'ha', 'hip', 'kn', 'an', 'to']) this.setJoint(J[n + k], S[n + k]);
+    }
+    this.setJoint(J.N, S.N); this.setJoint(J.P, S.P); this.setJoint(this.head, S.H);
+    // cara
+    const at = (x, y, z) => S.H.clone().add(V(x, y, z).applyQuaternion(S.headQ));
+    this.eyes[0].position.copy(at(0.062, 0.035, HEADR * 0.9)); this.eyes[1].position.copy(at(-0.062, 0.035, HEADR * 0.9));
+    this.mouth.position.copy(at(0, -0.02, HEADR * 0.93)); this.mouth.quaternion.copy(S.headQ).multiply(qE(0.35, 0, PI));
+    // guitarra: caja delante de la cadera, mástil hacia la mano izquierda
+    this.guitar.visible = p.guitar > 0.05;
+    if (this.guitar.visible) {
+      const body = S.P.clone().add(V(-0.04, 0.12, 0.17).applyQuaternion(S.chestQ));
+      const x = S.haL.clone().sub(body).normalize(), fwd = V(0, 0, 1).applyQuaternion(S.chestQ);
+      const z = fwd.sub(x.clone().multiplyScalar(fwd.dot(x))).normalize(), y = z.clone().cross(x);
+      this.guitar.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z)); this.guitar.position.copy(body);
+      this.guitar.scale.setScalar(Math.min(1, p.guitar));
+    }
+    // sombra
+    const h = Math.max(0, Math.min(S.anL.y, S.anR.y) - ANK);
+    this.shadow.position.set((S.anL.x + S.anR.x) / 2, 0.002, (S.anL.z + S.anR.z) / 2);
+    this.shadow.scale.setScalar(0.85 * (1 - 0.5 * clamp(h / 0.6, 0, 1)));
+  }
+  pose(b) {                                           // con mezcla suave de medio tiempo al cambiar de baile
+    const p = DANCE[this.dance](b), t = (b - this.switchB) / 0.6;
+    if (this.prev && t < 1) return mixPose(DANCE[this.prev](b), p, ease(clamp(t, 0, 1)));
+    return p;
+  }
+  setDance(d, b) { if (d === this.dance) return; this.prev = this.dance; this.dance = d; this.switchB = b; }
+}
+
+/* ════════════════ ESCENA / GALERÍA ════════════════ */
+const ui = document.getElementById('ui'), uctx = ui.getContext('2d'); ui.width = W; ui.height = H;
+const dancers = [];
+let cam, cells = [];
+const t0 = performance.now() / 1000;
+const beatNow = () => (performance.now() / 1000 - t0) * BPS;
+
+if (GAL) {
+  ORDER.forEach((d, i) => { const dn = new Dancer(i, V(i * 30, 0, 0)); dn.dance = d; dancers.push(dn);
+    const c = new THREE.PerspectiveCamera(30, 360 / 480, 0.1, 100), az = 0.5;
+    c.position.set(i * 30 + Math.sin(az) * 6.2, 1.8, Math.cos(az) * 6.2); c.lookAt(i * 30, 0.95, 0);
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(0.95, 40), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12, depthWrite: false }));
+    disc.rotation.x = -PI / 2; disc.position.set(i * 30, 0.001, 0); scene.add(disc);
+    cells.push({ cam: c, x: (i % 3) * 360, y: Math.floor(i / 3) * 480 }); });
+  uctx.font = "800 30px system-ui, Arial"; uctx.textAlign = "center"; uctx.lineJoin = "round";
+  cells.forEach((c, i) => { uctx.lineWidth = 6; uctx.strokeStyle = 'rgba(0,0,0,0.55)'; uctx.strokeText(NAME[ORDER[i]], c.x + 180, c.y + 46); uctx.fillStyle = '#fff'; uctx.fillText(NAME[ORDER[i]], c.x + 180, c.y + 46);
+    uctx.strokeStyle = 'rgba(255,255,255,0.18)'; uctx.lineWidth = 2; uctx.strokeRect(c.x + 4, c.y + 4, 352, 472); });
+} else {
+  const N = clamp(Math.round(num('n', 5)), 1, 8), gap = 1.75;
+  for (let i = 0; i < N; i++) dancers.push(new Dancer(i, V((i - (N - 1) / 2) * gap, 0, (i % 2) * -0.6)));
+  const span = Math.max(4.5, N * gap + 1), D = span / 2 / (Math.tan(11 * PI / 180) * (W / H)) / num('escala', 1), cy = num('altura', 3);
+  cam = new THREE.PerspectiveCamera(22, W / H, 0.1, 400); cam.position.set(0, cy, D);
+  let ly = D * 0.18; const target = -(1880 / 1920 * 2 - 1);                 // piso a la altura de 1880 px
+  for (let k = 0; k < 30; k++) { cam.lookAt(0, ly, 0); cam.updateMatrixWorld(); const v = V(0, 0, 0).project(cam); ly += (v.y - target) * D * 0.2; }
+}
+
+// qué baila cada uno: rota cada 8 tiempos (o fijo con ?baile=)
+let fixed = ORDER.includes(Q.get('baile')) ? Q.get('baile') : null, mezcla = Q.get('mezcla') === '1', lastBar = -1;
+function choreo(b) {
+  if (GAL) return;
+  const bar = Math.floor(b / 8);
+  if (bar === lastBar && !choreo.dirty) return; lastBar = bar; choreo.dirty = false;
+  dancers.forEach((dn, i) => dn.setDance(fixed || ORDER[(bar + (mezcla ? i * 3 : 0)) % ORDER.length], b));
+}
+
+function render(b) {
+  choreo(b);
+  for (const dn of dancers) dn.draw(dn.pose(b));
+  if (GAL) {
+    renderer.setScissorTest(true); renderer.clear();
+    cells.forEach(c => { renderer.setViewport(c.x, H - c.y - 480, 360, 480); renderer.setScissor(c.x, H - c.y - 480, 360, 480); renderer.render(scene, c.cam); });
+  } else renderer.render(scene, cam);
+}
+function frame() { render(beatNow()); requestAnimationFrame(frame); }
+if (Q.get('captura') !== '1') requestAnimationFrame(frame);           // ?captura=1: se dibuja cuadro por cuadro desde afuera (para grabar videos)
+
+// botones
+if (Q.get('panel') !== '0' && !GAL) {
+  const pn = document.getElementById('panel'), btns = [];
+  const mkB = (txt, fn) => { const b = document.createElement('button'); b.textContent = txt; b.onclick = () => { fn(); btns.forEach(x => x.classList.remove('on')); b.classList.add('on'); }; pn.appendChild(b); btns.push(b); return b; };
+  mkB('Rotar', () => { fixed = null; mezcla = false; choreo.dirty = true; }).classList.add('on');
+  mkB('Mezcla', () => { fixed = null; mezcla = true; choreo.dirty = true; });
+  ORDER.forEach(d => mkB(NAME[d], () => { fixed = d; choreo.dirty = true; }));
+}
+window.__s3d = { dancers, DANCE, ORDER, render, setDance: d => { fixed = d; choreo.dirty = true; } };
+</script>
+</body>
+</html>

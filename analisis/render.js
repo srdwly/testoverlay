@@ -41,7 +41,8 @@ const srtT = s => { const ms = Math.round(s * 1000); const h = Math.floor(ms / 3
   const rel = p => (p ? (path.isAbsolute(p) ? p : path.resolve(dirTxt, p)) : null);
   const video = o.video ? path.resolve(o.video) : rel(A.meta.video);
   const audio = o.audio ? path.resolve(o.audio) : rel(A.meta.audio);
-  for (const f of [video, audio]) if (f && !fs.existsSync(f)) { console.error('No encuentro el archivo: ' + f); process.exit(1); }
+  const voz = o.voz ? path.resolve(o.voz) : rel(A.meta.voz);
+  for (const f of [video, audio, voz]) if (f && !fs.existsSync(f)) { console.error('No encuentro el archivo: ' + f); process.exit(1); }
   const fps = +(o.fps || 30);
   const nombre = slug(A.meta.titulo || path.basename(archivo, '.txt'));
   const salida = path.resolve(o.salida || path.join(__dirname, 'salida', nombre + '.mp4'));
@@ -73,13 +74,24 @@ const srtT = s => { const ms = Math.round(s * 1000); const h = Math.floor(ms / 3
   if (video) ff.push('-ss', String(desde), '-i', video);
   ff.push('-f', 'image2pipe', '-framerate', String(fps), '-c:v', video ? 'png' : 'mjpeg', '-i', '-');
   if (audio && !video) ff.push('-ss', String(desde), '-i', audio);
-  if (video) {
-    ff.push('-filter_complex', '[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=' + fps + '[bg];[bg][1:v]overlay=0:0:shortest=1[v]',
-      '-map', '[v]', '-map', '0:a?');
-  } else {
-    ff.push('-map', '0:v');
-    if (audio) ff.push('-map', '1:a');
-  }
+  if (voz) ff.push('-ss', String(desde), '-i', voz);
+  // índices de entrada: música (video o audio) y voz en off
+  const filtros = [];
+  let mapaV = video ? '[v]' : (video ? '' : '1:v');
+  if (video) filtros.push('[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1,fps=' + fps + '[bg];[bg][1:v]overlay=0:0:shortest=1[v]');
+  else mapaV = '0:v';
+  let mapaA = null;
+  const iM = video ? 0 : audio ? 1 : -1;            // la imagen del navegador entra antes que el audio
+  const iV = voz ? (video ? 2 : audio ? 2 : 1) : -1;
+  if (voz && iM >= 0) {
+    // la guitarra baja sola cuando hablas (ducking) y luego se mezcla con la voz
+    filtros.push(`[${iV}:a]aformat=channel_layouts=stereo,volume=1.4,asplit=2[vz][vzsc];[${iM}:a]aformat=channel_layouts=stereo[mu];[mu][vzsc]sidechaincompress=threshold=0.03:ratio=6:attack=20:release=400[mud];[mud][vz]amix=inputs=2:duration=first:normalize=0[a]`);
+    mapaA = '[a]';
+  } else if (voz) mapaA = iV + ':a';
+  else if (iM >= 0) mapaA = video ? '0:a?' : '1:a';
+  if (filtros.length) ff.push('-filter_complex', filtros.join(';'));
+  ff.push('-map', mapaV);
+  if (mapaA) ff.push('-map', mapaA);
   ff.push('-t', String(hasta - desde), '-c:v', 'libx264', '-preset', 'medium', '-crf', '19', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart', salida);
   const proc = spawn('ffmpeg', ff, { stdio: ['pipe', 'inherit', 'inherit'] });

@@ -1,0 +1,32 @@
+# Video 1 · El IV dórico (maqueta)
+# Graba UNA toma continua siguiendo este orden (con audífonos y la maqueta de guía).
+# La voz en off va aparte en voz.wav (la guitarra baja sola cuando hablas).
+titulo: 4 cervezas
+artista: Ronisch
+tonalidad: D#m
+bpm: 96
+compas: 4
+intro: 2.5
+inicio: 2.5
+gancho: "4 cervezas" está en D#m… ¿por qué suena un G# MAYOR?
+cierre: ¿Qué otra canción boliviana usa este truco? Te leo en comentarios
+formula: i – IV (dórico)
+# video: toma.mp4
+# voz: voz.wav
+---
+[Lo esperado]
+> Si sigues la escala de D#m, el IV es G# MENOR. Así sonaría:
+D#m | G#m
+
+[Lo que toca Ronisch]
+> Pero Ronisch toca G# MAYOR. ¿Escuchas cómo se ilumina?
+D#m | G#
+> Es intercambio modal: lo toma prestado del modo dórico
+D#m | G#
+
+[El mismo truco]
+titulo: Amor de contrabando
+artista: Eclipse · coro (acordes por confirmar)
+tonalidad: Am
+> Eclipse hace lo mismo en el coro de "Amor de contrabando"
+Am | D | Am | D

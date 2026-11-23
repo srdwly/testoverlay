@@ -267,6 +267,13 @@
         '9m': ['SD', 'vi', 'Sexto grado natural de la menor melódica/dórica.'],
       };
       const p = prestamos[g.semis + ac.tipo];
+      // la nota que cambia: la 6ª mayor (dórica) del tónico
+      const l6 = LETRAS[(LETRAS.indexOf(k.letra) + 5) % 7];
+      const a6 = mod(k.pc + 9 - SEMI_LETRA[l6] + 6, 12) - 6, a6n = a6 - 1;
+      const nota6 = americanoDe(l6, a6), nota6n = americanoDe(l6, a6n);
+      const tonoM = americanoDe(k.letra, k.alt) + 'm';
+      if (p && g.semis === 5) return { ...res, funcion: p[0], clase: 'prestamo', etiqueta: 'Intercambio modal (dórico)',
+        explicacion: `En ${tonoM} el IV "debería" ser menor. ${nombre} mayor sale del modo dórico: cambia una sola nota, ${nota6n} → ${nota6}.` };
       if (p) return { ...res, funcion: p[0], clase: 'prestamo', etiqueta: 'Préstamo (dórico)',
         explicacion: `${nombre}: ${p[2]}` };
     }
@@ -341,6 +348,7 @@
     let cursor = null;      // tiempo actual en segundos
     const lineas = texto.replace(/\r/g, '').split('\n');
     let enCuerpo = false;
+    let ctx = null;   // tonalidad/título vigentes (pueden cambiar en el cuerpo)
     const asegurarSeccion = () => {
       if (!sec) { sec = { nombre: '', acordes: [], inicio: null }; secciones.push(sec); }
     };
@@ -349,8 +357,13 @@
     for (let raw of lineas) {
       const linea = raw.trim();
       if (!linea || linea.startsWith('#')) continue;
-      if (linea === '---') { enCuerpo = true; continue; }
+      if (linea === '---') { enCuerpo = true; ctx = { tonalidad: meta.tonalidad, titulo: meta.titulo, artista: meta.artista }; continue; }
       const m = linea.match(/^([a-záéíóúñ]+)\s*:\s*(.*)$/i);
+      if (enCuerpo && m && ['tonalidad', 'titulo', 'título', 'artista', 'bpm'].includes(m[1].toLowerCase())) {
+        const clave = m[1].toLowerCase().replace('í', 'i');
+        if (clave === 'bpm') meta.bpm = parseFloat(m[2]); else ctx[clave] = m[2].trim();
+        continue;
+      }
       if (!enCuerpo && m) {
         const clave = m[1].toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
         const v = m[2].trim();
@@ -359,6 +372,7 @@
         else meta[clave] = v;
         continue;
       }
+      if (!enCuerpo || !ctx) ctx = { tonalidad: meta.tonalidad, titulo: meta.titulo, artista: meta.artista };
       enCuerpo = true;
       if (cursor === null) cursor = meta.inicio;
       const beat = 60 / meta.bpm;
@@ -402,7 +416,7 @@
           } else {
             const ac = leerAcorde(f);
             if (ac) {
-              const it = { ...ac, t: cursor, dur, seccion: sec.nombre };
+              const it = { ...ac, t: cursor, dur, seccion: sec.nombre, tono: ctx.tonalidad, tituloCtx: ctx.titulo, artistaCtx: ctx.artista };
               if (pendienteNota.length) {
                 pendienteNota.forEach(n => notas.push({ t: cursor, texto: n }));
                 pendienteNota = [];
@@ -417,7 +431,11 @@
     const k = k0();
     const todos = secciones.flatMap(s => s.acordes);
     todos.forEach((ac, i) => {
-      Object.assign(ac, analizarAcorde(ac, k, todos[i + 1], todos[i - 1], i === todos.length - 1));
+      const kk = leerTonalidad(ac.tono || '') || k;
+      ac.k = kk;
+      ac.nombreTono = nombreTonalidad(kk, 'latino') + ` (${americanoDe(kk.letra, kk.alt)}${kk.menor ? 'm' : ''})`;
+      const sig = todos[i + 1] && todos[i + 1].tono === ac.tono ? todos[i + 1] : null;
+      Object.assign(ac, analizarAcorde(ac, kk, sig, todos[i - 1], i === todos.length - 1 || !sig));
       ac.digitacion = digitacion(ac);
       ac.latino = latinoDe(ac.raiz.letra, ac.raiz.alt) + ac.simbolo.slice(ac.raiz.len).replace(/^m(?!aj)/, 'm');
       ac.indice = i;

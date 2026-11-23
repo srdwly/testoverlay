@@ -25,6 +25,7 @@
       radial-gradient(1200px 900px at 50% 38%, #3a0d12 0%, #160709 55%, #070607 100%); }
   #fondo .cuerda { position: absolute; top: 0; bottom: 0; width: 3px; background: linear-gradient(#0000, #f5c54233, #0000); }
   body.con-video #fondo { display: none; }
+  body.con-video #intro { background: linear-gradient(#000d, #0008 60%, #000d); }
   .sombra-arriba { position: absolute; left: 0; right: 0; top: 0; height: 520px;
     background: linear-gradient(#000c, #0000); }
   .sombra-abajo { position: absolute; left: 0; right: 0; bottom: 0; height: 1000px;
@@ -51,7 +52,7 @@
   #campoNota { position: absolute; left: 60px; right: 60px; top: 600px; text-align: center; font-size: 26px; font-weight: 700; opacity: .75; }
 
   /* ---------- acorde gigante (modo sin video) ---------- */
-  #gigante { position: absolute; left: 0; right: 0; top: 660px; text-align: center; display: none; }
+  #gigante { position: absolute; left: 0; right: 0; top: 625px; text-align: center; display: none; }
   body.sin-video #gigante { display: block; }
   #gigante .sim { font-size: 210px; font-weight: 900; line-height: 1; text-shadow: 0 10px 40px #000; }
   #gigante .rom { font-size: 104px; font-weight: 900; font-family: Georgia, serif; margin-top: 4px; }
@@ -272,7 +273,7 @@
     document.body.classList.toggle('con-video', conVideo);
     document.body.classList.toggle('sin-video', !conVideo);
     A.inicioVideo = Math.max(A.meta.inicio, 0);
-    A.inicioIntro = Math.max(INTRO_MIN, A.meta.inicio);  // el gancho ocupa al menos 3 s
+    A.inicioIntro = Math.max(parseFloat(A.meta.intro) || INTRO_MIN, A.meta.inicio);  // el gancho ocupa al menos 3 s
     // si el inicio es antes de 3 s, la intro se sobrepone a los primeros acordes
     A.duracion = A.finMusica + CIERRE;
     window.duracion = A.duracion;
@@ -283,10 +284,10 @@
     $('#intro .g').textContent = A.meta.gancho || A.meta.titulo;
     $('#intro .t').textContent = [A.meta.titulo, A.meta.artista].filter(Boolean).join(' · ');
 
-    // campo armónico
+    // campo armónico (se rehace si la tonalidad cambia a mitad del video)
     const latino = A.meta.cifrado === 'latino';
-    $('#campo').innerHTML = A.campo.map(g =>
-      `<div class="grado" data-pc="${g.pc}" data-cal="${g.calidad}"><b style="color:${COLOR_FN[g.funcion]}">${g.romano}</b><span>${esc(latino ? g.latino : g.americano)}</span></div>`).join('');
+    tonoMostrado = null;
+    ponerTono(A.acordes[0]);
 
     // cinta
     $('#cinta').querySelectorAll('.ficha').forEach(e => e.remove());
@@ -303,7 +304,7 @@
     $('#pulsos').innerHTML = '<i></i>'.repeat(A.meta.compas || 4);
 
     // cierre
-    $('#cierre .formula').textContent = A.resumen.progresion;
+    $('#cierre .formula').textContent = A.meta.formula || A.resumen.progresion;
     $('#cierre .esp').innerHTML = A.resumen.especiales.slice(0, 3).map(a =>
       `<div style="border-left-color:${COLOR_CLASE[a.clase] || 'var(--oro)'}">${esc(a.simbolo)} = ${esc(a.romano)} · ${esc(a.etiqueta)}</div>`).join('');
     $('#cierre .cta').textContent = A.meta.cierre || '¿Qué canción analizo ahora?';
@@ -312,6 +313,19 @@
     if (!RENDER) { $('#scrub').max = A.duracion; }
     renderAt(tiempoActual || 0);
     return true;
+  }
+
+  let tonoMostrado = null;
+  function ponerTono(ac) {
+    const clave = ac.nombreTono + '|' + ac.tituloCtx + '|' + ac.artistaCtx;
+    if (clave === tonoMostrado) return;
+    tonoMostrado = clave;
+    const latino = A.meta.cifrado === 'latino';
+    $('#campo').innerHTML = Teoria.campoArmonico(ac.k).map(g =>
+      `<div class="grado" data-pc="${g.pc}" data-cal="${g.calidad}"><b style="color:${COLOR_FN[g.funcion]}">${g.romano}</b><span>${esc(latino ? g.latino : g.americano)}</span></div>`).join('');
+    $('#chipTono').textContent = ac.nombreTono;
+    $('#titulo').textContent = ac.tituloCtx || A.meta.titulo;
+    $('#artista').textContent = ac.artistaCtx || '';
   }
 
   function mostrarError(m) { const e = $('#errores'); if (e) e.textContent = m; }
@@ -336,6 +350,7 @@
     const latino = A.meta.cifrado === 'latino';
     const col = COLOR_FN[ac.funcion];
 
+    ponerTono(ac);
     $('#progreso i').style.width = (clamp(t / A.duracion) * 100) + '%';
     $('#chipSec').textContent = ac.seccion || 'Canción';
     $('#chipSec').style.display = ac.seccion ? '' : 'none';

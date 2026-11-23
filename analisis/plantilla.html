@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Análisis armónico</title>
+<style>
+  :root {
+    --oro: #f5c542; --rojo: #e5262f; --negro: #0b0b0d;
+    --T: #3fa7ff; --SD: #35d07f; --D: #ff4646;
+    --prestamo: #b57bff; --secundaria: #ff9a2e; --cromatico: #c9c9c9; --armonica: #ff4646;
+    --fuente: "Inter", "Segoe UI", system-ui, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: #1a1a1f; color: #fff; font-family: var(--fuente); overflow: hidden; height: 100%; }
+  html.render, body.render { background: transparent; }
+
+  /* ---------- lienzo 1080x1920 ---------- */
+  #escenario { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  body.editor #escenario { right: 460px; bottom: 70px; }
+  #marco { position: relative; width: 1080px; height: 1920px; transform-origin: center center; flex: none; }
+  #videoFondo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: none; }
+  #lienzo { position: absolute; inset: 0; overflow: hidden; }
+  #fondo { position: absolute; inset: 0; background:
+      radial-gradient(1200px 900px at 50% 38%, #3a0d12 0%, #160709 55%, #070607 100%); }
+  #fondo .cuerda { position: absolute; top: 0; bottom: 0; width: 3px; background: linear-gradient(#0000, #f5c54233, #0000); }
+  body.con-video #fondo { display: none; }
+  body.con-video #intro { background: linear-gradient(#000d, #0008 60%, #000d); }
+  .sombra-arriba { position: absolute; left: 0; right: 0; top: 0; height: 520px;
+    background: linear-gradient(#000c, #0000); }
+  .sombra-abajo { position: absolute; left: 0; right: 0; bottom: 0; height: 1000px;
+    background: linear-gradient(#0000, #000b 40%, #000e); }
+
+  /* ---------- cabecera ---------- */
+  #progreso { position: absolute; left: 60px; right: 60px; top: 138px; height: 8px; border-radius: 4px; background: #ffffff26; overflow: hidden; }
+  #progreso i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--rojo), var(--oro)); }
+  #cabecera { position: absolute; left: 60px; right: 60px; top: 168px; }
+  #kicker { font-size: 30px; font-weight: 800; letter-spacing: 6px; color: var(--oro); text-transform: uppercase; }
+  #titulo { font-size: 68px; font-weight: 900; line-height: 1.02; margin-top: 6px; text-shadow: 0 4px 18px #000; }
+  #artista { font-size: 36px; font-weight: 600; opacity: .85; margin-top: 6px; }
+  #chips { display: flex; gap: 14px; margin-top: 18px; flex-wrap: wrap; }
+  .chip { font-size: 30px; font-weight: 800; padding: 8px 22px; border-radius: 40px; background: #000a; border: 3px solid var(--oro); color: var(--oro); }
+  .chip.sec { border-color: #fff; color: #fff; }
+
+  /* ---------- campo armónico ---------- */
+  #campo { position: absolute; left: 60px; right: 60px; top: 470px; display: flex; gap: 10px; }
+  .grado { flex: 1; border-radius: 18px; padding: 10px 0 12px; text-align: center; background: #0009; border: 3px solid #ffffff22;
+    transition: none; }
+  .grado b { display: block; font-size: 38px; font-weight: 900; font-family: Georgia, "Times New Roman", serif; }
+  .grado span { display: block; font-size: 24px; font-weight: 700; opacity: .8; }
+  .grado.activo { transform: translateY(-8px) scale(1.08); }
+  #campoNota { position: absolute; left: 60px; right: 60px; top: 600px; text-align: center; font-size: 26px; font-weight: 700; opacity: .75; }
+
+  /* ---------- acorde gigante (modo sin video) ---------- */
+  #gigante { position: absolute; left: 0; right: 0; top: 625px; text-align: center; display: none; }
+  body.sin-video #gigante { display: block; }
+  #gigante .sim { font-size: 210px; font-weight: 900; line-height: 1; text-shadow: 0 10px 40px #000; }
+  #gigante .rom { font-size: 104px; font-weight: 900; font-family: Georgia, serif; margin-top: 4px; }
+
+  /* ---------- explicación ---------- */
+  #explica { position: absolute; left: 60px; right: 150px; top: 690px; border-radius: 30px; padding: 30px 36px;
+    background: #0b0b0ff0; border: 5px solid var(--prestamo); box-shadow: 0 20px 60px #000c; opacity: 0; }
+  #explica .et { font-size: 34px; font-weight: 900; letter-spacing: 1px; }
+  #explica .tx { font-size: 40px; font-weight: 700; line-height: 1.22; margin-top: 10px; }
+
+  /* ---------- subtítulo / narración ---------- */
+  #sub { position: absolute; left: 70px; right: 160px; top: 975px; text-align: center; opacity: 0; }
+  #sub span { display: inline; font-size: 44px; font-weight: 900; line-height: 1.32; padding: 6px 16px;
+    background: #000d; border-radius: 14px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+
+  /* ---------- cinta de acordes ---------- */
+  #cinta { position: absolute; left: 0; right: 0; top: 1190px; height: 120px; }
+  .ficha { position: absolute; top: 0; width: 170px; height: 112px; border-radius: 20px; background: #000b;
+    border: 4px solid #fff3; text-align: center; padding-top: 8px; }
+  .ficha b { display: block; font-size: 42px; font-weight: 900; font-family: Georgia, serif; line-height: 1.1; }
+  .ficha span { display: block; font-size: 28px; font-weight: 800; opacity: .9; }
+  #cinta .flecha { position: absolute; top: -26px; left: 278px; width: 0; height: 0; border-left: 16px solid transparent;
+    border-right: 16px solid transparent; border-top: 20px solid var(--oro); }
+
+  /* ---------- panel inferior ---------- */
+  #panel { position: absolute; left: 50px; width: 880px; top: 1335px; height: 290px; border-radius: 34px;
+    background: #0d0d10f2; border: 4px solid #ffffff1f; display: flex; align-items: center; padding: 0 30px; gap: 26px; }
+  #acorde { flex: 1; min-width: 0; }
+  #acorde .fila { display: flex; align-items: baseline; gap: 22px; }
+  #acorde .sim { font-size: 120px; font-weight: 900; line-height: 1; letter-spacing: -2px; }
+  #acorde .lat { font-size: 40px; font-weight: 700; opacity: .7; }
+  #acorde .rom { font-size: 74px; font-weight: 900; font-family: Georgia, serif; line-height: 1.1; }
+  #acorde .fn { display: inline-block; font-size: 26px; font-weight: 900; padding: 6px 16px; border-radius: 12px; color: #000;
+    margin-left: 12px; vertical-align: middle; letter-spacing: 1px; }
+  #pulsos { display: flex; gap: 12px; margin-top: 10px; }
+  #pulsos i { width: 22px; height: 22px; border-radius: 50%; background: #ffffff30; }
+  #pulsos i.on { background: var(--oro); }
+  #diagrama { width: 230px; height: 260px; flex: none; }
+
+  /* ---------- intro y cierre ---------- */
+  .tarjeta { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; padding: 0 80px 120px; opacity: 0;
+    background: radial-gradient(1200px 900px at 50% 45%, #3a0d12, #070607); }
+  .tarjeta .k { font-size: 34px; font-weight: 900; letter-spacing: 8px; color: var(--oro); }
+  .tarjeta .g { font-size: 92px; font-weight: 900; line-height: 1.05; margin-top: 26px; }
+  .tarjeta .t { font-size: 44px; font-weight: 700; margin-top: 40px; opacity: .85; }
+  .pua { width: 120px; height: 140px; margin-bottom: 30px; }
+  #cierre .formula { font-size: 82px; font-weight: 900; font-family: Georgia, serif; margin-top: 18px; line-height: 1.1; }
+  #cierre .esp { display: flex; flex-direction: column; gap: 16px; margin-top: 44px; }
+  #cierre .esp div { font-size: 38px; font-weight: 800; padding: 14px 24px; border-radius: 18px; background: #0008; border-left: 10px solid var(--prestamo); }
+  #cierre .cta { font-size: 46px; font-weight: 900; margin-top: 56px; color: var(--oro); line-height: 1.15; }
+  #cierre .user { font-size: 36px; font-weight: 700; margin-top: 14px; opacity: .8; }
+
+  /* ---------- zonas seguras de TikTok (solo vista previa) ---------- */
+  #seguras { position: absolute; inset: 0; pointer-events: none; display: none; }
+  #seguras div { position: absolute; background: #00ffff18; border: 2px dashed #00ffff88; }
+  body.ver-seguras #seguras { display: block; }
+
+  /* ---------- editor (vista previa en el navegador) ---------- */
+  #ui { display: none; }
+  body.editor #ui { display: block; }
+  #lado { position: fixed; right: 0; top: 0; bottom: 0; width: 460px; background: #111116; border-left: 1px solid #333; display: flex; flex-direction: column; padding: 14px; gap: 10px; }
+  #lado h1 { font-size: 18px; color: var(--oro); }
+  #lado p { font-size: 13px; opacity: .7; line-height: 1.4; }
+  #texto { flex: 1; width: 100%; background: #0a0a0d; color: #eee; border: 1px solid #333; border-radius: 8px; padding: 10px;
+    font: 14px/1.45 ui-monospace, Menlo, Consolas, monospace; resize: none; }
+  #errores { font-size: 13px; color: #ff8a8a; min-height: 18px; }
+  .botones { display: flex; gap: 8px; flex-wrap: wrap; }
+  button, label.boton { background: #24242c; color: #fff; border: 1px solid #444; border-radius: 8px; padding: 8px 12px; font: 600 13px var(--fuente); cursor: pointer; }
+  button:hover, label.boton:hover { background: #30303a; }
+  label.boton input { display: none; }
+  #barra { position: fixed; left: 0; right: 460px; bottom: 0; height: 70px; background: #111116; border-top: 1px solid #333; display: flex; align-items: center; gap: 12px; padding: 0 16px; }
+  #barra input[type=range] { flex: 1; }
+  #reloj { font: 600 14px ui-monospace, monospace; width: 120px; text-align: right; }
+</style>
+</head>
+<body>
+<div id="escenario">
+  <div id="marco">
+    <video id="videoFondo" playsinline></video>
+    <div id="lienzo">
+      <div id="fondo"></div>
+      <div class="sombra-arriba"></div>
+      <div class="sombra-abajo"></div>
+
+      <div id="progreso"><i></i></div>
+      <div id="cabecera">
+        <div id="kicker">Análisis armónico</div>
+        <div id="titulo"></div>
+        <div id="artista"></div>
+        <div id="chips"><span class="chip" id="chipTono"></span><span class="chip sec" id="chipSec"></span></div>
+      </div>
+
+      <div id="campo"></div>
+      <div id="campoNota">Acordes de la tonalidad</div>
+
+      <div id="gigante"><div class="sim"></div><div class="rom"></div></div>
+      <div id="explica"><div class="et"></div><div class="tx"></div></div>
+      <div id="sub"><span></span></div>
+
+      <div id="cinta"><div class="flecha"></div></div>
+      <div id="panel">
+        <div id="acorde">
+          <div class="fila"><span class="sim"></span><span class="lat"></span></div>
+          <div><span class="rom"></span><span class="fn"></span></div>
+          <div id="pulsos"></div>
+        </div>
+        <svg id="diagrama" viewBox="0 0 230 260"></svg>
+      </div>
+
+      <div class="tarjeta" id="intro">
+        <svg class="pua" viewBox="0 0 120 140"><path d="M60 136 C30 104 4 70 4 38 C4 14 30 4 60 4 C90 4 116 14 116 38 C116 70 90 104 60 136Z" fill="#e5262f" stroke="#f5c542" stroke-width="6"/></svg>
+        <div class="k">ANÁLISIS ARMÓNICO</div>
+        <div class="g"></div>
+        <div class="t"></div>
+      </div>
+      <div class="tarjeta" id="cierre">
+        <div class="k">LA FÓRMULA DE LA CANCIÓN</div>
+        <div class="formula"></div>
+        <div class="esp"></div>
+        <div class="cta"></div>
+        <div class="user"></div>
+      </div>
+
+      <div id="seguras">
+        <div style="left:0;right:0;top:0;height:130px"></div>
+        <div style="right:0;width:130px;top:820px;height:800px"></div>
+        <div style="left:0;right:0;bottom:0;height:290px"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="ui">
+  <div id="lado">
+    <h1>Editor de análisis armónico</h1>
+    <p>Escribe o pega los acordes. La vista previa se actualiza sola. Cuando quede bien, guarda el texto en <b>analisis/canciones/</b> y renderiza.</p>
+    <div class="botones">
+      <label class="boton">🎬 Cargar mi video/audio<input type="file" id="archivo" accept="video/*,audio/*"></label>
+      <button id="marcarInicio" title="Pon el video en el momento del primer acorde y aprieta">⏱ Marcar inicio aquí</button>
+      <button id="tapBpm" title="Aprieta en cada tiempo (4 o más veces)">🥁 Tap BPM</button>
+    </div>
+    <div class="botones">
+      <button id="verSeguras">Zonas de TikTok</button>
+      <button id="descargar">💾 Descargar .txt</button>
+    </div>
+    <textarea id="texto" spellcheck="false"></textarea>
+    <div id="errores"></div>
+  </div>
+  <div id="barra">
+    <button id="play">▶</button>
+    <input type="range" id="scrub" min="0" max="100" step="0.01" value="0">
+    <span id="reloj">0:00 / 0:00</span>
+  </div>
+</div>
+
+<script src="teoria.js"></script>
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const params = new URLSearchParams(location.search);
+  const RENDER = params.has('render');
+  document.body.classList.add(RENDER ? 'render' : 'editor');
+  if (RENDER) document.documentElement.classList.add('render');
+
+  const COLOR_FN = { T: 'var(--T)', SD: 'var(--SD)', D: 'var(--D)' };
+  const COLOR_CLASE = { prestamo: 'var(--prestamo)', secundaria: 'var(--secundaria)', cromatico: 'var(--cromatico)', armonica: 'var(--armonica)' };
+  const INTRO_MIN = 3, CIERRE = 5;
+  let A = null;           // análisis actual
+  let conVideo = false;
+
+  const clamp = (v, a = 0, b = 1) => Math.max(a, Math.min(b, v));
+  const ease = x => { x = clamp(x); return 1 - Math.pow(1 - x, 3); };
+  const back = x => { x = clamp(x); const c = 1.7; return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2); };
+  const fmt = s => { s = Math.max(0, s); return Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0'); };
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+  // cuerdas decorativas del fondo
+  for (let i = 0; i < 6; i++) { const d = document.createElement('div'); d.className = 'cuerda'; d.style.left = (240 + i * 120) + 'px'; $('#fondo').appendChild(d); }
+
+  /* ---------- diagrama de guitarra ---------- */
+  function svgDiagrama(dig, color) {
+    const { trastes } = dig;
+    const tocados = trastes.filter(f => f > 0);
+    const min = tocados.length ? Math.min(...tocados) : 1;
+    const max = tocados.length ? Math.max(...tocados) : 1;
+    const base = max <= 4 ? 1 : min;
+    const x0 = 40, y0 = 46, dx = 32, dy = 46, n = 5;
+    let s = '';
+    if (base === 1) s += `<rect x="${x0 - 2}" y="${y0 - 8}" width="${dx * 5 + 4}" height="8" fill="#fff"/>`;
+    else s += `<text x="${x0 - 12}" y="${y0 + dy * 0.62}" fill="#fff" font-size="26" font-weight="800" text-anchor="end" font-family="Inter,Arial">${base}</text>`;
+    for (let i = 0; i <= n; i++) s += `<line x1="${x0}" y1="${y0 + i * dy}" x2="${x0 + dx * 5}" y2="${y0 + i * dy}" stroke="#ffffff88" stroke-width="3"/>`;
+    for (let c = 0; c < 6; c++) s += `<line x1="${x0 + c * dx}" y1="${y0}" x2="${x0 + c * dx}" y2="${y0 + n * dy}" stroke="#fff" stroke-width="${3.4 - c * 0.35}"/>`;
+    // cejilla
+    if (dig.cejilla > 0) {
+      const cuerdas = trastes.map((f, i) => f === dig.cejilla ? i : -1).filter(i => i >= 0);
+      if (cuerdas.length >= 2) {
+        const a = Math.min(...cuerdas), b = Math.max(...cuerdas), y = y0 + (dig.cejilla - base + 0.5) * dy;
+        s += `<rect x="${x0 + a * dx - 13}" y="${y - 13}" width="${(b - a) * dx + 26}" height="26" rx="13" fill="${color}"/>`;
+      }
+    }
+    trastes.forEach((f, c) => {
+      const x = x0 + c * dx;
+      if (f < 0) s += `<text x="${x}" y="${y0 - 16}" fill="#ff8080" font-size="26" font-weight="900" text-anchor="middle" font-family="Inter,Arial">×</text>`;
+      else if (f === 0) s += `<circle cx="${x}" cy="${y0 - 24}" r="9" fill="none" stroke="#fff" stroke-width="3.5"/>`;
+      else s += `<circle cx="${x}" cy="${y0 + (f - base + 0.5) * dy}" r="14" fill="${color}" stroke="#000" stroke-width="2"/>`;
+    });
+    return s;
+  }
+
+  /* ---------- montar a partir del texto ---------- */
+  function cargarTexto(txt, opciones = {}) {
+    let res;
+    try { res = Teoria.parsearCancion(txt); } catch (e) { mostrarError('Error al leer: ' + e.message); return false; }
+    if (!res.acordes.length) { mostrarError('No encontré acordes. Escríbelos después de la línea ---, separados por |'); return false; }
+    mostrarError('');
+    A = res;
+    if (opciones.conVideo !== undefined) conVideo = opciones.conVideo;
+    document.body.classList.toggle('con-video', conVideo);
+    document.body.classList.toggle('sin-video', !conVideo);
+    A.inicioVideo = Math.max(A.meta.inicio, 0);
+    A.inicioIntro = Math.max(parseFloat(A.meta.intro) || INTRO_MIN, A.meta.inicio);  // el gancho ocupa al menos 3 s
+    // si el inicio es antes de 3 s, la intro se sobrepone a los primeros acordes
+    A.duracion = A.finMusica + (parseFloat(A.meta.final) || CIERRE);
+    window.duracion = A.duracion;
+
+    $('#titulo').textContent = A.meta.titulo;
+    $('#artista').textContent = A.meta.artista;
+    $('#chipTono').textContent = `${A.nombreTonalidad} (${A.tonalidad.letra}${A.tonalidad.alt > 0 ? '#' : A.tonalidad.alt < 0 ? 'b' : ''}${A.tonalidad.menor ? 'm' : ''})`;
+    $('#intro .g').textContent = A.meta.gancho || A.meta.titulo;
+    $('#intro .t').textContent = [A.meta.titulo, A.meta.artista].filter(Boolean).join(' · ');
+
+    // campo armónico (se rehace si la tonalidad cambia a mitad del video)
+    const latino = A.meta.cifrado === 'latino';
+    tonoMostrado = null;
+    ponerTono(A.acordes[0]);
+
+    // cinta
+    $('#cinta').querySelectorAll('.ficha').forEach(e => e.remove());
+    A.acordes.forEach(ac => {
+      const d = document.createElement('div');
+      d.className = 'ficha';
+      const col = COLOR_FN[ac.funcion];
+      d.style.borderColor = ac.clase !== 'diatonico' ? COLOR_CLASE[ac.clase] : col;
+      d.innerHTML = `<b style="color:${col}">${esc(ac.romano)}</b><span>${esc(latino ? ac.latino : ac.simbolo)}</span>`;
+      if (ac.romano.length > 5) d.querySelector('b').style.fontSize = '32px';
+      $('#cinta').appendChild(d);
+      ac.el = d;
+    });
+    $('#pulsos').innerHTML = '<i></i>'.repeat(A.meta.compas || 4);
+
+    // cierre
+    $('#cierre .formula').textContent = A.meta.formula || A.resumen.progresion;
+    $('#cierre .esp').innerHTML = A.resumen.especiales.slice(0, 3).map(a =>
+      `<div style="border-left-color:${COLOR_CLASE[a.clase] || 'var(--oro)'}">${esc(a.simbolo)} = ${esc(a.romano)} · ${esc(a.etiqueta)}</div>`).join('');
+    $('#cierre .cta').textContent = A.meta.cierre || '¿Qué canción analizo ahora?';
+    $('#cierre .user').textContent = A.meta.usuario;
+
+    if (!RENDER) { $('#scrub').max = A.duracion; }
+    renderAt(tiempoActual || 0);
+    return true;
+  }
+
+  let tonoMostrado = null;
+  function ponerTono(ac) {
+    const clave = ac.nombreTono + '|' + ac.tituloCtx + '|' + ac.artistaCtx;
+    if (clave === tonoMostrado) return;
+    tonoMostrado = clave;
+    const latino = A.meta.cifrado === 'latino';
+    $('#campo').innerHTML = Teoria.campoArmonico(ac.k).map(g =>
+      `<div class="grado" data-pc="${g.pc}" data-cal="${g.calidad}"><b style="color:${COLOR_FN[g.funcion]}">${g.romano}</b><span>${esc(latino ? g.latino : g.americano)}</span></div>`).join('');
+    $('#chipTono').textContent = ac.nombreTono;
+    $('#titulo').textContent = ac.tituloCtx || A.meta.titulo;
+    $('#artista').textContent = ac.artistaCtx || '';
+  }
+
+  function mostrarError(m) { const e = $('#errores'); if (e) e.textContent = m; }
+
+  function acordeEn(t) {
+    const L = A.acordes;
+    if (t < L[0].t) return -1;
+    for (let i = L.length - 1; i >= 0; i--) if (t >= L[i].t) return i;
+    return -1;
+  }
+
+  /* ---------- dibujar un instante (determinista) ---------- */
+  let ultimoDiagrama = null;
+  function renderAt(t) {
+    if (!A) return;
+    const L = A.acordes;
+    let i = acordeEn(t);
+    const enCierre = t >= A.finMusica;
+    const iv = Math.max(i, 0);
+    const ac = L[iv];
+    const desde = i >= 0 ? t - ac.t : 0;
+    const latino = A.meta.cifrado === 'latino';
+    const col = COLOR_FN[ac.funcion];
+
+    ponerTono(ac);
+    $('#progreso i').style.width = (clamp(t / A.duracion) * 100) + '%';
+    $('#chipSec').textContent = ac.seccion || 'Canción';
+    $('#chipSec').style.display = ac.seccion ? '' : 'none';
+
+    // campo armónico: resalta el grado que suena
+    document.querySelectorAll('.grado').forEach(g => {
+      const on = i >= 0 && +g.dataset.pc === ac.raiz.pc && ac.clase === 'diatonico';
+      g.classList.toggle('activo', on);
+      g.style.borderColor = on ? col : '#ffffff22';
+      g.style.background = on ? 'rgba(255,255,255,.14)' : '#0009';
+    });
+    $('#campoNota').textContent = i >= 0 && ac.clase !== 'diatonico'
+      ? `${ac.simbolo} está FUERA de estos acordes` : 'Acordes de la tonalidad';
+    $('#campoNota').style.color = i >= 0 && ac.clase !== 'diatonico' ? COLOR_CLASE[ac.clase] : '#fff';
+    $('#campoNota').style.opacity = i >= 0 && ac.clase !== 'diatonico' ? 1 : .7;
+
+    // panel del acorde
+    const pop = back(desde / 0.28);
+    $('#acorde .sim').textContent = latino ? ac.latino : ac.simbolo;
+    $('#acorde .lat').textContent = latino ? ac.simbolo : ac.latino;
+    $('#acorde .rom').textContent = ac.romano;
+    $('#acorde .rom').style.color = col;
+    $('#acorde .fn').textContent = Teoria.NOMBRE_FUNCION[ac.funcion].toUpperCase();
+    $('#acorde .fn').style.background = col;
+    $('#acorde').style.transform = `scale(${0.85 + 0.15 * pop})`;
+    $('#acorde').style.transformOrigin = 'left center';
+    $('#panel').style.borderColor = ac.clase !== 'diatonico' ? COLOR_CLASE[ac.clase] : col;
+    if (ultimoDiagrama !== iv) { $('#diagrama').innerHTML = svgDiagrama(ac.digitacion, col); ultimoDiagrama = iv; }
+
+    // pulsos del compás
+    const beat = 60 / A.meta.bpm;
+    const tm = t - A.meta.inicio;
+    const pulso = tm >= 0 ? Math.floor(tm / beat) % (A.meta.compas || 4) : -1;
+    const fase = tm >= 0 ? (tm / beat) % 1 : 1;
+    document.querySelectorAll('#pulsos i').forEach((p, k) => {
+      p.classList.toggle('on', k === pulso);
+      p.style.transform = k === pulso ? `scale(${1.35 - 0.35 * ease(fase * 2)})` : '';
+    });
+
+    // gigante (sin video)
+    $('#gigante .sim').textContent = latino ? ac.latino : ac.simbolo;
+    $('#gigante .rom').textContent = ac.romano;
+    $('#gigante .rom').style.color = col;
+    $('#gigante').style.transform = `scale(${0.8 + 0.2 * pop})`;
+
+    // cinta: la ficha actual se centra bajo la flecha
+    const mov = ease(desde / 0.35);
+    const pos = i < 0 ? -1 + 0 : iv - 1 + mov;
+    L.forEach((a, k) => {
+      const x = 210 + (k - pos) * 190;
+      const vis = x > -200 && x < 1100;
+      a.el.style.display = vis ? '' : 'none';
+      if (!vis) return;
+      a.el.style.left = x + 'px';
+      const actual = k === i;
+      a.el.style.transform = actual ? 'scale(1.12)' : 'scale(.92)';
+      a.el.style.opacity = k < i ? .45 : 1;
+      a.el.style.background = actual ? '#ffffff22' : '#000b';
+    });
+
+    // explicación de acordes especiales (se queda al menos 4 s)
+    let especial = null;
+    for (let k = iv; k >= 0 && k >= iv - 6; k--) {
+      const a = L[k];
+      if (a.tituloCtx !== ac.tituloCtx) break;   // no arrastrar la explicación a otra canción
+      if (i >= 0 && a.explicacion && t - a.t < Math.max(4.2, a.dur)) { especial = a; break; }
+    }
+    const ex = $('#explica');
+    if (especial && !enCierre) {
+      const d = t - especial.t, fin = Math.max(4.2, especial.dur);
+      const o = Math.min(ease(d / 0.3), ease((fin - d) / 0.3));
+      const c = COLOR_CLASE[especial.clase] || COLOR_FN[especial.funcion];
+      ex.style.opacity = o;
+      ex.style.transform = `translateY(${(1 - o) * 40}px)`;
+      ex.style.borderColor = c;
+      ex.querySelector('.et').textContent = `${especial.simbolo} · ${especial.romano} · ${especial.etiqueta}`;
+      ex.querySelector('.et').style.color = c;
+      ex.querySelector('.tx').textContent = especial.explicacion;
+    } else ex.style.opacity = 0;
+    // sin video: el acorde gigante cede su lugar a la explicación
+    $('#gigante').style.opacity = 1 - (+ex.style.opacity || 0);
+
+    // narración / subtítulos
+    const nota = A.notas.find(n => t >= n.t && t < n.fin);
+    const sub = $('#sub');
+    if (nota && !enCierre) {
+      const d = t - nota.t;
+      const o = Math.min(ease(d / 0.25), ease((nota.fin - t) / 0.25));
+      sub.style.opacity = o;
+      sub.style.transform = `translateY(${(1 - o) * 20}px)`;
+      sub.querySelector('span').textContent = nota.texto;
+      // si hay explicación al mismo tiempo, el subtítulo sube para no chocar (modo sin video)
+    } else sub.style.opacity = 0;
+
+    // intro
+    const introFin = A.inicioIntro;
+    const oi = t < introFin ? Math.min(1, ease((introFin - t) / 0.4)) : 0;
+    $('#intro').style.opacity = oi;
+    $('#intro .g').style.transform = `scale(${0.92 + 0.08 * ease(t / 0.6)})`;
+    $('#intro .pua').style.transform = `rotate(${Math.sin(t * 3) * 8}deg)`;
+
+    // cierre
+    const dc = t - A.finMusica;
+    const oc = dc > 0 ? ease(dc / 0.5) : 0;
+    $('#cierre').style.opacity = oc;
+    $('#cierre .formula').style.transform = `translateY(${(1 - ease((dc - 0.2) / 0.5)) * 40}px)`;
+    $('#cierre .esp').style.opacity = ease((dc - 0.8) / 0.5);
+    $('#cierre .cta').style.opacity = ease((dc - 1.6) / 0.5);
+    $('#cierre .user').style.opacity = ease((dc - 1.9) / 0.5);
+
+    tiempoActual = t;
+    if (!RENDER) {
+      $('#reloj').textContent = `${fmt(t)} / ${fmt(A.duracion)}`;
+      if (!arrastrando) $('#scrub').value = t;
+    }
+  }
+
+  let tiempoActual = 0;
+  window.renderAt = renderAt;
+  window.cargarTexto = cargarTexto;
+
+  /* ---------- modo render: esperar a que node inyecte el texto ---------- */
+  if (RENDER) { window.listo = true; return; }
+
+  /* ---------- modo editor (vista previa) ---------- */
+  function ajustarEscala() {
+    const e = $('#escenario').getBoundingClientRect();
+    const s = Math.min(e.width / 1080, e.height / 1920) * 0.97;
+    $('#marco').style.transform = `scale(${s})`;
+  }
+  addEventListener('resize', ajustarEscala); ajustarEscala();
+
+  const video = $('#videoFondo');
+  let reproduciendo = false, t0 = 0, reloj0 = 0, arrastrando = false;
+  const texto = $('#texto');
+
+  function cargarDesdeEditor() {
+    cargarTexto(texto.value, { conVideo: !!video.src });
+    try { localStorage.setItem('analisis-texto', texto.value); } catch (e) {}
+  }
+  let deb; texto.addEventListener('input', () => { clearTimeout(deb); deb = setTimeout(cargarDesdeEditor, 250); });
+
+  async function inicial() {
+    const archivo = params.get('cancion') || 'canciones/ejemplo.txt';
+    let txt = null;
+    try { const r = await fetch(archivo, { cache: 'no-store' }); if (r.ok) txt = await r.text(); } catch (e) {}
+    if (!params.get('cancion')) { try { txt = localStorage.getItem('analisis-texto') || txt; } catch (e) {} }
+    texto.value = txt || 'titulo: Mi canción\ntonalidad: C\nbpm: 90\ninicio: 3\ngancho: ¿Por qué esta canción suena así?\n---\n[Estrofa]\nC | Am | F | G\n';
+    cargarDesdeEditor();
+  }
+
+  function ahora() { return reproduciendo ? (video.src ? video.currentTime : t0 + (performance.now() - reloj0) / 1000) : tiempoActual; }
+  function bucle() {
+    if (reproduciendo) {
+      const t = ahora();
+      if (A && t >= A.duracion) { pausar(); renderAt(A.duracion); }
+      else renderAt(t);
+    }
+    requestAnimationFrame(bucle);
+  }
+  function reproducir() { reproduciendo = true; t0 = tiempoActual; reloj0 = performance.now(); if (video.src) { video.currentTime = tiempoActual; video.play(); } $('#play').textContent = '❚❚'; }
+  function pausar() { reproduciendo = false; if (video.src) video.pause(); $('#play').textContent = '▶'; }
+  $('#play').onclick = () => reproduciendo ? pausar() : reproducir();
+  addEventListener('keydown', e => { if (e.code === 'Space' && document.activeElement !== texto) { e.preventDefault(); $('#play').click(); } });
+  $('#scrub').addEventListener('input', e => { arrastrando = true; const t = +e.target.value; if (video.src) video.currentTime = t; t0 = t; reloj0 = performance.now(); renderAt(t); });
+  $('#scrub').addEventListener('change', () => { arrastrando = false; });
+  $('#verSeguras').onclick = () => document.body.classList.toggle('ver-seguras');
+
+  $('#archivo').addEventListener('change', e => {
+    const f = e.target.files[0]; if (!f) return;
+    video.src = URL.createObjectURL(f);
+    video.style.display = f.type.startsWith('video') ? 'block' : 'none';
+    cargarDesdeEditor();
+  });
+
+  function ponerMeta(clave, valor) {
+    const re = new RegExp('^' + clave + '\\s*:.*$', 'm');
+    if (re.test(texto.value)) texto.value = texto.value.replace(re, `${clave}: ${valor}`);
+    else texto.value = `${clave}: ${valor}\n` + texto.value;
+    cargarDesdeEditor();
+  }
+  $('#marcarInicio').onclick = () => ponerMeta('inicio', ahora().toFixed(2));
+  let taps = [];
+  $('#tapBpm').onclick = () => {
+    const n = performance.now();
+    taps = taps.filter(x => n - x < 2500); taps.push(n);
+    if (taps.length >= 4) {
+      const prom = (taps[taps.length - 1] - taps[0]) / (taps.length - 1);
+      const bpm = Math.round(60000 / prom);
+      $('#tapBpm').textContent = `🥁 ${bpm} BPM`;
+      ponerMeta('bpm', bpm);
+    } else $('#tapBpm').textContent = `🥁 tap ${taps.length}…`;
+  };
+  $('#descargar').onclick = () => {
+    const titulo = (A && A.meta.titulo || 'cancion').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([texto.value], { type: 'text/plain' }));
+    a.download = titulo + '.txt'; a.click();
+  };
+
+  inicial(); bucle();
+})();
+</script>
+</body>
+</html>

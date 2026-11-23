@@ -1,32 +1,33 @@
-# Video 1 · El IV dórico (maqueta)
-# Graba UNA toma continua siguiendo este orden (con audífonos y la maqueta de guía).
+# Video 1 · El IV dórico
+# Graba UNA toma continua siguiendo este orden (con audífonos y el audio guía).
 # La voz en off va aparte en voz.wav (la guitarra baja sola cuando hablas).
 titulo: 4 cervezas
-artista: Ronisch
+artista: Ronisch · intro
 tonalidad: D#m
-bpm: 96
-compas: 4
-intro: 2.5
-inicio: 2.5
-gancho: "4 cervezas" está en D#m… ¿por qué suena un G# MAYOR?
+bpm: 100
+compas: 2
+intro: 2
+inicio: 2
+final: 3
+gancho: ¿Por qué "4 cervezas" termina en G# MAYOR si está en D#m?
 cierre: ¿Qué otra canción boliviana usa este truco? Te leo en comentarios
-formula: i – IV (dórico)
+formula: i – III – VII – IV (dórico)
 # video: toma.mp4
 # voz: voz.wav
 ---
 [Lo esperado]
-> Si sigues la escala de D#m, el IV es G# MENOR. Así sonaría:
-D#m | G#m
+> Si siguiera la escala de D#m, el último acorde sería G# MENOR. Así sonaría:
+D#m | F# | C# | G#m
 
 [Lo que toca Ronisch]
-> Pero Ronisch toca G# MAYOR. ¿Escuchas cómo se ilumina?
-D#m | G#
-> Es intercambio modal: lo toma prestado del modo dórico
-D#m | G#
+> Pero Ronisch toca G# MAYOR, prestado del modo dórico
+D#m | F# | C# | G#
 
 [El mismo truco]
 titulo: Amor de contrabando
-artista: Eclipse · coro (acordes por confirmar)
-tonalidad: Am
-> Eclipse hace lo mismo en el coro de "Amor de contrabando"
-Am | D | Am | D
+artista: Eclipse · coro
+tonalidad: G#m
+> Eclipse usa el mismo truco en el coro, con C# MAYOR…
+B | F# | C# | G#m
+> …y escucha: la segunda vez toca C# MENOR
+B | F# | C#m | G#m

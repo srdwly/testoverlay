@@ -275,7 +275,7 @@
     A.inicioVideo = Math.max(A.meta.inicio, 0);
     A.inicioIntro = Math.max(parseFloat(A.meta.intro) || INTRO_MIN, A.meta.inicio);  // el gancho ocupa al menos 3 s
     // si el inicio es antes de 3 s, la intro se sobrepone a los primeros acordes
-    A.duracion = A.finMusica + CIERRE;
+    A.duracion = A.finMusica + (parseFloat(A.meta.final) || CIERRE);
     window.duracion = A.duracion;
 
     $('#titulo').textContent = A.meta.titulo;
@@ -415,6 +415,7 @@
     let especial = null;
     for (let k = iv; k >= 0 && k >= iv - 6; k--) {
       const a = L[k];
+      if (a.tituloCtx !== ac.tituloCtx) break;   // no arrastrar la explicación a otra canción
       if (i >= 0 && a.explicacion && t - a.t < Math.max(4.2, a.dur)) { especial = a; break; }
     }
     const ex = $('#explica');

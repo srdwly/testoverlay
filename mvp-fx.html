@@ -332,7 +332,8 @@ function pick(x, y, s, a) {
 
 /* ══ ANIMACIÓN CON VIDEO (hecho con IA sobre fondo verde) ══
    En mvps.js:  video: 'mvp/clarita.mp4'  (fondo verde: se quita aquí con chroma key)
-                nombreY: 430 (altura del nombre), golpe: 2.4 (segundo del video en que explota el poder: ahí entran MVP + nombre), conFoto: false (sin foto)  */
+                nombreY: 430 (altura del nombre), golpe: 2.4 (segundo del video en que explota el poder: ahí entran MVP + nombre), conFoto: false (sin foto)
+                fondo: true (el video trae su propio escenario: se muestra a pantalla completa, sin quitar el verde)  */
 const keyCv = document.createElement('canvas'); let gl = null, glTex = null;
 function initKey(w, h) {
   keyCv.width = w; keyCv.height = h;
@@ -366,9 +367,14 @@ const VIDEO = {
   },
   draw(a, t) {
     const v = a.vid, out = seg(t, a.dur - 0.45, a.dur), A = 1 - out, cx = W / 2;
+    if (a.m.fondo) {                                                  // video con escenario propio: pantalla completa, sin quitar verde
+      if (v.readyState >= 2 && !Q.has('sinvideo')) { const s = Math.max(W / v.videoWidth, H / v.videoHeight), w = v.videoWidth * s, h = v.videoHeight * s;
+        ctx.save(); ctx.globalAlpha = A * ease.out(seg(t, 0, 0.3)); ctx.drawImage(v, cx - w / 2, (H - h) / 2, w, h); ctx.restore(); }
+    } else {
     const f = v.readyState >= 2 ? keyFrame(v) : null;
     if (f && !Q.has('sinvideo')) { const s = Math.max(W / f.width, H / f.height) * CFG.sc, w = f.width * s, h = f.height * s;
       ctx.save(); ctx.globalAlpha = A; ctx.drawImage(f, cx - w / 2, (H - h) / 2 + (CFG.y - 560), w, h); ctx.restore(); }
+    }
     const t0 = a.m.nombreEn ?? 0.4, ny = a.m.nombreY ?? 430, py = ny - 235, R = 105;
     ctx.save(); ctx.globalAlpha = A;
     // foto real del MVP (la manda TikFinity) en un aro dorado con fuego

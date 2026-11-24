@@ -909,7 +909,7 @@ const gifts = [], sparks = [];
 /* REGALOS LANZADOS como en Rosas 7: salen desde abajo (el celular del espectador), enormes cerca de la cámara, hacen un arco
    girando como ficha y caen sobre la escena. El tamaño va en metros para que choquen con los muñecos: una rosa (1 moneda)
    mide como una cabeza y los caros crecen igual que en Rosas 7 (1 + 0,45·log10(monedas), hasta ×2,8). ?regalo= multiplica. */
-const GSZ = num('regalo', 1), G_R1 = 0.17 * GSZ, G_MAX = 2.8, G_TH = 0.22, G_LAYERS = 6, G_NEAR = num('cerca', 6), G_MAXN = clamp(Math.round(num('maxregalos', 40)), 5, 120);
+const GSZ = num('regalo', 1), G_R1 = 0.17 * GSZ, G_MAX = 2.8, G_TH = 0.22, G_LAYERS = 6, G_NEAR = num('cerca', 14), G_GHOSTS = 3, G_MAXN = clamp(Math.round(num('maxregalos', 40)), 5, 120);
 const GIFT_DEMO = [[1, '🌹', 34], [5, '💖', 12], [10, '🍩', 10], [30, '🎸', 8], [99, 'img/sombrero.png', 10], [199, 'img/amplificado.png', 6], [500, 'img/pistola.png', 4], [1000, 'img/galaxia.png', 3]];
 const GIFT_W = GIFT_DEMO.reduce((s, g) => s + g[2], 0);
 const gTex = new Map(), gPlane = new THREE.PlaneGeometry(2, 2);
@@ -922,7 +922,8 @@ function giftMats(src) {                                   // cara, canto y reve
   else { tex = new THREE.TextureLoader().load(src); }
   tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
   const mk = (col, side) => new THREE.MeshBasicMaterial({ map: tex, color: col, alphaTest: 0.45, side, transparent: false });
-  const m = { face: mk(0xffffff, THREE.FrontSide), back: mk(0x9f97ad, THREE.FrontSide), edge: mk(0x5b4232, THREE.DoubleSide) };
+  const m = { face: mk(0xffffff, THREE.FrontSide), back: mk(0x9f97ad, THREE.FrontSide), edge: mk(0x5b4232, THREE.DoubleSide),
+    ghost: [1, 2, 3].map(k => new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.12 * (4 - k), depthWrite: false })) };   // estela (motion blur) de Rosas 7
   gTex.set(src, m); return m;
 }
 const rndGift = () => { let k = Math.random() * GIFT_W; for (const g of GIFT_DEMO) if ((k -= g[2]) < 0) return g; return GIFT_DEMO[0]; };
@@ -930,6 +931,11 @@ const gSize = coins => G_R1 * Math.min(G_MAX, 1 + 0.45 * Math.log10(Math.max(1, 
 let bounds = null, lastOB = null, nextGift = 4, nextEvent = 10, nameOf = ['Mari', 'Don Lucho', 'Rosita', 'Jhonny', 'La Pao', 'Ceci', 'Wilmer', 'Pame', 'Kathy', 'Rolo'], spawnCount = 0;
 function worldAt(nx, ny) { const v = V(nx, ny, 0.5).unproject(cam), d = v.sub(cam.position).normalize(), t = -cam.position.z / d.z; return cam.position.clone().addScaledVector(d, t); }
 function camPoint(nx, ny, dist) { const d = V(nx, ny, 0.5).unproject(cam).sub(cam.position).normalize(); return cam.position.clone().addScaledVector(d, dist); }
+function throwAt(T, t) {                                   // punto del lanzamiento en el tiempo t (0..1)
+  const ex = 1 - (1 - t) ** 3, nx = lerp(T.S.x, T.Tn.x, 1 - (1 - Math.min(1, t / T.ta * 0.8)) ** 2);   // el avance de lado termina cerca de la cima: después cae vertical
+  const ny = t < T.ta ? lerp(T.S.y, T.apex, 1 - (1 - t / T.ta) ** 2) : lerp(T.apex, T.Tn.y, ((t - T.ta) / (1 - T.ta)) ** 2);   // sube frenando y cae acelerando
+  return camPoint(nx, ny, T.D / (1 + G_NEAR * (1 - ex)));   // cerca de la cámara = enorme
+}
 function spawnGift(tx, tz) {
   const [coins, src] = rndGift(), r = gSize(coins), M = giftMats(src), m = new THREE.Group(), inner = new THREE.Group(); m.add(inner);
   for (let i = 0; i <= G_LAYERS; i++) { const k = i / G_LAYERS - 0.5, last = i === G_LAYERS;
@@ -937,14 +943,16 @@ function spawnGift(tx, tz) {
     if (last) { const bk = new THREE.Mesh(gPlane, M.back); bk.rotation.y = PI; bk.position.z = -0.5 * G_TH; inner.add(bk); } }
   m.scale.setScalar(r); scene.add(m);
   if (gifts.length >= G_MAXN) { const old = gifts.find(g => !g.thr && !g.fade); if (old) old.fade = 0.001; }
-  // lanzamiento: igual que Rosas 7 en pantalla (sale de abajo, avanza con easeOut haciendo un arco) y además se acerca desde la cámara:
-  // empieza G_NEAR veces más grande y llega a su tamaño real justo encima del bailarín
-  const T = V(tx, 2.7 + Math.random() * 1.1, tz), Tn = T.clone().project(cam);
-  const S = V((Math.random() - 0.5) * 0.56, -1.25, 0), S3 = camPoint(S.x, S.y, cam.position.distanceTo(T) / (1 + G_NEAR));
+  // lanzamiento: sale de abajo (el celular), enorme cerca de la cámara, sube hasta 2/3 de la pantalla o más y cae casi vertical
+  // sobre el bailarín; se va achicando hasta su tamaño real. Con estela como en Rosas 7.
+  const T = V(tx, 2.35 + Math.random() * 0.3, tz), Tn = T.clone().project(cam);
+  const S = V((Math.random() - 0.5) * 0.7, -1.3, 0), apex = 0.33 + Math.random() * 0.3;
+  const thr = { t: 0, dur: 1.15 + Math.random() * 0.3, S, Tn, T, D: cam.position.distanceTo(T), apex, ta: 0.42 + Math.random() * 0.08 };
+  const S3 = throwAt(thr, 0), ghosts = M.ghost.map(mt => { const sp = new THREE.Sprite(mt); sp.visible = false; scene.add(sp); return sp; });
   const axis = V(Math.random() - 0.5, Math.random() - 0.5, 0).normalize();
   m.quaternion.setFromAxisAngle(axis, 0.2 + Math.random() * 0.9);
-  gifts.push({ m, inner, p: S3, v: V(0, 0, 0), w: V(Math.random() * 5 - 2.5, (9 + Math.random() * 7) * (Math.random() < 0.5 ? -1 : 1), 0), r, coins, age: 0, rest: 0, cd: 0,
-    thr: { t: 0, dur: 0.75 + Math.random() * 0.25, S, Tn, T, D: cam.position.distanceTo(T) }, tilt: (Math.random() - 0.5) * 0.35 });
+  gifts.push({ m, inner, ghosts, p: S3, v: V(0, 0, 0), w: V(Math.random() * 5 - 2.5, (9 + Math.random() * 7) * (Math.random() < 0.5 ? -1 : 1), 0), r, coins, age: 0, rest: 0, cd: 0,
+    thr, tilt: (Math.random() - 0.5) * 0.35 });
 }
 function spark(pos, col = 0xffffff) { const sp = new THREE.Sprite(new THREE.SpriteMaterial(Object.assign({ map: glowTex, color: col }, ADD))); sp.position.copy(pos); scene.add(sp); sparks.push({ sp, age: 0 }); }
 const idle = d => !d.job && d.grp.visible;
@@ -1015,10 +1023,12 @@ function director(b) {
   const _q = new THREE.Quaternion(), _e = new THREE.Euler(), _wq = new THREE.Quaternion(), _wv = V(0, 0, 0);
   for (let k = gifts.length - 1; k >= 0; k--) { const g = gifts[k]; g.age += dt; g.cd -= dt;
     if (g.thr) {                                              // en el aire, lanzado desde el celular
-      const T = g.thr; T.t += dt; const t = Math.min(1, T.t / T.dur), e = easeOut(t);
-      const nx = lerp(T.S.x, T.Tn.x, e), ny = lerp(T.S.y, T.Tn.y, e) + 0.32 * Math.sin(PI * t);     // arco en pantalla (como Rosas 7)
-      g.p.copy(camPoint(nx, ny, T.D / (1 + G_NEAR * (1 - e))));                              // cerca de la cámara = enorme
-      if (t >= 1) { g.thr = null; g.p.copy(T.T); g.v.set((Math.random() - 0.5) * 0.6, -1, 0); }
+      const T = g.thr; T.t += dt; const t = Math.min(1, T.t / T.dur);
+      g.p.copy(throwAt(T, t));
+      const spd = g.p.distanceTo(throwAt(T, Math.max(0, t - 0.005))) / 0.005, gd = clamp(0.75 * g.r / Math.max(spd, 1e-3), 0.004, 0.045);   // estela pegada al regalo (como un barrido), también cuando cae rápido
+      g.ghosts.forEach((sp, i) => { const tk = t - (i + 1) * gd; sp.visible = tk > 0; if (tk > 0) { sp.position.copy(throwAt(T, tk)); sp.scale.setScalar(g.r * 2); } });
+      if (t >= 1) { const prev = throwAt(T, Math.max(0, 1 - 0.02)); g.v.copy(g.p).sub(prev).divideScalar(0.02 * T.dur); g.v.z = 0; g.v.x *= 0.3; g.v.y = clamp(g.v.y, -9, -2.5);   // sigue con la misma caída
+        g.thr = null; g.ghosts.forEach(sp => { scene.remove(sp); }); g.ghosts = []; }
     } else {
       g.v.y -= 9.8 * dt; g.p.addScaledVector(g.v, dt);
       for (const d of dancers) if (d.grp.visible && d.S && g.cd <= 0) { const n = g.p.clone().sub(d.S.H), L = n.length(), R = HEADR + g.r * 0.85;
@@ -1039,7 +1049,7 @@ function director(b) {
     g.m.position.copy(g.p);
     if (g.fade) g.fade += dt; const life = g.fade ? 1 - clamp(g.fade / 0.5, 0, 1) : 1 - sstep(17, 18, g.age);
     g.m.scale.setScalar(life * g.r);
-    if (life <= 0) { scene.remove(g.m); gifts.splice(k, 1); } }
+    if (life <= 0) { scene.remove(g.m); g.ghosts.forEach(sp => scene.remove(sp)); gifts.splice(k, 1); } }
   for (let k = sparks.length - 1; k >= 0; k--) { const s = sparks[k]; s.age += dt; const q = s.age / 0.35; s.sp.scale.setScalar(0.2 + 0.9 * q); s.sp.material.opacity = 1 - q; if (q >= 1) { scene.remove(s.sp); sparks.splice(k, 1); } }
 }
 function drawNames() {

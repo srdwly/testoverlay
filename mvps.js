@@ -17,7 +17,7 @@
    Los de abajo (menos Clarita) son EJEMPLOS: cámbialos por tus MVPs reales.
    ══════════════════════════════════════════════════════════════════ */
 window.MVPS = [
-  { usuario: 'clarivonn', nombre: 'CLARITA', video: 'mvp/clarita.webm', golpe: 3.45 },
+  { usuario: 'clarivonn', nombre: 'CLARITA', video: 'mvp/clarita.webm', golpe: 1.8 },
   { usuario: 'ejemplo_reina',  nombre: 'Doña Carmen', animacion: 'corona' },
   { usuario: 'ejemplo_rockero', nombre: 'El Rockero',  animacion: 'pua' },
 ];

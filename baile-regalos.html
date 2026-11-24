@@ -76,6 +76,8 @@ const CFG = {
   emojiSec: 2, emojiCooldown: 4,
   tiredSec: 8,
   levels: [0, 10, 50, 200, 1000, 2500, 5000, 10000, 20000, 50000],
+  permLevels: [0, 100, 500, 2000],          // PERMANENTE por monedas de siempre: bandana 100 · lentes 500 · sombrero 2000
+  capaTop: num('permtop', 3), capaMin: 5000, capaLevel: 5,   // capa permanente solo para el top 3 histórico (mín. 5000)
   fiestaSec: 15, fiestaCoins: 500,
 };
 </script>
@@ -131,11 +133,13 @@ function saveFans() { if (Q.has('test') || Q.has('demo')) return; const n = Date
 /* Monedas del DÍA por persona (como el top de monedas del ranking): el día empieza a las 3:00 y nunca
    cambia en medio de un live (solo tras 60 min sin actividad). Si un bailarín se va y vuelve ese día,
    vuelve con el mismo nivel. */
-const DKEY = 'bailereg_dia_v1', DAY_START_H = 3, DAY_GAP_MIN = 60;
+const DKEY = 'bailereg_dia_v1', DAY_START_H = 0, DAY_GAP_MIN = 60;   // el día cambia a medianoche (antes 3:00); un live que cruza la medianoche no se corta
 const dayKey = t => { const d = new Date(t - DAY_START_H * 3600e3); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
-let DAY = { day: dayKey(Date.now()), act: 0, coins: {} };
+let DAY = { day: dayKey(Date.now()), act: 0, coins: {}, v: 2 };
 try { const s = JSON.parse(localStorage.getItem(DKEY) || 'null'); if (s && s.coins && !Q.has('test') && !Q.has('demo')) DAY = s; } catch (e) {}
-function rollDay() { const t = Date.now(); if (!(DAY.act && t - DAY.act <= DAY_GAP_MIN * 60e3) && DAY.day !== dayKey(t)) DAY = { day: dayKey(t), act: 0, coins: {} }; DAY.act = t; }
+if (DAY.v !== 2 && DAY.day !== dayKey(Date.now())) DAY = { day: dayKey(Date.now()), act: 0, coins: {}, v: 2 };   // datos con el corte viejo de las 3:00: si ya es otro día, empezar de cero
+DAY.v = 2;
+function rollDay() { const t = Date.now(); if (!(DAY.act && t - DAY.act <= DAY_GAP_MIN * 60e3) && DAY.day !== dayKey(t)) DAY = { day: dayKey(t), act: 0, coins: {}, v: 2 }; DAY.act = t; }
 function saveDay() { if (Q.has('test') || Q.has('demo')) return; try { localStorage.setItem(DKEY, JSON.stringify(DAY)); } catch (e) {} }
 const isFan = uid => (FANS[uid] || 0) > Date.now();
 const isVip = uid => (DAY.coins[uid] || 0) >= CFG.vipCoins;   // 1000+ monedas hoy: baila siempre y no lo sacan
@@ -143,6 +147,52 @@ const isFanGift = (name, id) => CFG.fanGift ? String(name || '').toLowerCase() =
   : (/heart\s*me|qui[eé]reme/i.test(name || '') || +id === CFG.fanGiftId);
 function hueOf(s) { let h = 2166136261; for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619); h ^= h >>> 13; h = Math.imul(h, 0x5bd1e995); h ^= h >>> 15; return (h >>> 0) % 360; }
 function levelOf(coins) { let l = 1; CFG.levels.forEach((c, i) => { if (coins >= c) l = i + 1; }); return l; }
+
+/* ── NIVELES PERMANENTES (monedas de siempre) · pedido de Rodrigo 2026-11-24 ──
+   Para todos, lo permanente llega hasta el SOMBRERO (bandana, lentes y sombrero por monedas de siempre: CFG.permLevels).
+   La CAPA es permanente solo para los MVP de siempre (top CFG.capaTop en monedas históricas, con al menos CFG.capaMin).
+   Todo lo de más arriba se gana en cada live con las monedas del día (como antes).
+   RESPALDO: se guarda en el navegador y además en OBS (datos persistentes del perfil, vía OBS WebSocket; no se borran
+   al limpiar la caché del navegador). Para eso el enlace necesita #obspass=TU_CONTRASEÑA al final (si OBS pide contraseña).
+   Al abrir, junta las dos copias quedándose con lo mayor de cada persona. Se copia a OBS cada 10 s si hubo cambios.
+   !respaldo (dueño) fuerza la copia. Los tres overlays de baile comparten estos datos. */
+const PKEY = 'baile_permanente_v1';
+let PERM = { coins: {}, names: {} }, permTop = [], permDirty = 0;
+try { const s = JSON.parse(localStorage.getItem(PKEY) || 'null'); if (s && s.coins && !Q.has('test') && !Q.has('demo')) PERM = s; } catch (e) {}
+PERM.names = PERM.names || {};
+function permRank() { permTop = Object.entries(PERM.coins).filter(([, c]) => c >= CFG.capaMin).sort((a, b) => b[1] - a[1]).slice(0, CFG.capaTop).map(([u]) => u); }
+permRank();
+function permLevel(uid) { const c = PERM.coins[uid] || 0; let l = 1; CFG.permLevels.forEach((m, i) => { if (m && c >= m) l = i + 1; }); if (permTop.includes(uid)) l = Math.max(l, CFG.capaLevel); return l; }
+const permExtra = uid => { const l = permLevel(uid); return l > 1 ? l : 0; };
+const lvlFor = (uid, dayCoins) => Math.max(dayCoins ? levelOf(dayCoins) : 1, permLevel(uid));
+function savePerm() { if (Q.has('test') || Q.has('demo')) return; try { localStorage.setItem(PKEY, JSON.stringify(PERM)); } catch (e) {} permDirty = Date.now(); }
+function addPerm(uid, name, coins) { PERM.coins[uid] = (PERM.coins[uid] || 0) + coins; if (name) PERM.names[uid] = name; permRank(); savePerm(); }
+function mergePerm(v) {
+  if (!v || !v.coins) return; let ch = false;
+  for (const u in v.coins) if ((v.coins[u] || 0) > (PERM.coins[u] || 0)) { PERM.coins[u] = v.coins[u]; if (v.names && v.names[u]) PERM.names[u] = v.names[u]; ch = true; }
+  if (ch) { permRank(); try { localStorage.setItem(PKEY, JSON.stringify(PERM)); } catch (e) {} dancers.forEach(x => { if (x.uid) x.lvl = Math.max(x.lvl, permExtra(x.uid)); }); }
+}
+const OBSPASS = new URLSearchParams(location.hash.slice(1)).get('obspass') || '', OBSURL = Q.get('obs') || 'ws://localhost:4455';
+let obsWs = null, obsReady = false, obsReq = 0;
+async function sha256b64(s) { const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return btoa(String.fromCharCode(...new Uint8Array(h))); }
+function obsSend(type, data) { if (obsReady) obsWs.send(JSON.stringify({ op: 6, d: { requestType: type, requestId: 'p' + (++obsReq), requestData: data } })); }
+const obsBackup = () => obsSend('SetPersistentData', { realm: 'OBS_WEBSOCKET_DATA_REALM_PROFILE', slotName: PKEY, slotValue: PERM });
+function obsConnect() {
+  if (Q.has('test') || Q.has('demo') || Q.get('respaldo') === '0' || (obsWs && obsWs.readyState < 2)) return;
+  try { obsWs = new WebSocket(OBSURL); } catch (e) { return; }
+  obsWs.onmessage = async ev => { let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.op === 0) { const d = { rpcVersion: 1, eventSubscriptions: 0 }, au = m.d && m.d.authentication;
+      if (au) { if (!OBSPASS) { console.warn('[baile] OBS pide contraseña: agrega #obspass=… al final del enlace para el respaldo'); obsWs.close(); return; }
+        d.authentication = await sha256b64(await sha256b64(OBSPASS + au.salt) + au.challenge); }
+      obsWs.send(JSON.stringify({ op: 1, d })); }
+    else if (m.op === 2) { obsReady = true; obsSend('GetPersistentData', { realm: 'OBS_WEBSOCKET_DATA_REALM_PROFILE', slotName: PKEY }); }
+    else if (m.op === 7 && m.d && m.d.requestType === 'GetPersistentData') { mergePerm(m.d.responseData && m.d.responseData.slotValue); obsBackup(); console.log('[baile] respaldo en OBS listo'); }
+  };
+  obsWs.onclose = () => { obsReady = false; setTimeout(obsConnect, 30000); };
+  obsWs.onerror = () => {};
+}
+setInterval(() => { if (permDirty && obsReady) { permDirty = 0; obsBackup(); } }, 10000);
+setTimeout(obsConnect, 1500);
 const beats = t => (t - beat0) * bpm / 60;
 const inFiesta = t => t < fiestaUntil;
 
@@ -249,7 +299,7 @@ function poseLerp(a, b, t) { const o = {}; for (const k of KEYS) o[k] = a[k] + (
 /* ── Bailarín ─────────────────────────────────────────── */
 function makeDancer(uid, name, pic) {
   const fan = isFan(uid), coins = DAY.coins[uid] || 0;
-  const d = { uid, name: String(name || uid).slice(0, 13), pic: pic || '', guest: !fan, coins, energy: 0, lvl: coins ? levelOf(coins) : fan ? 1 : 0,
+  const d = { uid, name: String(name || uid).slice(0, 13), pic: pic || '', guest: !fan, coins, energy: 0, lvl: Math.max(coins ? levelOf(coins) : fan ? 1 : 0, permExtra(uid)),
     x: 540 + (R() - 0.5) * 600, tx: 540, row: 0, s: 1, hue: hueOf(uid), born: now(), drop: 1,
     move: 'brazos', moveAt: now(), slot: null, beatSlot: -1, amp: 0.88 + R() * 0.28, lag: R() * 0.06, land: 0, prev: null, prevAt: 0, special: null, spAt: 0, spB0: 0,
     tiredAt: 0, leaving: 0, lastEmoji: 0, tag: null, tagKey: '', avatar: null, alpha: 0, leader: false, flash: 0 };
@@ -323,11 +373,11 @@ const isFest = (name, id) => /\bfest\b/i.test(name || '') || CFG.fest.includes(S
 function onGiftCoins(uid, name, pic, coins, giftName, giftId) {
   const t = now(), fanGift = isFanGift(giftName, giftId);
   if (fanGift) { FANS[uid] = Date.now() + CFG.fixedMin * 60000; saveFans(); }
-  rollDay(); DAY.coins[uid] = (DAY.coins[uid] || 0) + coins; (DAY.names = DAY.names || {})[uid] = name; saveDay();   // antes de entrar: si llega a 1000 entra a un lugar extra sin sacar a nadie
+  rollDay(); DAY.coins[uid] = (DAY.coins[uid] || 0) + coins; (DAY.names = DAY.names || {})[uid] = name; saveDay(); addPerm(uid, name, coins);   // antes de entrar: si llega a 1000 entra a un lugar extra sin sacar a nadie
   const d = getOrSpawn(uid, name, pic, 3);
   if (!d) return;
   const lvl0 = d.lvl, wasGuest = d.guest;
-  d.coins = DAY.coins[uid]; d.lvl = levelOf(d.coins);
+  d.coins = DAY.coins[uid]; d.lvl = lvlFor(uid, d.coins);
   if (isFan(uid)) { d.guest = false; if (!d.lvl) d.lvl = 1; }
   // tanque: los regalos lo agrandan (8 s por moneda, doble si es LIVE Fest); 10+ monedas lo llenan, menos = 25 % por moneda
   const fest = isFest(giftName, giftId) ? 2 : 1, fresh = d.energy <= 0 && !d.cap;
@@ -933,7 +983,7 @@ function load() { try { const s = JSON.parse(localStorage.getItem(SKEY) || 'null
   if (!s || Date.now() - s.at > 3 * 60 * 1000 || Q.has('test') || Q.has('demo')) return;
 
   for (const o of s.d || []) { const d = makeDancer(o.uid, o.name, o.pic); Object.assign(d, { coins: Math.max(d.coins, o.coins || 0), energy: Math.max(o.energy, 6), cap: o.cap || 0, x: o.x, drop: 0 });
-    d.lvl = d.coins ? levelOf(d.coins) : (d.guest ? 0 : 1); dancers.push(d); byId.set(d.uid, d);
+    d.lvl = Math.max(d.coins ? levelOf(d.coins) : (d.guest ? 0 : 1), permExtra(d.uid)); dancers.push(d); byId.set(d.uid, d);
     if (d.coins) (DAY.names = DAY.names || {})[d.uid] = d.name; } } catch (e) {} }
 
 /* ── TikFinity ────────────────────────────────────────── */
@@ -970,6 +1020,8 @@ function onChat(d) {
   if (txt.startsWith('!') && OWNERS.includes(uid)) {
     const m = txt.toLowerCase().match(/^!bpm\s+(\d{2,3})/); if (m) { const nb = clamp(+m[1], 60, 200); beat0 = now() - beats(now()) * 60 / nb; bpm = nb; return; }
     if (txt.toLowerCase() === '!fiesta') { if (dancers.length) startFiesta(now()); return; }
+    if (txt.toLowerCase() === '!reiniciar') { DAY = { day: dayKey(Date.now()), act: Date.now(), coins: {}, v: 2 }; saveDay(); dancers.forEach(x => { x.coins = 0; x.lvl = Math.max(x.guest ? 0 : 1, permExtra(x.uid)); x.tag = null; leave(x, true); }); wake(); return; }   // monedas del día a cero
+    if (txt.toLowerCase() === '!respaldo') { permDirty = Date.now(); if (obsReady) { permDirty = 0; obsBackup(); } else obsConnect(); return; }   // copia de los niveles permanentes en OBS
     if (txt.toLowerCase() === '!limpiar') { dancers.forEach(x => leave(x, true)); fiestaUntil = 0; wake(); return; }
   }
   onEmoji(uid, d.nickname || uid, d.profilePictureUrl || '', txt);

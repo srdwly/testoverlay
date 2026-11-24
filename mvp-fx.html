@@ -332,7 +332,7 @@ function pick(x, y, s, a) {
 
 /* ══ ANIMACIÓN CON VIDEO (hecho con IA sobre fondo verde) ══
    En mvps.js:  video: 'mvp/clarita.mp4'  (fondo verde: se quita aquí con chroma key)
-                nombreY: 430 (altura del nombre), nombreEn: 0.4 (segundo en que aparece), conFoto: false (sin foto)  */
+                nombreY: 430 (altura del nombre), golpe: 2.4 (segundo del video en que explota el poder: ahí entran MVP + nombre), conFoto: false (sin foto)  */
 const keyCv = document.createElement('canvas'); let gl = null, glTex = null;
 function initKey(w, h) {
   keyCv.width = w; keyCv.height = h;
@@ -385,14 +385,32 @@ const VIDEO = {
       if (t > t0 + 0.3 && A > 0.5) { seed = Math.floor(t * 300) + 41;      // llamitas alrededor del aro
         for (let i = 0; i < 3; i++) { const an = rnd() * Math.PI * 2; emit({ x: cx + Math.cos(an) * (R + 14), y: py + Math.sin(an) * (R + 14), vx: (rnd() - 0.5) * 30, vy: -90 - rnd() * 120, g: -120, life: 0.45 + rnd() * 0.3, r: 10 + rnd() * 10, c: ['#ffdd55', '#ff8a00', '#ff3b1f'][Math.floor(rnd() * 3)], add: true }); } }
     }
-    const rk = ease.back(seg(t, t0 + 0.35, t0 + 0.75));
-    if (rk > 0) { ctx.save(); ctx.translate(cx, ny - 100); ctx.scale(rk, rk); ribbon(0, 0, 320, 64, '#c8102e', '#8a0a1f');
-      ctx.fillStyle = '#fff'; ctx.font = `900 40px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('★ MVP ★', 0, 3); ctx.restore(); }
-    const nk = ease.back(seg(t, t0 + 0.55, t0 + 1.05));
-    if (nk > 0) bigName(a.name, cx, ny, 140, goldFill(), '#3a1d00', nk, seg(t, t0 + 1.2, t0 + 2.2));
-    smallText(a.m.frase, cx, ny + 88, 48, '#fff', ease.out(seg(t, t0 + 1.2, t0 + 1.7)));
-    if (t > t0 + 0.6 && !a.boom) { a.boom = 1; seed = 9;
-      for (let i = 0; i < 30; i++) { const an = rnd() * Math.PI * 2, sp = 300 + rnd() * 700; emit({ x: cx, y: ny, vx: Math.cos(an) * sp, vy: Math.sin(an) * sp, g: 700, life: 0.9 + rnd() * 0.5, r: 10 + rnd() * 10, c: rnd() < 0.5 ? '#fff3b0' : '#ff5a4a', kind: 'star', vr: 3, add: true }); } }
+    // GOLPE: el segundo del video en que explota el poder (mvps.js → golpe). Ahí entra MVP + nombre con destello y temblor
+    const hit = a.m.golpe ?? 2.4, sh = t > hit ? Math.exp(-(t - hit) * 5) * 26 : 0, sx = Math.sin(t * 93) * sh, sy = Math.cos(t * 71) * sh;
+    if (t > hit && t < hit + 0.6) {                                   // destello + ondas de choque
+      const k = seg(t, hit, hit + 0.6);
+      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = Math.max(0, 1 - k * 3) * 0.75;
+      const fg = ctx.createRadialGradient(cx, ny, 0, cx, ny, 900); fg.addColorStop(0, '#fff'); fg.addColorStop(1, 'rgba(255,190,90,0)'); ctx.fillStyle = fg; ctx.fillRect(0, 0, W, H); ctx.restore();
+      for (let j = 0; j < 3; j++) { const kk = clamp(k * 1.5 - j * 0.2, 0, 1); if (kk <= 0 || kk >= 1) continue;
+        ctx.save(); ctx.globalAlpha = (1 - kk) * 0.9; ctx.lineWidth = 22 * (1 - kk) + 2; ctx.strokeStyle = ['#fff3b0', '#ffb020', '#ff3b1f'][j];
+        ctx.beginPath(); ctx.arc(cx, ny, 80 + kk * 700, 0, 7); ctx.stroke(); ctx.restore(); }
+    }
+    if (t > hit) {                                                    // rayos de luz detrás del nombre
+      const L = 520 * ease.out(seg(t, hit, hit + 0.4));
+      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.translate(cx, ny); ctx.rotate(t * 0.5);
+      for (let i = 0; i < 14; i++) { ctx.rotate(Math.PI / 7); const g = ctx.createLinearGradient(0, 0, L, 0); g.addColorStop(0, 'rgba(255,200,90,0.32)'); g.addColorStop(1, 'rgba(255,120,40,0)');
+        ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(L, -26 - (i % 2) * 24); ctx.lineTo(L, 26 + (i % 2) * 24); ctx.fill(); }
+      ctx.restore();
+    }
+    if (t >= hit && !a.boom) { a.boom = 1; seed = 9;
+      for (let i = 0; i < 70; i++) { const an = rnd() * Math.PI * 2, sp = 500 + rnd() * 1300; emit({ x: cx, y: ny, vx: Math.cos(an) * sp, vy: Math.sin(an) * sp, g: 600, drag: 0.96, life: 0.8 + rnd() * 0.7, r: 8 + rnd() * 14, c: ['#fff3b0', '#ffd34d', '#ff5a1f', '#ffffff'][Math.floor(rnd() * 4)], kind: rnd() < 0.5 ? 'star' : 'dot', vr: 4, add: true }); } }
+    const rk = ease.back(seg(t, hit + 0.05, hit + 0.4));
+    if (rk > 0) { ctx.save(); ctx.translate(cx + sx, ny - 118 + sy); ctx.scale(rk, rk); ribbon(0, 0, 400, 84, '#c8102e', '#8a0a1f');
+      ctx.fillStyle = '#fff'; ctx.font = `900 58px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('★ MVP ★', 0, 3); ctx.restore(); }
+    const nt = seg(t, hit, hit + 0.28);
+    if (nt > 0) { ctx.save(); ctx.globalAlpha = A * Math.min(1, nt * 2.5);
+      bigName(a.name, cx + sx, ny + sy, 150, goldFill(), '#3a1d00', lerp(3.2, 1, ease.out(nt)), seg(t, hit + 0.5, hit + 1.5)); ctx.restore(); }
+    smallText(a.m.frase, cx, ny + 92, 48, '#fff', ease.out(seg(t, hit + 0.6, hit + 1.1)));
     ctx.restore();
     if (t >= a.dur) { v.pause(); v.removeAttribute('src'); v.load(); return true; }
     return false;

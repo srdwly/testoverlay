@@ -84,8 +84,11 @@ const OWN = CFG.owners.map(o => o.toLowerCase());
 
 /* ── fotos de perfil: las aprende de TikFinity ── */
 const PICS = {};
+// la última foto vista de cada MVP se guarda: así el Stream Deck o !mvp la muestran aunque aún no haya comentado hoy
+const PKEY = 'mvpfx_fotos_v1'; let PURL = {}; try { PURL = JSON.parse(localStorage.getItem(PKEY) || '{}') || {}; } catch (e) {}
 function picFor(m, url) {
-  const src = m.foto || url; if (!src) return PICS[m.usuario] || null;
+  if (url && PURL[m.usuario] !== url) { PURL[m.usuario] = url; try { localStorage.setItem(PKEY, JSON.stringify(PURL)); } catch (e) {} }
+  const src = m.foto || url || PURL[m.usuario]; if (!src) return PICS[m.usuario] || null;
   if (PICS[m.usuario] && PICS[m.usuario]._src === src) return PICS[m.usuario];
   const im = new Image(); im._src = src; im.src = src; PICS[m.usuario] = im; return im;
 }
@@ -329,7 +332,7 @@ function pick(x, y, s, a) {
 
 /* ══ ANIMACIÓN CON VIDEO (hecho con IA sobre fondo verde) ══
    En mvps.js:  video: 'mvp/clarita.mp4'  (fondo verde: se quita aquí con chroma key)
-                nombreY: 330 (altura del nombre), nombreEn: 0.5 (segundo en que aparece)  */
+                nombreY: 430 (altura del nombre), nombreEn: 0.4 (segundo en que aparece), conFoto: false (sin foto)  */
 const keyCv = document.createElement('canvas'); let gl = null, glTex = null;
 function initKey(w, h) {
   keyCv.width = w; keyCv.height = h;
@@ -364,17 +367,31 @@ const VIDEO = {
   draw(a, t) {
     const v = a.vid, out = seg(t, a.dur - 0.45, a.dur), A = 1 - out, cx = W / 2;
     const f = v.readyState >= 2 ? keyFrame(v) : null;
-    if (f) { const s = Math.max(W / f.width, H / f.height) * CFG.sc, w = f.width * s, h = f.height * s;
+    if (f && !Q.has('sinvideo')) { const s = Math.max(W / f.width, H / f.height) * CFG.sc, w = f.width * s, h = f.height * s;
       ctx.save(); ctx.globalAlpha = A; ctx.drawImage(f, cx - w / 2, (H - h) / 2 + (CFG.y - 560), w, h); ctx.restore(); }
-    const t0 = a.m.nombreEn ?? 0.5, ny = a.m.nombreY ?? 330;
+    const t0 = a.m.nombreEn ?? 0.4, ny = a.m.nombreY ?? 430, py = ny - 235, R = 105;
     ctx.save(); ctx.globalAlpha = A;
-    const rk = ease.back(seg(t, t0, t0 + 0.4));
-    if (rk > 0) { ctx.save(); ctx.translate(cx, ny - 120); ctx.scale(rk, rk); ribbon(0, 0, 360, 74, '#c8102e', '#8a0a1f');
-      ctx.fillStyle = '#fff'; ctx.font = `900 46px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('★ MVP ★', 0, 3); ctx.restore(); }
-    const nk = ease.back(seg(t, t0 + 0.25, t0 + 0.75));
-    if (nk > 0) bigName(a.name, cx, ny, 150, goldFill(), '#3a1d00', nk, seg(t, t0 + 0.9, t0 + 1.9));
-    smallText(a.m.frase, cx, ny + 110, 54, '#fff', ease.out(seg(t, t0 + 0.9, t0 + 1.4)));
-    if (t > t0 + 0.3 && t < t0 + 0.4 && !a.boom) { a.boom = 1; seed = 9;
+    // foto real del MVP (la manda TikFinity) en un aro dorado con fuego
+    const pk = a.m.conFoto === false ? 0 : ease.elastic(seg(t, t0, t0 + 0.9));
+    if (pk > 0.01) {
+      ctx.save(); ctx.translate(cx, py); ctx.scale(pk, pk);
+      const gl2 = ctx.createRadialGradient(0, 0, R * 0.8, 0, 0, R * 1.9); gl2.addColorStop(0, 'rgba(255,120,40,0.55)'); gl2.addColorStop(1, 'rgba(255,80,20,0)');
+      ctx.fillStyle = gl2; ctx.beginPath(); ctx.arc(0, 0, R * 1.9, 0, 7); ctx.fill();
+      ctx.shadowColor = 'rgba(255,190,60,0.9)'; ctx.shadowBlur = 30; ctx.beginPath(); ctx.arc(0, 0, R + 14, 0, 7); ctx.fillStyle = '#e8a317'; ctx.fill(); ctx.shadowBlur = 0;
+      const ring = ctx.createLinearGradient(-R, -R, R, R); ring.addColorStop(0, '#fff3b0'); ring.addColorStop(0.5, '#d18a00'); ring.addColorStop(1, '#ffe27a');
+      ctx.lineWidth = 12; ctx.strokeStyle = ring; ctx.beginPath(); ctx.arc(0, 0, R + 7, 0, 7); ctx.stroke();
+      avatar(0, 0, R, a.img, a.name, '#ffd34d');
+      ctx.restore();
+      if (t > t0 + 0.3 && A > 0.5) { seed = Math.floor(t * 300) + 41;      // llamitas alrededor del aro
+        for (let i = 0; i < 3; i++) { const an = rnd() * Math.PI * 2; emit({ x: cx + Math.cos(an) * (R + 14), y: py + Math.sin(an) * (R + 14), vx: (rnd() - 0.5) * 30, vy: -90 - rnd() * 120, g: -120, life: 0.45 + rnd() * 0.3, r: 10 + rnd() * 10, c: ['#ffdd55', '#ff8a00', '#ff3b1f'][Math.floor(rnd() * 3)], add: true }); } }
+    }
+    const rk = ease.back(seg(t, t0 + 0.35, t0 + 0.75));
+    if (rk > 0) { ctx.save(); ctx.translate(cx, ny - 100); ctx.scale(rk, rk); ribbon(0, 0, 320, 64, '#c8102e', '#8a0a1f');
+      ctx.fillStyle = '#fff'; ctx.font = `900 40px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('★ MVP ★', 0, 3); ctx.restore(); }
+    const nk = ease.back(seg(t, t0 + 0.55, t0 + 1.05));
+    if (nk > 0) bigName(a.name, cx, ny, 140, goldFill(), '#3a1d00', nk, seg(t, t0 + 1.2, t0 + 2.2));
+    smallText(a.m.frase, cx, ny + 88, 48, '#fff', ease.out(seg(t, t0 + 1.2, t0 + 1.7)));
+    if (t > t0 + 0.6 && !a.boom) { a.boom = 1; seed = 9;
       for (let i = 0; i < 30; i++) { const an = rnd() * Math.PI * 2, sp = 300 + rnd() * 700; emit({ x: cx, y: ny, vx: Math.cos(an) * sp, vy: Math.sin(an) * sp, g: 700, life: 0.9 + rnd() * 0.5, r: 10 + rnd() * 10, c: rnd() < 0.5 ? '#fff3b0' : '#ff5a4a', kind: 'star', vr: 3, add: true }); } }
     ctx.restore();
     if (t >= a.dur) { v.pause(); v.removeAttribute('src'); v.load(); return true; }
@@ -399,7 +416,7 @@ function frame(dt) {
 }
 if (!CFG.capture) (function loop(now) { const dt = Math.min(0.05, (now - last) / 1000); last = now; frame(dt); requestAnimationFrame(loop); })(last);
 // para grabar la vista previa cuadro por cuadro
-window.__mvp = { trigger, frame, queue: () => queue.length + (cur ? 1 : 0),
+window.__mvp = { trigger, frame, MV, queue: () => queue.length + (cur ? 1 : 0),
   // grabar: adelanta el video al tiempo del cuadro antes de dibujarlo
   async step(dt) { const c = cur || (queue.length ? null : null);
     if (cur && cur.vid) await new Promise(r => { const v = cur.vid; if (v.readyState < 1) { v.addEventListener('loadeddata', () => r(), { once: true }); return; } v.addEventListener('seeked', () => r(), { once: true }); v.currentTime = Math.min(cur.t + dt, Math.max(0, (v.duration || 99) - 0.01)); setTimeout(r, 1500); });

@@ -11,7 +11,8 @@
    tecla      → número del 1 al 9 para dispararlo a mano (opcional; si no, el orden de la lista)
    video      → animación propia hecha con IA (sobre FONDO VERDE: el overlay quita el verde).
                 Guárdala en la carpeta mvp/ del repo. El nombre lo escribe el overlay encima.
-   nombreY    → altura del nombre en el video (0 arriba, 1920 abajo; por defecto 330)
+   nombreY    → altura del nombre en el video (0 arriba, 1920 abajo; por defecto 430). Encima sale
+                su foto de perfil real (la manda TikFinity; conFoto: false la quita)
 
    Los de abajo (menos Clarita) son EJEMPLOS: cámbialos por tus MVPs reales.
    ══════════════════════════════════════════════════════════════════ */

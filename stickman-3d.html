@@ -926,6 +926,20 @@ function climbPose(b, side) {
   return p;
 }
 const gifts = [], sparks = [];
+// ACOMODAR REGALOS: cuando hay ?limpiar= (12) o más regalos quietos en el piso, los muñecos que están libres los recogen
+// y se los llevan caminando fuera de la pantalla, o los lanzan fuera de un tirón. Siguen hasta que quedan ~5 menos.
+const G_LIFE = num('vida', 60), TIDY_AT = Math.max(2, Math.round(num('limpiar', 12)));
+let tidyOn = false;
+const holdOut = r => clamp(r * 0.95 - 0.16, -0.1, 0.3);                     // manos a los costados del regalo
+const holdHands = (r, big) => big ? [holdOut(r), 0.5, 0.06] : [holdOut(r), -0.16, 0.34];
+function pickPose(side, c, r) {                            // agacharse a recoger (c = cuánto está agachado, 0..1)
+  const p = base(); p.yaw = side * PI / 2; p.py = -0.34 * c; p.lean = 0.04 + 0.6 * c; p.nod = 0.35 * c; p.turn = 0;
+  p.fL = [0.12, 0, 0.13 * c]; p.fR = [0.12, 0, -0.12 * c];
+  const h = [holdOut(r), -0.52, 0.4]; p.hL = lerp3(p.hL, h, c); p.hR = lerp3(p.hR, h, c); return p;
+}
+function carryPose(b, dir, r, big) {                       // caminar llevando el regalo (adelante, o arriba de la cabeza si es grande)
+  const p = walkPose(b, dir), h = holdHands(r, big); p.hL = h; p.hR = h; p.twist *= 0.3; p.hipYaw *= 0.5; p.turn = -dir * 0.45; p.lean = big ? -0.04 : 0.12; return p;
+}
 /* REGALOS LANZADOS como en Rosas 7: salen desde abajo (el celular del espectador), enormes cerca de la cámara, hacen un arco
    girando como ficha y caen sobre la escena. El tamaño va en metros para que choquen con los muñecos: una rosa (1 moneda)
    mide como una cabeza y los caros crecen igual que en Rosas 7 (1 + 0,45·log10(monedas), hasta ×2,8). ?regalo= multiplica. */
@@ -962,7 +976,7 @@ function spawnGift(tx, tz) {
     const pl = new THREE.Mesh(gPlane, last ? M.face : M.edge); pl.position.z = k * G_TH; inner.add(pl);
     if (last) { const bk = new THREE.Mesh(gPlane, M.back); bk.rotation.y = PI; bk.position.z = -0.5 * G_TH; inner.add(bk); } }
   m.scale.setScalar(r); scene.add(m);
-  if (gifts.length >= G_MAXN) { const old = gifts.find(g => !g.thr && !g.fade); if (old) old.fade = 0.001; }
+  if (gifts.length >= G_MAXN) { const old = gifts.find(g => !g.thr && !g.fade && !g.claimed); if (old) old.fade = 0.001; }
   // lanzamiento: sale de abajo (el celular), enorme cerca de la cámara, sube hasta 2/3 de la pantalla o más y cae casi vertical
   // sobre el bailarín; se va achicando hasta su tamaño real. Con estela como en Rosas 7.
   const T = V(tx, 2.35 + Math.random() * 0.3, tz), Tn = T.clone().project(cam);
@@ -986,12 +1000,13 @@ function director(b) {
       if (j.b0 > -99) { spawnCount++; d.recolor(i + 3 * spawnCount); d.setLevel(1 + Math.floor(Math.random() * LVM.max)); d.name = nameOf[(i + 5 * spawnCount) % nameOf.length]; } else d.name = nameOf[i];
       const side = d.slotX < 0 ? -1 : 1; d.origin.set(side * (bounds.R + 0.7), 0, d.origin.z); d.resetPhysics(); d.grp.visible = true; startWalk(d, b, d.slotX, 'entrar');
     } });
-  // regalos que caen (60% justo encima de alguien)
-  if (b > nextGift) { nextGift = b + 1.5 + Math.random() * 3; const vis = dancers.filter(d => d.grp.visible && !d.job);
-    const n = 1 + Math.floor(Math.random() * 3); for (let k = 0; k < n; k++) { const tgt = vis.length && Math.random() < 0.6 ? vis[Math.floor(Math.random() * vis.length)] : null;
+  // regalos que caen (60% justo encima de alguien) · demo: ?ritmo=0.5 = llegan el doble de seguido
+  if (b > nextGift) { nextGift = b + num('ritmo', 1) * (2.2 + Math.random() * 3.5); const vis = dancers.filter(d => d.grp.visible && !d.job);
+    const n = 1 + Math.floor(Math.random() * 2.4); for (let k = 0; k < n; k++) { const tgt = vis.length && Math.random() < 0.6 ? vis[Math.floor(Math.random() * vis.length)] : null;
       spawnGift(tgt ? tgt.origin.x + (Math.random() - 0.5) * 0.1 : lerp(bounds.L + 0.4, bounds.R - 0.4, Math.random()), tgt ? tgt.origin.z : (Math.random() - 0.5) * 0.8); } }
   // eventos: trepar + mortal + paracaídas, choque de manos, alguien se va y entra otro
-  if (b > nextEvent) { nextEvent = b + 8 + Math.random() * 6; const r = Math.random(), vis = dancers.filter(idle);
+  if (b > nextEvent) { nextEvent = b + (8 + Math.random() * 6) * clamp(5 / dancers.length, 0.45, 1);   // con más muñecos, más cosas a la vez
+ const r = Math.random(), vis = dancers.filter(idle);
     if (r < 0.45 && vis.length && !dancers.some(d => d.job && ['ir', 'subir', 'colgar', 'mortal', 'paraca'].includes(d.job.k))) {
       const d = vis.sort((a, c) => Math.abs(c.slotX) - Math.abs(a.slotX))[0], side = d.slotX < 0 ? -1 : 1;
       startWalk(d, b, side * (bounds.R - 0.33), 'ir', { side }); }
@@ -1004,8 +1019,16 @@ function director(b) {
         A.setAct(hf(1, 'hR')); B2.setAct(hf(-1, 'hL')); break; } } }
     else { const vis2 = dancers.filter(idle); if (vis2.length) { const d = vis2[Math.floor(Math.random() * vis2.length)], side = d.slotX < 0 ? -1 : 1; startWalk(d, b, side * (bounds.R + 0.8), 'salir'); } }
   }
+  // acomodar: muchos regalos en el piso → los recogen y se los llevan / los lanzan fuera
+  { const floor = gifts.filter(g => !g.thr && !g.claimed && !g.fade && !g.out && g.rest > 0.5), busy = dancers.filter(d => d.job && d.job.tidy).length;
+    if (floor.length >= TIDY_AT) tidyOn = true; else if (floor.length <= TIDY_AT - 5) tidyOn = false;
+    if (tidyOn && floor.length && busy < Math.min(Math.ceil(dancers.length / 2), 1 + Math.floor((floor.length - TIDY_AT + 5) / 2))) {
+      let best = null, bd = 1e9; for (const dd of dancers.filter(idle)) for (const gg of floor) { const dist = Math.abs(dd.origin.x - gg.p.x) - gg.age * 0.02; if (dist < bd) { bd = dist; best = [dd, gg]; } }   // el más cercano (y si empatan, el más viejo)
+      if (best) { const [d, g] = best;
+        const side = Math.sign(g.p.x) || 1, mode = g.r > 0.3 || Math.random() < 0.35 ? 'llevar' : 'lanzar';
+        g.claimed = true; startWalk(d, b, g.p.x - side * (0.36 + g.r * 0.6), 'irRegalo', { g, side, mode, tidy: true }); } } }
   // patadas: un regalo quieto cerca de los pies de alguien que baila
-  for (const d of dancers) if (idle(d)) { const g = gifts.find(g => g.rest > 0.4 && !g.claimed && Math.abs(g.p.x - d.origin.x) < 0.45 + g.r && g.age < 16 && !g.fade);
+  if (!tidyOn) for (const d of dancers) if (idle(d)) { const g = gifts.find(g => g.rest > 0.4 && !g.claimed && Math.abs(g.p.x - d.origin.x) < 0.45 + g.r && g.age < G_LIFE - 3 && !g.fade);
     if (g) { g.claimed = true; const b0 = Math.ceil(b), side = Math.sign(g.p.x - d.origin.x) || 1, foot = side > 0 ? 'fL' : 'fR';
       d.job = { k: 'patear', b0, g, side };
       d.setAct(bb => { const s = clamp(bb - b0, 0, 1), p = DANCE.basico(bb + 64); p.yaw = side * 0.9 * sstep(0, 0.25, s) * (1 - sstep(0.8, 1, s));
@@ -1014,11 +1037,17 @@ function director(b) {
         p[foot] = [0.1, y * 1.4, z * 1.2]; p.lean = -0.15 * Math.sin(PI * s); p.hL = [0.35, -0.2, 0.05]; p.hR = [0.35, -0.2, 0.05]; return p; }); } }
   // trabajos de cada uno
   for (const d of dancers) { const j = d.job; if (!j) continue; const tj = (b - j.b0) / BPS;
-    if (['entrar', 'volver', 'salir', 'ir'].includes(j.k)) {
-      const dx = j.tx - d.origin.x, st = WALK_V * dt;
+    if (j.tidy && j.g && !gifts.includes(j.g)) { startWalk(d, b, d.slotX, 'volver'); continue; }   // el regalo ya no está
+    if (['entrar', 'volver', 'salir', 'ir', 'irRegalo', 'llevar'].includes(j.k)) {
+      const dx = j.tx - d.origin.x, st = WALK_V * (j.k === 'llevar' && j.big ? 0.8 : 1) * dt;
       if (Math.abs(dx) <= st) { d.origin.x = j.tx;
         if (j.k === 'salir') { d.grp.visible = false; d.job = { k: 'fuera', b0: b }; d.endAct(); d.actW = 0; d.actFn = null; }
         else if (j.k === 'ir') { const side = j.side, top = Math.min(4.2, bounds.top * 0.3); d.job = { k: 'subir', b0: b, side, top }; d.setAct(bb => climbPose(bb, side)); }
+        else if (j.k === 'irRegalo') { const { g, side, mode } = j, b0 = b, big = mode === 'llevar' && g.r > 0.24;
+          d.job = { k: 'agarrar', b0, g, side, mode, big, tidy: true };
+          d.setAct(bb => { const s = clamp((bb - b0) / 1.3, 0, 1), c = s < 0.45 ? sstep(0, 0.45, s) : 1 - sstep(0.55, 1, s), p = pickPose(side, c, g.r);
+            if (s > 0.5) { const h = mode === 'lanzar' ? [holdOut(g.r), -0.2, 0.3] : holdHands(g.r, big), k = sstep(0.5, 1, s); p.hL = lerp3(p.hL, h, k); p.hR = lerp3(p.hR, h, k); } return p; }); }
+        else if (j.k === 'llevar') { const g = j.g; g.held = null; scene.remove(g.m); g.ghosts.forEach(sp => scene.remove(sp)); gifts.splice(gifts.indexOf(g), 1); startWalk(d, b, d.slotX, 'volver'); }
         else { d.job = null; d.endAct(); } }
       else d.origin.x += Math.sign(dx) * st;
     } else if (j.k === 'subir') { d.origin.y += CLIMB_V * dt * (0.6 + 0.4 * Math.sin(PI * fr(b))) / 0.8; if (d.origin.y >= j.top) { const bh = b; d.job = { k: 'colgar', b0: b, side: j.side }; d.setAct(() => climbPose(bh, j.side)); } }
@@ -1033,7 +1062,22 @@ function director(b) {
         j.vy += (-0.9 - j.vy) * Math.min(1, dt * 3); j.vx += (Math.cos(q * 2.1) * 0.35 * -j.side - j.vx) * Math.min(1, dt * 2); }
       d.origin.x = clamp(d.origin.x + j.vx * dt, bounds.L + 0.35, bounds.R - 0.35); d.origin.y += j.vy * dt;
       if (j.k === 'paraca' && d.origin.y <= 0) { d.origin.y = 0; d.chute.down = true; d.bump(0.8); d.job = { k: 'aterrizar', b0: b }; d.endAct(); }
-    } else if (j.k === 'aterrizar') { if (tj > 0.7) startWalk(d, b, d.slotX, 'volver'); }
+    } else if (j.k === 'agarrar') { const g = j.g;
+      if (!g.held && b >= j.b0 + 0.6) { g.held = d; g.big = j.big; g.v.set(0, 0, 0); g.rest = 0; }
+      if (b >= j.b0 + 1.3) { const side = j.side, big = j.big, r = g.r;
+        if (j.mode === 'llevar') { d.job = { k: 'llevar', b0: b, tx: side * (bounds.R + 0.9), g, big, tidy: true }; d.setAct(bb => carryPose(bb, side, r, big)); }
+        else { const b0 = b; d.job = { k: 'lanzar', b0, g, side, tidy: true };
+          d.setAct(bb => { const s = clamp((bb - b0) / 1.7, 0, 1), p = base(); p.yaw = side * PI / 2; p.turn = -side * 0.3 * (1 - sstep(0.3, 0.5, s));
+            const hold = [holdOut(r), -0.2, 0.3], back = [holdOut(r) + 0.05, 0.05, -0.32], up = [holdOut(r), 0.5, 0.42];
+            const h = s < 0.4 ? lerp3(hold, back, sstep(0, 0.4, s)) : s < 0.58 ? lerp3(back, up, sstep(0.4, 0.58, s)) : lerp3(up, base().hL, sstep(0.7, 1, s));
+            p.hL = h; p.hR = h; p.lean = s < 0.4 ? -0.18 * sstep(0, 0.4, s) : lerp(-0.18, 0.3, sstep(0.4, 0.6, s)) * (1 - sstep(0.75, 1, s));
+            p.twist = (s < 0.4 ? 0.35 * sstep(0, 0.4, s) : 0.35 - 0.7 * sstep(0.4, 0.6, s)) * (1 - sstep(0.75, 1, s));
+            p.py = -0.12 * Math.sin(PI * clamp(s / 0.6, 0, 1)); p.fL = [0.12, 0, 0.16]; p.fR = [0.12, 0, -0.14]; return p; }); } } }
+    else if (j.k === 'lanzar') { const g = j.g;
+      if (g && g.held && b >= j.b0 + 0.95) { j.g = null; g.held = null; g.out = true; const dist = bounds.R + 1.2 - j.side * g.p.x;
+        g.v.set(j.side * clamp(dist / 1.05, 3, 11), 6.2, -0.6); g.w.set(Math.random() * 10 - 5, Math.random() * 16 - 8, Math.random() * 10 - 5); spark(g.p.clone(), 0xfff1a8); }
+      if (b >= j.b0 + 1.7) startWalk(d, b, d.slotX, 'volver'); }
+    else if (j.k === 'aterrizar') { if (tj > 0.7) startWalk(d, b, d.slotX, 'volver'); }
     else if (j.k === 'patear') { if (!j.hit && b >= j.b0 + 0.52) { j.hit = true; const g = j.g, hv = Math.sqrt(G_R1 / g.r); g.v.set(j.side * (2.2 + Math.random() * 1.2) * hv, (3 + Math.random() * 1.5) * hv, (Math.random() - 0.5) * 0.6); g.w.set(Math.random() * 14 - 7, Math.random() * 14 - 7, Math.random() * 14 - 7); g.rest = 0; g.claimed = false; spark(g.p.clone(), 0xfff1a8); }
       if (b >= j.b0 + 1) { d.job = null; d.endAct(); } }
     else if (j.k === 'chocar') { if (!j.hit && b >= j.b0 + 1 && d.slotX < j.mate.slotX) { j.hit = true; const a = d.S.haR.clone().lerp(j.mate.S.haL, 0.5); spark(a, 0xffe27a); d.bump(0.35); j.mate.bump(0.35); }
@@ -1042,7 +1086,13 @@ function director(b) {
   // física de los regalos
   const _q = new THREE.Quaternion(), _e = new THREE.Euler(), _wq = new THREE.Quaternion(), _wv = V(0, 0, 0);
   for (let k = gifts.length - 1; k >= 0; k--) { const g = gifts[k]; g.age += dt; g.cd -= dt;
-    if (g.thr) {                                              // en el aire, lanzado desde el celular
+    if (g.held) {                                             // en las manos de un muñeco
+      const S = g.held.S; if (S) { g.p.copy(S.haL).lerp(S.haR, 0.5); if (g.big) g.p.y += g.r * 0.75; else g.p.y += g.r * 0.15; }
+      g.v.set(0, 0, 0); g.rest = 0;
+    } else if (g.out) {                                       // lanzado fuera: vuela sin chocar y desaparece al salir
+      g.v.y -= 9.8 * dt; g.p.addScaledVector(g.v, dt);
+      if (Math.abs(g.p.x) > bounds.R + 2 || g.p.y < -3) { scene.remove(g.m); g.ghosts.forEach(sp => scene.remove(sp)); gifts.splice(k, 1); continue; }
+    } else if (g.thr) {                                       // en el aire, lanzado desde el celular
       const T = g.thr; T.t += dt; const t = Math.min(1, T.t / T.dur);
       g.p.copy(throwAt(T, t));
       const spd = g.p.distanceTo(throwAt(T, Math.max(0, t - 0.005))) / 0.005, gd = clamp(0.75 * g.r / Math.max(spd, 1e-3), 0.004, 0.045);   // estela pegada al regalo (como un barrido), también cuando cae rápido
@@ -1054,7 +1104,7 @@ function director(b) {
       for (const d of dancers) if (d.grp.visible && d.S && g.cd <= 0) { const n = g.p.clone().sub(d.S.H), L = n.length(), R = HEADR + g.r * 0.85;
         if (L < R) { n.divideScalar(L || 1); g.p.copy(d.S.H).addScaledVector(n, R); const vn = g.v.dot(n);
           if (vn < 0) { g.v.addScaledVector(n, -1.6 * vn); g.v.y = Math.max(g.v.y, 2.6); g.v.x += n.x * 1.2 + (Math.random() - 0.5); d.bump(clamp(-vn / 4 * Math.sqrt(g.r / G_R1), 0.5, 1.6)); g.cd = 0.25; g.w.multiplyScalar(1.5); spark(g.p.clone().addScaledVector(n, -g.r * 0.6), 0xfff1a8); } } }
-      for (let j = 0; j < k; j++) { const o = gifts[j]; if (o.thr) continue;      // se apilan sin atravesarse
+      for (let j = 0; j < k; j++) { const o = gifts[j]; if (o.thr || o.held || o.out) continue;      // se apilan sin atravesarse
         const n = g.p.clone().sub(o.p), L = n.length(), R = (g.r + o.r) * 0.82; if (L >= R || L < 1e-4) continue;
         n.divideScalar(L); const push = (R - L) / 2; g.p.addScaledVector(n, push); o.p.addScaledVector(n, -push);
         const rv = g.v.clone().sub(o.v).dot(n); if (rv < 0) { g.v.addScaledVector(n, -rv * 0.6); o.v.addScaledVector(n, rv * 0.6); } }
@@ -1063,13 +1113,13 @@ function director(b) {
       g.p.z = clamp(g.p.z, -1.0, FRONT_Z);
       if (g.p.x < bounds.L + g.r || g.p.x > bounds.R - g.r) { g.p.x = clamp(g.p.x, bounds.L + g.r, bounds.R - g.r); g.v.x *= -0.5; }
     }
-    const resting = !g.thr && g.p.y <= g.r * 1.02 && g.v.length() < 0.3; g.rest = resting ? g.rest + dt : 0;
-    if (resting) {                                            // quieto: la ficha se para mirando a la cámara, un poco inclinada (como la pila de Rosas 7)
+    const resting = !g.thr && !g.held && !g.out && g.p.y <= g.r * 1.02 && g.v.length() < 0.3; g.rest = resting ? g.rest + dt : 0;
+    if (resting || g.held) {                                  // quieto (o en las manos): la ficha se para mirando a la cámara, un poco inclinada (como la pila de Rosas 7)
       _e.set(0, Math.atan2(cam.position.x - g.p.x, cam.position.z - g.p.z), g.tilt); _q.setFromEuler(_e); g.m.quaternion.slerp(_q, Math.min(1, dt * 6)); g.w.multiplyScalar(0.8);
       if (!g.flat && g.m.quaternion.angleTo(_q) < 0.04) { g.flat = true; g.inner.children.forEach((c, i) => c.visible = c.material === g.face); }   // de frente: solo la cara (1 dibujo en vez de 6)
     } else { if (g.flat) { g.flat = false; g.inner.children.forEach(c => c.visible = true); } const sp = g.w.length(); if (sp > 1e-3) { _wv.copy(g.w).divideScalar(sp); _wq.setFromAxisAngle(_wv, sp * dt); g.m.quaternion.premultiply(_wq); } g.w.multiplyScalar(g.thr ? 0.995 : 0.99); }
     g.m.position.copy(g.p);
-    if (g.fade) g.fade += dt; const life = g.fade ? 1 - clamp(g.fade / 0.5, 0, 1) : 1 - sstep(17, 18, g.age);
+    if (g.fade) g.fade += dt; const life = g.fade ? 1 - clamp(g.fade / 0.5, 0, 1) : 1 - sstep(G_LIFE - 1, G_LIFE, g.age);
     g.m.scale.setScalar(life * g.r);
     if (life <= 0) { scene.remove(g.m); g.ghosts.forEach(sp => scene.remove(sp)); gifts.splice(k, 1); } }
   for (let k = sparks.length - 1; k >= 0; k--) { const s = sparks[k]; s.age += dt; const q = s.age / 0.35; s.sp.scale.setScalar(0.2 + 0.9 * q); s.sp.material.opacity = 1 - q; if (q >= 1) { scene.remove(s.sp); sparks.splice(k, 1); } }

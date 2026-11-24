@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MVP MIDI</title>
+<!--
+  MVP MIDI · dispara las animaciones de mvp-fx.html con tu teclado / controlador MIDI.
+
+  CÓMO SE USA:
+   1) Conecta el teclado MIDI a la compu.
+   2) Abre en CHROME (no en OBS):  mvp-midi.html#obspass=TU_CONTRASEÑA
+      (Chrome pide permiso para usar dispositivos MIDI: acepta.)
+   3) En cada MVP aprieta "Asignar" y luego el pad, botón o tecla que quieras.
+      Se guarda solo en este Chrome.
+   4) Deja la pestaña abierta durante el live. Al apretar el pad, esta página avisa a OBS
+      y la fuente mvp-fx.html (con #obspass=… en su enlace) muestra la animación.
+
+  Sirven notas (pads y teclas), botones CC y cambios de programa.
+  Las teclas que no asignaste no hacen nada, así que puedes seguir tocando.
+  Ojo en Windows: a veces un teclado MIDI solo lo puede usar un programa a la vez.
+  Si no aparece, cierra el otro programa que lo esté usando (DAW, etc.) y recarga.
+-->
+<script src="mvps.js"></script>
+<style>
+  :root { --bg: #14111c; --card: #221d2e; --tx: #f2eef8; --mu: #a79fb8; --ac: #c8102e; --ok: #2fbf71; --gold: #e8a317; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--tx); font: 16px/1.4 system-ui, sans-serif; padding: 16px; max-width: 720px; margin: auto; }
+  h1 { font-size: 22px; margin: 4px 0 12px; }
+  .st { background: var(--card); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px; }
+  .st b { color: var(--mu); font-weight: 600; }
+  .ok { color: var(--ok); } .bad { color: #ff6b6b; }
+  #last { font-size: 28px; font-weight: 800; color: var(--gold); min-height: 36px; }
+  .row { display: flex; align-items: center; gap: 10px; background: var(--card); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; flex-wrap: wrap; }
+  .row.fire { outline: 3px solid var(--gold); }
+  .nm { flex: 1 1 160px; font-weight: 700; }
+  .nm small { display: block; color: var(--mu); font-weight: 400; }
+  .ctl { min-width: 110px; font: 600 15px ui-monospace, monospace; color: var(--gold); }
+  button { font: 600 14px system-ui; padding: 8px 12px; border: 0; border-radius: 8px; background: #3a3350; color: #fff; cursor: pointer; }
+  button.a { background: var(--ac); }
+  button.wait { background: var(--gold); color: #000; animation: p 0.8s infinite alternate; }
+  @keyframes p { to { opacity: 0.6; } }
+  .hint { color: var(--mu); font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>🎹 MVP con teclado MIDI</h1>
+<div class="st">
+  <div><b>MIDI:</b> <span id="smidi">conectando…</span></div>
+  <div><b>OBS:</b> <span id="sobs">…</span></div>
+</div>
+<div class="st"><b>Último control:</b><div id="last">aprieta un pad o tecla</div></div>
+<div id="list"></div>
+<p class="hint">"Asignar" y luego aprieta el pad o tecla. "Probar" dispara la animación sin el teclado. Lo asignado se guarda en este Chrome.</p>
+
+<script>
+'use strict';
+const Q = new URLSearchParams(location.search), HP = new URLSearchParams(location.hash.slice(1));
+const OBS = Q.get('obsurl') || 'ws://localhost:4455', PASS = HP.get('obspass') || Q.get('obspass') || '';
+const KEY = 'mvpmidi_mapa_v1';
+const $ = id => document.getElementById(id);
+
+/* lista de MVPs (mvps.js) */
+const MV = (window.MVPS || []).map((m, i) => ({ ...m, usuario: String(m.usuario || '').toLowerCase().replace(/^@/, '').trim() })).filter(m => m.usuario);
+
+/* mapa control → usuario: lo asignado aquí manda; si no, el campo midi de mvps.js */
+let MAP = {}; try { MAP = JSON.parse(localStorage.getItem(KEY) || '{}') || {}; } catch (e) {}
+const save = () => { try { localStorage.setItem(KEY, JSON.stringify(MAP)); } catch (e) {} };
+const midiId = v => v == null ? '' : /^\d+$/.test(String(v)) ? 'n' + v : String(v).toLowerCase().replace(/[^a-z0-9]/g, '');
+MV.forEach(m => { const id = midiId(m.midi); if (id && !Object.values(MAP).includes(m.usuario) && !MAP[id]) MAP[id] = m.usuario; });
+const ctlOf = u => Object.keys(MAP).find(k => MAP[k] === u);
+
+const NOTES = ['Do', 'Do#', 'Re', 'Re#', 'Mi', 'Fa', 'Fa#', 'Sol', 'Sol#', 'La', 'La#', 'Si'];
+const label = id => { if (!id) return '—'; const n = /^n(\d+)$/.exec(id); if (n) { const x = +n[1]; return `nota ${x} (${NOTES[x % 12]}${Math.floor(x / 12) - 1})`; }
+  return id.replace(/^cc/, 'botón CC ').replace(/^pc/, 'programa '); };
+
+let learning = null;
+function render() {
+  $('list').innerHTML = '';
+  MV.forEach(m => {
+    const r = document.createElement('div'); r.className = 'row'; r.id = 'r_' + m.usuario;
+    r.innerHTML = `<div class="nm">${m.nombre || m.usuario}<small>@${m.usuario}</small></div><div class="ctl">${label(ctlOf(m.usuario))}</div>`;
+    const as = document.createElement('button'); as.textContent = learning === m.usuario ? 'Aprieta un pad…' : 'Asignar'; if (learning === m.usuario) as.className = 'wait';
+    as.onclick = () => { learning = learning === m.usuario ? null : m.usuario; render(); };
+    const qt = document.createElement('button'); qt.textContent = 'Quitar'; qt.onclick = () => { const k = ctlOf(m.usuario); if (k) { delete MAP[k]; save(); render(); } };
+    const pr = document.createElement('button'); pr.textContent = 'Probar'; pr.className = 'a'; pr.onclick = () => fire(m.usuario);
+    r.append(as, qt, pr); $('list').appendChild(r);
+  });
+  if (!MV.length) $('list').innerHTML = '<div class="st">No hay MVPs en mvps.js</div>';
+}
+
+/* disparo → OBS (BroadcastCustomEvent {mvpfx}) ; mvp-fx.html lo recibe */
+const lastFire = {};
+function fire(u) {
+  const now = performance.now(); if (now - (lastFire[u] ?? -1e9) < 1200) return; lastFire[u] = now;   // evita dobles por rebote del pad
+  const r = $('r_' + u); if (r) { r.classList.add('fire'); setTimeout(() => r.classList.remove('fire'), 900); }
+  if (obsOk) req('BroadcastCustomEvent', { eventData: { mvpfx: u } });
+}
+
+/* MIDI */
+function onMidi(data) {
+  const [st, a, b] = data, ty = st & 0xf0;
+  const id = ty === 0x90 && b > 0 ? 'n' + a : ty === 0xb0 && b > 0 ? 'cc' + a : ty === 0xc0 ? 'pc' + a : ''; if (!id) return;
+  $('last').textContent = label(id) + (MAP[id] ? '  →  ' + (MV.find(m => m.usuario === MAP[id])?.nombre || MAP[id]) : '');
+  if (learning) { const old = ctlOf(learning); if (old) delete MAP[old]; MAP[id] = learning; learning = null; save(); render(); return; }
+  if (MAP[id]) fire(MAP[id]);
+}
+if (!navigator.requestMIDIAccess) $('smidi').innerHTML = '<span class="bad">este navegador no tiene MIDI: ábrelo en Chrome o Edge</span>';
+else navigator.requestMIDIAccess().then(acc => {
+  const hook = () => { const ins = [...acc.inputs.values()]; ins.forEach(i => i.onmidimessage = e => onMidi(e.data));
+    $('smidi').innerHTML = ins.length ? '<span class="ok">✓ ' + ins.map(i => i.name).join(', ') + '</span>' : '<span class="bad">no veo ningún teclado (conéctalo; si está abierto en otro programa, ciérralo y recarga)</span>'; };
+  hook(); acc.onstatechange = hook;
+}).catch(() => { $('smidi').innerHTML = '<span class="bad">Chrome no dio permiso de MIDI (candado junto a la dirección → Dispositivos MIDI → Permitir)</span>'; });
+
+/* OBS WebSocket v5 */
+let ws, obsOk = false, rid = 0;
+const req = (requestType, requestData) => ws.send(JSON.stringify({ op: 6, d: { requestType, requestId: 'm' + (++rid), requestData } }));
+async function sha(s) { const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return btoa(String.fromCharCode(...new Uint8Array(h))); }
+function connectObs() {
+  $('sobs').textContent = 'conectando…';
+  try { ws = new WebSocket(OBS); } catch (e) { $('sobs').innerHTML = '<span class="bad">dirección inválida</span>'; return; }
+  ws.onmessage = async e => { const m = JSON.parse(e.data);
+    if (m.op === 0) { const d = { rpcVersion: 1, eventSubscriptions: 0 }, au = m.d.authentication;
+      if (au) { if (!PASS) { $('sobs').innerHTML = '<span class="bad">OBS pide contraseña: agrega #obspass=… al enlace</span>'; ws.close(); return; } d.authentication = await sha(await sha(PASS + au.salt) + au.challenge); }
+      ws.send(JSON.stringify({ op: 1, d })); }
+    else if (m.op === 2) { obsOk = true; $('sobs').innerHTML = '<span class="ok">✓ conectado</span>'; } };
+  ws.onclose = ev => { obsOk = false; if (!/contraseña/.test($('sobs').textContent)) $('sobs').innerHTML = '<span class="bad">' + (ev.code === 4009 ? 'contraseña incorrecta' : 'desconectado (¿OBS abierto y WebSocket activado?)') + '</span>'; setTimeout(connectObs, 4000); };
+  ws.onerror = () => {};
+}
+connectObs(); render();
+</script>
+</body>
+</html>

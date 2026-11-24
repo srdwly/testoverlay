@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>MVP FX</title>
+<!--
+  MVP FX · animación de entrada personalizada para tus MVPs (fuente de navegador de OBS, 1080×1920)
+
+  ENLACE EN OBS (fuente de navegador 1080×1920):
+    mvp-fx.html                          → detecta a tus MVPs por TikFinity y acepta !mvp en el chat
+    mvp-fx.html#obspass=TU_CONTRASEÑA    → además escucha a OBS (para el Stream Deck)
+
+  LA LISTA DE MVPs está en mvps.js (usuario, nombre, animación, frase…).
+
+  CÓMO SE DISPARA:
+   1) Solo (TikFinity): la PRIMERA vez que un MVP aparece en el live (comenta, tapea, regala,
+      sigue, comparte o TikTok avisa que entró) sale su animación. Una vez por live (?cada=180 minutos).
+      Ojo: TikTok no avisa todas las entradas, por eso también cuenta el primer comentario o tap.
+   2) Chat: tú o tus moderadores escriben  !mvp usuario   (o  !mvp 2  = el 2.º de la lista)
+   3) Stream Deck (con el plugin oficial de OBS, sin programas extra):
+        - En OBS crea una escena "MVP botones" (no hace falta mostrarla nunca).
+        - Adentro agrega una fuente vacía por MVP (p. ej. "Fuente de color") llamada:  MVP ejemplo_reina
+        - En el Stream Deck: acción OBS → "Visibilidad de fuente" → esa fuente.
+        - Cada vez que aprietas la tecla (prende o apaga), sale la animación de ese MVP.
+      Necesita #obspass=… en el enlace (o ?obs=1 si tu WebSocket no tiene contraseña).
+   4) Teclado MIDI: abre mvp-midi.html#obspass=… en Chrome, asigna un pad/tecla a cada MVP y listo
+      (manda el aviso a OBS). O ?midi=1 aquí si OBS deja usar MIDI directo (campo midi en mvps.js).
+   5) Teclas 1-9 (clic derecho en la fuente → Interactuar) para probar.
+   (También acepta el evento "mvpfx" de OBS / Streamer.bot: {"mvpfx":"usuario"})
+
+  OPCIONES:
+    ?test=1        botones de prueba y avisos en pantalla
+    ?demo=1        pasa las animaciones de ejemplo en bucle (NO dejarlo en el live)
+    ?y=560         altura del centro de la animación (0 arriba, 1920 abajo)
+    ?escala=1      tamaño
+    ?cada=180      minutos mínimos entre dos entradas automáticas del mismo MVP
+    ?auto=0        no disparar solo (solo chat, Stream Deck y teclas)
+    ?mvps=juan:pua,ana:corona   agregar MVPs desde el enlace (para probar)
+    ?anim=pua      forzar una animación para todos
+-->
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; }
+  canvas { position: absolute; left: 0; top: 0; width: 100vw; height: 100vh; }
+  #panel { position: fixed; left: 10px; bottom: 10px; font: 15px system-ui, sans-serif; color: #fff; display: none; }
+  #panel button { font: 600 15px system-ui; margin: 3px; padding: 8px 12px; border: 0; border-radius: 8px; background: #c8102e; color: #fff; cursor: pointer; }
+  #panel button.b { background: #b8860b; }
+  #st { position: fixed; left: 10px; top: 10px; font: 13px/1.35 ui-monospace, monospace; color: #fff; background: #000a; padding: 8px 10px; border-radius: 8px; white-space: pre; display: none; }
+</style>
+<script src="mvps.js"></script>
+</head>
+<body>
+<canvas id="c" width="1080" height="1920"></canvas>
+<div id="panel"></div>
+<div id="st"></div>
+<script>
+'use strict';
+const Q = new URLSearchParams(location.search), HP = new URLSearchParams(location.hash.slice(1));
+const num = (k, d) => { const v = parseFloat(Q.get(k)); return isFinite(v) ? v : d; };
+const W = 1080, H = 1920, FONT = '"Arial Black", "Arial Bold", Impact, system-ui, sans-serif';
+const CFG = {
+  owners: ['rodrigovelizguitar'],
+  ws: Q.get('ws') || 'ws://localhost:21213/',
+  obs: Q.get('obsurl') || 'ws://localhost:4455',
+  obspass: HP.get('obspass') || Q.get('obspass') || '',
+  useObs: !!(HP.get('obspass') || Q.get('obspass') || Q.get('obs') === '1'),
+  y: num('y', 560), sc: num('escala', 1), cada: num('cada', 180), auto: Q.get('auto') !== '0',
+  test: Q.has('test'), demo: Q.has('demo'), anim: Q.get('anim'), capture: Q.has('captura'),
+};
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v)), lerp = (a, b, t) => a + (b - a) * t;
+const ease = { out: t => 1 - Math.pow(1 - clamp(t, 0, 1), 3), in: t => Math.pow(clamp(t, 0, 1), 3),
+  back: t => { t = clamp(t, 0, 1); const c = 2.2; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); },
+  elastic: t => { t = clamp(t, 0, 1); return t === 0 || t === 1 ? t : Math.pow(2, -10 * t) * Math.sin((t * 10 - 0.75) * 2.0944) + 1; } };
+const seg = (t, a, b) => clamp((t - a) / (b - a), 0, 1);
+
+/* ── lista de MVPs ── */
+const MV = {};
+(window.MVPS || []).forEach((m, i) => addMvp(m, i));
+(Q.get('mvps') || '').split(',').filter(Boolean).forEach(s => { const [u, a] = s.split(':'); addMvp({ usuario: u, animacion: a || 'corona' }); });
+function addMvp(m, i) {
+  const u = String(m.usuario || '').toLowerCase().replace(/^@/, '').trim(); if (!u) return;
+  MV[u] = { ...m, usuario: u, tecla: m.tecla || (Object.keys(MV).length + 1) };
+}
+const byKey = k => Object.values(MV).find(m => String(m.tecla) === String(k));
+const OWN = CFG.owners.map(o => o.toLowerCase());
+
+/* ── fotos de perfil: las aprende de TikFinity ── */
+const PICS = {};
+// la última foto vista de cada MVP se guarda: así el Stream Deck o !mvp la muestran aunque aún no haya comentado hoy
+const PKEY = 'mvpfx_fotos_v1'; let PURL = {}; try { PURL = JSON.parse(localStorage.getItem(PKEY) || '{}') || {}; } catch (e) {}
+function picFor(m, url) {
+  if (url && PURL[m.usuario] !== url) { PURL[m.usuario] = url; try { localStorage.setItem(PKEY, JSON.stringify(PURL)); } catch (e) {} }
+  const src = m.foto || url || PURL[m.usuario]; if (!src) return PICS[m.usuario] || null;
+  if (PICS[m.usuario] && PICS[m.usuario]._src === src) return PICS[m.usuario];
+  const im = new Image(); im._src = src; im.src = src; PICS[m.usuario] = im; return im;
+}
+
+/* ── cola de animaciones ── */
+const queue = []; let cur = null, clock = 0;
+const SEEN_KEY = 'mvpfx_vistos_v1';
+let SEEN = {}; try { SEEN = JSON.parse(localStorage.getItem(SEEN_KEY) || '{}') || {}; } catch (e) {}
+function trigger(uid, via, nick, url) {
+  uid = String(uid || '').toLowerCase().replace(/^@/, '');
+  const m = MV[uid] || (via === 'manual' && uid ? { usuario: uid, animacion: 'corona' } : null); if (!m) return false;
+  if (cur && cur.m.usuario === uid || queue.some(q => q.m.usuario === uid)) return false;
+  const name = (m.nombre || nick || uid).trim();
+  queue.push({ m, name, img: picFor(m, url), anim: m.video && !CFG.anim ? 'video' : (CFG.anim || m.animacion || 'corona'), via });
+  log(`▶ ${name} (${via})`);
+  return true;
+}
+function autoSeen(uid, nick, url) {
+  if (!CFG.auto) return; uid = String(uid || '').toLowerCase(); const m = MV[uid]; if (!m) return;
+  picFor(m, url);
+  const now = Date.now();
+  if (SEEN[uid] && now - SEEN[uid] < CFG.cada * 60e3) return;
+  SEEN[uid] = now; if (!CFG.demo && !CFG.test) try { localStorage.setItem(SEEN_KEY, JSON.stringify(SEEN)); } catch (e) {}
+  trigger(uid, 'auto', nick, url);
+}
+
+/* ── partículas ── */
+let P = [];
+let seed = 1; const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+function emit(o) { P.push(Object.assign({ x: 0, y: 0, vx: 0, vy: 0, g: 0, life: 1, age: 0, r: 6, c: '#fff', drag: 0.99, add: false, rot: 0, vr: 0, kind: 'dot' }, o)); }
+function stepParticles(dt) {
+  for (const p of P) { p.age += dt; p.vx *= Math.pow(p.drag, dt * 60); p.vy = p.vy * Math.pow(p.drag, dt * 60) + p.g * dt; p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.vr * dt; }
+  P = P.filter(p => p.age < p.life);
+}
+function drawParticles(add) {
+  for (const p of P) {
+    if (p.add !== add) continue;
+    const k = 1 - p.age / p.life; ctx.globalAlpha = clamp(k * 1.4, 0, 1);
+    ctx.fillStyle = p.c;
+    if (p.kind === 'conf') { ctx.save(); ctx.translate(p.x, p.y); ctx.rotate(p.rot); ctx.scale(1, Math.cos(p.rot * 1.7)); ctx.fillRect(-p.r, -p.r * 0.45, p.r * 2, p.r * 0.9); ctx.restore(); }
+    else if (p.kind === 'star') { star(p.x, p.y, p.r * (0.4 + k * 0.6), p.rot); }
+    else { ctx.beginPath(); ctx.arc(p.x, p.y, p.r * (0.3 + 0.7 * k), 0, 7); ctx.fill(); }
+  }
+  ctx.globalAlpha = 1;
+}
+function star(x, y, r, rot) {
+  ctx.beginPath();
+  for (let i = 0; i < 8; i++) { const a = rot + i * Math.PI / 4, rr = i % 2 ? r * 0.28 : r; ctx.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); }
+  ctx.closePath(); ctx.fill();
+}
+
+/* ── piezas comunes ── */
+function avatar(x, y, r, img, name, col) {
+  ctx.save(); ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.closePath();
+  const ok = img && img.complete && img.naturalWidth;
+  if (ok) { ctx.clip(); ctx.drawImage(img, x - r, y - r, r * 2, r * 2); }
+  else {
+    const g = ctx.createRadialGradient(x - r * 0.3, y - r * 0.4, r * 0.1, x, y, r);
+    g.addColorStop(0, '#5a5a6e'); g.addColorStop(1, '#1b1b26'); ctx.fillStyle = g; ctx.fill();
+    ctx.fillStyle = col; ctx.font = `900 ${r * 1.05}px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText([...name][0].toUpperCase(), x, y + r * 0.06);
+  }
+  ctx.restore();
+}
+function fitFont(txt, max, size, weight = 900) {
+  ctx.font = `${weight} ${size}px ${FONT}`; const w = ctx.measureText(txt).width;
+  if (w > max) size *= max / w; ctx.font = `${weight} ${size}px ${FONT}`; return size;
+}
+function bigName(txt, x, y, size, fill, stroke, k, shine) {
+  ctx.save(); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  size = fitFont(txt, 960, size);
+  ctx.translate(x, y); ctx.scale(k, k);
+  ctx.lineJoin = 'round'; ctx.lineWidth = size * 0.16; ctx.strokeStyle = stroke; ctx.strokeText(txt, 0, 0);
+  ctx.fillStyle = fill(size); ctx.fillText(txt, 0, 0);
+  if (shine != null) {                                        // brillo que cruza las letras
+    const w = ctx.measureText(txt).width, sx = lerp(-w * 0.8, w * 0.8, shine);
+    const g = ctx.createLinearGradient(sx - 90, 0, sx + 90, 0);
+    g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(0.5, 'rgba(255,255,255,0.85)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.globalCompositeOperation = 'source-atop'; ctx.fillStyle = g; ctx.fillText(txt, 0, 0);
+  }
+  ctx.restore(); return size;
+}
+function smallText(txt, x, y, size, col, a) {
+  if (!txt) return; ctx.save(); ctx.globalAlpha = a; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  fitFont(txt, 900, size, 800); ctx.lineJoin = 'round'; ctx.lineWidth = size * 0.2; ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+  ctx.strokeText(txt, x, y); ctx.fillStyle = col; ctx.fillText(txt, x, y); ctx.restore();
+}
+function goldFill(y0) { return s => { const g = ctx.createLinearGradient(0, -s * 0.5, 0, s * 0.5); g.addColorStop(0, '#fff6c8'); g.addColorStop(0.45, '#ffd34d'); g.addColorStop(0.55, '#e8a317'); g.addColorStop(1, '#a8650a'); return g; }; }
+
+/* ══ ANIMACIÓN 1 · CORONA (entrada real dorada) ══ */
+const CORONA = { dur: 6.2,
+  start(a) { a.col = a.m.color || '#ffd34d'; a.flags = {}; },
+  draw(a, t, dt) {
+    const cx = W / 2, cy = CFG.y, R = 150, out = seg(t, 5.4, 6.2), A = 1 - ease.in(out);
+    ctx.save(); ctx.translate(cx, cy); ctx.scale(CFG.sc * (1 + out * 0.15), CFG.sc * (1 + out * 0.15)); ctx.translate(-cx, -cy); ctx.globalAlpha = A;
+    // resplandor de fondo + rayos de luz que giran
+    const gl = ease.out(seg(t, 0, 0.6));
+    const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, 520 * gl);
+    rg.addColorStop(0, 'rgba(255,210,80,0.55)'); rg.addColorStop(0.5, 'rgba(255,170,40,0.18)'); rg.addColorStop(1, 'rgba(255,170,40,0)');
+    ctx.fillStyle = rg; ctx.fillRect(cx - 600, cy - 600, 1200, 1200);
+    ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.translate(cx, cy); ctx.rotate(t * 0.35);
+    for (let i = 0; i < 12; i++) {
+      ctx.rotate(Math.PI / 6); const L = 640 * gl;
+      const g = ctx.createLinearGradient(0, 0, L, 0); g.addColorStop(0, 'rgba(255,220,120,0.35)'); g.addColorStop(1, 'rgba(255,220,120,0)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(L, -38 - (i % 2) * 30); ctx.lineTo(L, 38 + (i % 2) * 30); ctx.fill();
+    }
+    ctx.restore();
+    // avatar con aro dorado
+    const ak = ease.elastic(seg(t, 0.25, 1.25));
+    if (ak > 0.01) {
+      ctx.save(); ctx.translate(cx, cy); ctx.scale(ak, ak); ctx.translate(-cx, -cy);
+      ctx.shadowColor = 'rgba(255,200,60,0.9)'; ctx.shadowBlur = 40;
+      ctx.beginPath(); ctx.arc(cx, cy, R + 16, 0, 7); ctx.fillStyle = '#e8a317'; ctx.fill(); ctx.shadowBlur = 0;
+      const ring = ctx.createLinearGradient(cx - R, cy - R, cx + R, cy + R); ring.addColorStop(0, '#fff3b0'); ring.addColorStop(0.5, '#d18a00'); ring.addColorStop(1, '#ffe27a');
+      ctx.lineWidth = 16; ctx.strokeStyle = ring; ctx.beginPath(); ctx.arc(cx, cy, R + 8, 0, 7); ctx.stroke();
+      avatar(cx, cy, R, a.img, a.name, a.col);
+      ctx.setLineDash([18, 22]); ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(255,240,180,0.9)'; ctx.lineDashOffset = -t * 120;
+      ctx.beginPath(); ctx.arc(cx, cy, R + 34, 0, 7); ctx.stroke(); ctx.setLineDash([]);
+      ctx.restore();
+    }
+    // corona que cae y rebota sobre la foto
+    const ct = seg(t, 0.9, 1.5), land = cy - R - 30;
+    if (t > 0.9) {
+      let y = lerp(cy - 900, land, ease.in(ct)), rot = lerp(-0.6, -0.12, ease.out(ct));
+      if (ct >= 1) { const b = seg(t, 1.5, 2.1); y = land - Math.sin(b * Math.PI) * 40 * (1 - b); rot = -0.12 + Math.sin(b * 9) * 0.06 * (1 - b); }
+      if (ct >= 1 && !a.flags.land) { a.flags.land = 1; seed = 7;
+        for (let i = 0; i < 26; i++) { const an = -Math.PI * rnd(), sp = 300 + rnd() * 700; emit({ x: cx, y: land, vx: Math.cos(an) * sp, vy: Math.sin(an) * sp, g: 900, life: 0.9 + rnd() * 0.6, r: 10 + rnd() * 12, c: rnd() < 0.5 ? '#fff3b0' : '#ffd34d', kind: 'star', vr: 3, add: true }); } }
+      crown(cx + 30, y, 1.15, rot, t);
+    }
+    // cinta MVP
+    const rk = ease.back(seg(t, 1.5, 1.9)), ry = cy + R + 70;
+    if (rk > 0) { ctx.save(); ctx.translate(cx, ry); ctx.scale(rk, rk); ribbon(0, 0, 360, 74, '#c8102e', '#8a0a1f');
+      ctx.fillStyle = '#fff'; ctx.font = `900 46px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('★ MVP ★', 0, 3); ctx.restore(); }
+    // nombre
+    const nk = ease.back(seg(t, 1.8, 2.3));
+    if (nk > 0) bigName(a.name, cx, cy + R + 190, 120, goldFill(), '#3a1d00', nk, seg(t, 2.4, 3.4));
+    smallText(a.m.frase, cx, cy + R + 290, 54, '#fff', ease.out(seg(t, 2.5, 3)));
+    // confeti
+    if (t > 1.6 && t < 4.6 && !a.flags['c' + Math.floor(t * 20)]) { a.flags['c' + Math.floor(t * 20)] = 1; seed = Math.floor(t * 100) + 3;
+      for (let i = 0; i < 4; i++) emit({ x: rnd() * W, y: cy - 620 - rnd() * 80, vx: (rnd() - 0.5) * 120, vy: 150 + rnd() * 200, g: 140, drag: 0.995, life: 3.2, r: 9 + rnd() * 7,
+        c: ['#ffd34d', '#c8102e', '#ffffff', '#ff8a00'][Math.floor(rnd() * 4)], kind: 'conf', rot: rnd() * 6, vr: (rnd() - 0.5) * 12 }); }
+    ctx.restore();
+    return t > this.dur;
+  } };
+function crown(x, y, s, rot, t) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(rot); ctx.scale(s, s);
+  const g = ctx.createLinearGradient(0, -90, 0, 40); g.addColorStop(0, '#fff3b0'); g.addColorStop(0.5, '#ffc72c'); g.addColorStop(1, '#b06d00');
+  ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 16; ctx.shadowOffsetY = 8;
+  ctx.beginPath(); ctx.moveTo(-110, 30); ctx.lineTo(-125, -55); ctx.lineTo(-62, -10); ctx.lineTo(0, -90); ctx.lineTo(62, -10); ctx.lineTo(125, -55); ctx.lineTo(110, 30); ctx.closePath();
+  ctx.fillStyle = g; ctx.fill(); ctx.shadowColor = 'transparent';
+  ctx.lineWidth = 6; ctx.strokeStyle = '#7a4a00'; ctx.stroke();
+  ctx.fillStyle = '#d18a00'; ctx.fillRect(-110, 18, 220, 26); ctx.strokeRect(-110, 18, 220, 26);
+  [[-125, -55, '#c8102e'], [0, -90, '#c8102e'], [125, -55, '#c8102e'], [-55, 31, '#1e88e5'], [0, 31, '#c8102e'], [55, 31, '#1e88e5']].forEach(([gx, gy, c]) => {
+    ctx.beginPath(); ctx.arc(gx, gy, 13, 0, 7); ctx.fillStyle = c; ctx.fill(); ctx.lineWidth = 3; ctx.stroke();
+    ctx.beginPath(); ctx.arc(gx - 4, gy - 4, 4, 0, 7); ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.fill(); });
+  const sh = ((t * 0.7) % 1.6) - 0.3;                         // destello
+  ctx.globalCompositeOperation = 'source-atop'; const sg = ctx.createLinearGradient(-130 + sh * 260 - 40, 0, -130 + sh * 260 + 40, 0);
+  sg.addColorStop(0, 'rgba(255,255,255,0)'); sg.addColorStop(0.5, 'rgba(255,255,255,0.7)'); sg.addColorStop(1, 'rgba(255,255,255,0)'); ctx.fillStyle = sg; ctx.fillRect(-140, -100, 280, 150);
+  ctx.restore();
+}
+function ribbon(x, y, w, h, c1, c2) {
+  ctx.fillStyle = c2;
+  [[-1], [1]].forEach(([s]) => { ctx.beginPath(); ctx.moveTo(x + s * (w / 2 - 20), y - h / 2 + 14); ctx.lineTo(x + s * (w / 2 + 50), y - h / 2 + 14); ctx.lineTo(x + s * (w / 2 + 25), y + 8 + 10); ctx.lineTo(x + s * (w / 2 + 50), y + h / 2 + 14); ctx.lineTo(x + s * (w / 2 - 20), y + h / 2 + 14); ctx.fill(); });
+  const g = ctx.createLinearGradient(0, y - h / 2, 0, y + h / 2); g.addColorStop(0, '#e8283f'); g.addColorStop(1, c1);
+  ctx.fillStyle = g; ctx.beginPath(); ctx.roundRect(x - w / 2, y - h / 2, w, h, 10); ctx.fill();
+  ctx.lineWidth = 4; ctx.strokeStyle = '#ffd34d'; ctx.stroke();
+}
+
+/* ══ ANIMACIÓN 2 · PÚA DE FUEGO ══ */
+const PUA = { dur: 6.0,
+  start(a) { a.col = a.m.color || '#ff3b1f'; a.flags = {}; },
+  draw(a, t, dt) {
+    const cx = W / 2, cy = CFG.y + 40, out = seg(t, 5.2, 6.0);
+    ctx.save(); ctx.translate(cx, cy); ctx.scale(CFG.sc, CFG.sc); ctx.translate(-cx, -cy);
+    const hit = 0.55, shake = t > hit ? Math.exp(-(t - hit) * 6) * 22 : 0;
+    const sx = Math.sin(t * 90) * shake, sy = Math.cos(t * 77) * shake;
+    // cuerdas de guitarra que vibran con el golpe
+    const sa = ease.out(seg(t, 0.1, 0.4)) * (1 - ease.in(out));
+    for (let i = 0; i < 6; i++) {
+      const yy = cy - 250 + i * 100, amp = t > hit ? Math.exp(-(t - hit) * 2.2) * (30 - i * 3) : 0, th = 2 + (5 - i) * 1.2;
+      ctx.save(); ctx.globalAlpha = sa * 0.85; ctx.strokeStyle = i < 3 ? '#e9e2d0' : '#d9a441'; ctx.lineWidth = th; ctx.shadowColor = '#ff7a1a'; ctx.shadowBlur = amp > 4 ? 18 : 0;
+      ctx.beginPath();
+      for (let x = 0; x <= W; x += 20) { const e = Math.sin(Math.PI * x / W); ctx.lineTo(x, yy + Math.sin(t * (60 + i * 9)) * amp * e); }
+      ctx.stroke(); ctx.restore();
+    }
+    // trayectoria: sube desde abajo girando, golpea y se queda; al final sale volando
+    let py, rot, ps;
+    if (t < hit) { const k = ease.in(seg(t, 0, hit)); py = lerp(H + 300, cy, k); rot = (1 - k) * 9; ps = lerp(0.6, 1.05, k); }
+    else { const b = seg(t, hit, hit + 0.5); py = cy; rot = Math.sin(b * 12) * 0.08 * (1 - b); ps = 1 + Math.sin(b * Math.PI) * 0.12 * (1 - b); }
+    if (out > 0) { py = lerp(cy, -500, ease.in(out)); rot = out * 7; }
+    // estela de fuego
+    if (t < hit + 0.05 || out > 0) { seed = Math.floor(t * 300) + 11;
+      for (let i = 0; i < 7; i++) emit({ x: cx + (rnd() - 0.5) * 120, y: py + 170, vx: (rnd() - 0.5) * 160, vy: 200 + rnd() * 300, g: -500, life: 0.5 + rnd() * 0.4, r: 22 + rnd() * 24,
+        c: ['#ffdd55', '#ff8a00', '#ff3b1f'][Math.floor(rnd() * 3)], add: true }); }
+    // fuego que sigue ardiendo detrás mientras está quieta
+    if (t > hit && out === 0) { seed = Math.floor(t * 300) + 19;
+      for (let i = 0; i < 3; i++) { const an = rnd() * Math.PI * 2; emit({ x: cx + Math.cos(an) * 150, y: cy + Math.sin(an) * 150 - 20, vx: (rnd() - 0.5) * 40, vy: -120 - rnd() * 200, g: -200, life: 0.7 + rnd() * 0.4, r: 18 + rnd() * 18,
+        c: ['#ffdd55', '#ff8a00', '#ff3b1f'][Math.floor(rnd() * 3)], add: true }); } }
+    // impacto
+    if (t >= hit && !a.flags.hit) { a.flags.hit = 1; seed = 5;
+      for (let i = 0; i < 46; i++) { const an = rnd() * Math.PI * 2, sp = 500 + rnd() * 1100; emit({ x: cx, y: cy, vx: Math.cos(an) * sp, vy: Math.sin(an) * sp, g: 800, drag: 0.96, life: 0.6 + rnd() * 0.6, r: 6 + rnd() * 8, c: rnd() < 0.6 ? '#ffe08a' : '#ff5a1f', add: true }); } }
+    drawParticles(true);
+    if (t > hit && t < hit + 0.9) {                       // ondas de choque + destello
+      const k = seg(t, hit, hit + 0.9);
+      for (let j = 0; j < 2; j++) { const kk = clamp(k * 1.3 - j * 0.25, 0, 1); if (kk <= 0) continue;
+        ctx.save(); ctx.globalAlpha = (1 - kk) * 0.9; ctx.lineWidth = 26 * (1 - kk) + 2; ctx.strokeStyle = j ? '#ffd34d' : '#ff5a1f';
+        ctx.beginPath(); ctx.arc(cx, cy, 120 + kk * 520, 0, 7); ctx.stroke(); ctx.restore(); }
+      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = Math.max(0, 1 - k * 4) * 0.8;
+      const fg = ctx.createRadialGradient(cx, cy, 0, cx, cy, 700); fg.addColorStop(0, '#fff'); fg.addColorStop(1, 'rgba(255,200,120,0)'); ctx.fillStyle = fg; ctx.fillRect(cx - 700, cy - 700, 1400, 1400); ctx.restore();
+    }
+    // la púa con la foto adentro
+    ctx.save(); ctx.translate(cx + sx, py + sy); ctx.rotate(rot); ctx.scale(ps, ps);
+    pick(0, 0, 1.6, a);
+    ctx.restore();
+    // nombre estampado
+    const nt = seg(t, hit + 0.25, hit + 0.55), A = 1 - ease.in(out);
+    if (nt > 0) {
+      const k = lerp(2.6, 1, ease.out(nt)); ctx.save(); ctx.globalAlpha = Math.min(1, nt * 2) * A;
+      bigName(a.name, cx + sx * 0.5, cy + 380 + sy * 0.5, 124, s => { const g = ctx.createLinearGradient(0, -s * 0.5, 0, s * 0.5); g.addColorStop(0, '#fff2a8'); g.addColorStop(0.5, '#ff9a1f'); g.addColorStop(1, '#d81e05'); return g; }, '#1a0500', k, seg(t, 1.6, 2.6));
+      ctx.restore();
+    }
+    smallText(a.m.frase, cx, cy + 490, 54, '#fff', ease.out(seg(t, 1.5, 2.0)) * A);
+    ctx.restore();
+    return t > this.dur;
+  } };
+function pick(x, y, s, a) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s);
+  const path = () => { ctx.beginPath(); ctx.moveTo(0, 150); ctx.bezierCurveTo(-40, 110, -150, -10, -140, -80); ctx.bezierCurveTo(-130, -150, -50, -160, 0, -160);
+    ctx.bezierCurveTo(50, -160, 130, -150, 140, -80); ctx.bezierCurveTo(150, -10, 40, 110, 0, 150); ctx.closePath(); };
+  ctx.shadowColor = 'rgba(255,90,20,0.9)'; ctx.shadowBlur = 50; path();
+  const g = ctx.createLinearGradient(-140, -160, 140, 150); g.addColorStop(0, '#ff5a4a'); g.addColorStop(0.5, '#c8102e'); g.addColorStop(1, '#6e0414');
+  ctx.fillStyle = g; ctx.fill(); ctx.shadowBlur = 0;
+  ctx.lineWidth = 9; ctx.strokeStyle = '#ffd34d'; ctx.stroke();
+  ctx.save(); ctx.beginPath(); ctx.arc(0, -55, 84, 0, 7); ctx.lineWidth = 8; ctx.strokeStyle = '#ffd34d'; ctx.stroke(); ctx.restore();
+  avatar(0, -55, 80, a.img, a.name, '#ffd34d');
+  ctx.fillStyle = '#ffd34d'; ctx.font = `900 40px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('MVP', 0, 70);
+  path(); ctx.clip(); const hl = ctx.createLinearGradient(-140, -160, 40, 0); hl.addColorStop(0, 'rgba(255,255,255,0.35)'); hl.addColorStop(1, 'rgba(255,255,255,0)'); ctx.fillStyle = hl; ctx.fillRect(-150, -170, 300, 330);
+  ctx.restore();
+}
+
+
+/* ══ ANIMACIÓN CON VIDEO (hecho con IA sobre fondo verde) ══
+   En mvps.js:  video: 'mvp/clarita.mp4'  (fondo verde: se quita aquí con chroma key)
+                nombreY: 430 (altura del nombre), golpe: 2.4 (segundo del video en que explota el poder: ahí entran MVP + nombre), conFoto: false (sin foto)
+                fondo: true (el video trae su propio escenario: se muestra a pantalla completa, sin quitar el verde)  */
+const keyCv = document.createElement('canvas'); let gl = null, glTex = null;
+function initKey(w, h) {
+  keyCv.width = w; keyCv.height = h;
+  if (!gl) {
+    gl = keyCv.getContext('webgl', { premultipliedAlpha: false, alpha: true });
+    const vs = 'attribute vec2 p;varying vec2 uv;void main(){uv=vec2((p.x+1.)/2.,(1.-p.y)/2.);gl_Position=vec4(p,0.,1.);}';
+    // quita el verde: alfa según cuánto domina el verde sobre rojo/azul, y saca el reflejo verde de los bordes
+    const fs = 'precision mediump float;varying vec2 uv;uniform sampler2D t;void main(){vec4 c=texture2D(t,uv);float k=c.g-max(c.r,c.b);float a=1.-smoothstep(0.08,0.28,k);vec3 col=c.rgb;col.g=min(col.g,max(col.r,col.b)+0.04);gl_FragColor=vec4(col*a,a);}';
+    const pr = gl.createProgram();
+    [[gl.VERTEX_SHADER, vs], [gl.FRAGMENT_SHADER, fs]].forEach(([ty, src]) => { const sh = gl.createShader(ty); gl.shaderSource(sh, src); gl.compileShader(sh); gl.attachShader(pr, sh); });
+    gl.linkProgram(pr); gl.useProgram(pr);
+    const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(pr, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    glTex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, glTex);
+    [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T].forEach(k => gl.texParameteri(gl.TEXTURE_2D, k, gl.CLAMP_TO_EDGE));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  }
+  gl.viewport(0, 0, w, h);
+}
+function keyFrame(v) {
+  const w = v.videoWidth, h = v.videoHeight; if (!w) return null;
+  if (keyCv.width !== w || keyCv.height !== h || !gl) initKey(w, h);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, v); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  return keyCv;
+}
+const VIDEO = {
+  start(a) {
+    const v = a.vid = document.createElement('video'); v.src = a.m.video; v.muted = true; v.playsInline = true; v.preload = 'auto';
+    a.dur = 8; v.onloadedmetadata = () => { a.dur = v.duration; }; v.onerror = () => { log('✘ no se pudo cargar ' + a.m.video); a.dur = 0; };
+    if (!CFG.capture) v.play().catch(() => {});
+  },
+  draw(a, t) {
+    const v = a.vid, out = seg(t, a.dur - 0.45, a.dur), A = 1 - out, cx = W / 2;
+    if (a.m.fondo) {                                                  // video con escenario propio: pantalla completa, sin quitar verde
+      if (v.readyState >= 2 && !Q.has('sinvideo')) { const s = Math.max(W / v.videoWidth, H / v.videoHeight), w = v.videoWidth * s, h = v.videoHeight * s;
+        ctx.save(); ctx.globalAlpha = A * ease.out(seg(t, 0, 0.3)); ctx.drawImage(v, cx - w / 2, (H - h) / 2, w, h); ctx.restore(); }
+    } else {
+    const f = v.readyState >= 2 ? keyFrame(v) : null;
+    if (f && !Q.has('sinvideo')) { const s = Math.max(W / f.width, H / f.height) * CFG.sc, w = f.width * s, h = f.height * s;
+      ctx.save(); ctx.globalAlpha = A; ctx.drawImage(f, cx - w / 2, (H - h) / 2 + (CFG.y - 560), w, h); ctx.restore(); }
+    }
+    const t0 = a.m.nombreEn ?? 0.4, ny = a.m.nombreY ?? 430, py = ny - 235, R = 105;
+    ctx.save(); ctx.globalAlpha = A;
+    // foto real del MVP (la manda TikFinity) en un aro dorado con fuego
+    const pk = a.m.conFoto === false ? 0 : ease.elastic(seg(t, t0, t0 + 0.9));
+    if (pk > 0.01) {
+      ctx.save(); ctx.translate(cx, py); ctx.scale(pk, pk);
+      const gl2 = ctx.createRadialGradient(0, 0, R * 0.8, 0, 0, R * 1.9); gl2.addColorStop(0, 'rgba(255,120,40,0.55)'); gl2.addColorStop(1, 'rgba(255,80,20,0)');
+      ctx.fillStyle = gl2; ctx.beginPath(); ctx.arc(0, 0, R * 1.9, 0, 7); ctx.fill();
+      ctx.shadowColor = 'rgba(255,190,60,0.9)'; ctx.shadowBlur = 30; ctx.beginPath(); ctx.arc(0, 0, R + 14, 0, 7); ctx.fillStyle = '#e8a317'; ctx.fill(); ctx.shadowBlur = 0;
+      const ring = ctx.createLinearGradient(-R, -R, R, R); ring.addColorStop(0, '#fff3b0'); ring.addColorStop(0.5, '#d18a00'); ring.addColorStop(1, '#ffe27a');
+      ctx.lineWidth = 12; ctx.strokeStyle = ring; ctx.beginPath(); ctx.arc(0, 0, R + 7, 0, 7); ctx.stroke();
+      avatar(0, 0, R, a.img, a.name, '#ffd34d');
+      ctx.restore();
+      if (t > t0 + 0.3 && A > 0.5) { seed = Math.floor(t * 300) + 41;      // llamitas alrededor del aro
+        for (let i = 0; i < 3; i++) { const an = rnd() * Math.PI * 2; emit({ x: cx + Math.cos(an) * (R + 14), y: py + Math.sin(an) * (R + 14), vx: (rnd() - 0.5) * 30, vy: -90 - rnd() * 120, g: -120, life: 0.45 + rnd() * 0.3, r: 10 + rnd() * 10, c: ['#ffdd55', '#ff8a00', '#ff3b1f'][Math.floor(rnd() * 3)], add: true }); } }
+    }
+    // GOLPE: el segundo del video en que explota el poder (mvps.js → golpe). Ahí entra MVP + nombre con destello y temblor
+    const hit = a.m.golpe ?? 2.4, sh = t > hit ? Math.exp(-(t - hit) * 5) * 26 : 0, sx = Math.sin(t * 93) * sh, sy = Math.cos(t * 71) * sh;
+    if (t > hit && t < hit + 0.6) {                                   // destello + ondas de choque
+      const k = seg(t, hit, hit + 0.6);
+      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.globalAlpha = Math.max(0, 1 - k * 3) * 0.75;
+      const fg = ctx.createRadialGradient(cx, ny, 0, cx, ny, 900); fg.addColorStop(0, '#fff'); fg.addColorStop(1, 'rgba(255,190,90,0)'); ctx.fillStyle = fg; ctx.fillRect(0, 0, W, H); ctx.restore();
+      for (let j = 0; j < 3; j++) { const kk = clamp(k * 1.5 - j * 0.2, 0, 1); if (kk <= 0 || kk >= 1) continue;
+        ctx.save(); ctx.globalAlpha = (1 - kk) * 0.9; ctx.lineWidth = 22 * (1 - kk) + 2; ctx.strokeStyle = ['#fff3b0', '#ffb020', '#ff3b1f'][j];
+        ctx.beginPath(); ctx.arc(cx, ny, 80 + kk * 700, 0, 7); ctx.stroke(); ctx.restore(); }
+    }
+    if (t > hit) {                                                    // rayos de luz detrás del nombre
+      const L = 520 * ease.out(seg(t, hit, hit + 0.4));
+      ctx.save(); ctx.globalCompositeOperation = 'lighter'; ctx.translate(cx, ny); ctx.rotate(t * 0.5);
+      for (let i = 0; i < 14; i++) { ctx.rotate(Math.PI / 7); const g = ctx.createLinearGradient(0, 0, L, 0); g.addColorStop(0, 'rgba(255,200,90,0.32)'); g.addColorStop(1, 'rgba(255,120,40,0)');
+        ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(L, -26 - (i % 2) * 24); ctx.lineTo(L, 26 + (i % 2) * 24); ctx.fill(); }
+      ctx.restore();
+    }
+    if (t >= hit && !a.boom) { a.boom = 1; seed = 9;
+      for (let i = 0; i < 70; i++) { const an = rnd() * Math.PI * 2, sp = 500 + rnd() * 1300; emit({ x: cx, y: ny, vx: Math.cos(an) * sp, vy: Math.sin(an) * sp, g: 600, drag: 0.96, life: 0.8 + rnd() * 0.7, r: 8 + rnd() * 14, c: ['#fff3b0', '#ffd34d', '#ff5a1f', '#ffffff'][Math.floor(rnd() * 4)], kind: rnd() < 0.5 ? 'star' : 'dot', vr: 4, add: true }); } }
+    const rk = ease.back(seg(t, hit + 0.05, hit + 0.4));
+    if (rk > 0) { ctx.save(); ctx.translate(cx + sx, ny - 118 + sy); ctx.scale(rk, rk); ribbon(0, 0, 400, 84, '#c8102e', '#8a0a1f');
+      ctx.fillStyle = '#fff'; ctx.font = `900 58px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('★ MVP ★', 0, 3); ctx.restore(); }
+    const nt = seg(t, hit, hit + 0.28);
+    if (nt > 0) { ctx.save(); ctx.globalAlpha = A * Math.min(1, nt * 2.5);
+      bigName(a.name, cx + sx, ny + sy, 150, goldFill(), '#3a1d00', lerp(3.2, 1, ease.out(nt)), seg(t, hit + 0.5, hit + 1.5)); ctx.restore(); }
+    smallText(a.m.frase, cx, ny + 92, 48, '#fff', ease.out(seg(t, hit + 0.6, hit + 1.1)));
+    ctx.restore();
+    if (t >= a.dur) { v.pause(); v.removeAttribute('src'); v.load(); return true; }
+    return false;
+  } };
+
+const FX = { corona: CORONA, pua: PUA, video: VIDEO };
+
+/* ── bucle ── */
+let last = performance.now();
+function frame(dt) {
+  ctx.clearRect(0, 0, W, H);
+  if (!cur && queue.length) { cur = queue.shift(); cur.t = 0; P = []; (FX[cur.anim] || CORONA).start(cur); }
+  stepParticles(dt);
+  if (cur) {
+    cur.t += dt; const fx = FX[cur.anim] || CORONA;
+    if (fx !== PUA) drawParticles(true);
+    const done = fx.draw(cur, cur.t, dt);
+    drawParticles(false);
+    if (done) { cur = null; P = []; }
+  }
+}
+if (!CFG.capture) (function loop(now) { const dt = Math.min(0.05, (now - last) / 1000); last = now; frame(dt); requestAnimationFrame(loop); })(last);
+// para grabar la vista previa cuadro por cuadro
+window.__mvp = { trigger, frame, MV, queue: () => queue.length + (cur ? 1 : 0),
+  // grabar: adelanta el video al tiempo del cuadro antes de dibujarlo
+  async step(dt) { const c = cur || (queue.length ? null : null);
+    if (cur && cur.vid) await new Promise(r => { const v = cur.vid; if (v.readyState < 1) { v.addEventListener('loadeddata', () => r(), { once: true }); return; } v.addEventListener('seeked', () => r(), { once: true }); v.currentTime = Math.min(cur.t + dt, Math.max(0, (v.duration || 99) - 0.01)); setTimeout(r, 1500); });
+    frame(dt); } };
+
+/* ── TikFinity ── */
+function connectTik() {
+  let ws; try { ws = new WebSocket(CFG.ws); } catch (e) { return setTimeout(connectTik, 5000); }
+  ws.onopen = () => (stat.tik = 'conectado ✓');
+  ws.onclose = () => { stat.tik = 'sin conexión (¿TikFinity abierto?)'; setTimeout(connectTik, 5000); };
+  ws.onerror = () => {};
+  ws.onmessage = e => {
+    let m; try { m = JSON.parse(e.data); } catch (_) { return; }
+    const d = m.data || {}, uid = String(d.uniqueId || '').toLowerCase(); if (!uid) return;
+    if (m.event === 'chat') {
+      const txt = String(d.comment || '').trim(), mod = d.isModerator === true || d.userIdentity?.isModeratorOfAnchor === true;
+      const cm = /^!mvp\s+@?(\S+)/i.exec(txt);
+      if (cm && (OWN.includes(uid) || mod)) { const k = cm[1].toLowerCase(), mm = /^\d$/.test(k) ? byKey(k) : null; trigger(mm ? mm.usuario : k, 'manual'); return; }
+    }
+    if (['member', 'chat', 'like', 'gift', 'social', 'follow', 'share', 'subscribe'].includes(m.event)) autoSeen(uid, d.nickname, d.profilePictureUrl);
+  };
+}
+const stat = { tik: 'conectando…', obs: CFG.useObs ? 'conectando…' : 'no usado (agrega #obspass=…)' };
+if (!CFG.capture) connectTik();
+
+/* ── OBS: Stream Deck (visibilidad de fuente "MVP usuario") + evento "mvpfx" ── */
+addEventListener('mvpfx', e => { const d = e.detail; trigger(typeof d === 'string' ? d : d?.usuario || d?.mvpfx, 'manual'); });
+async function sha256b64(s) { const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return btoa(String.fromCharCode(...new Uint8Array(h))); }
+const itemNames = {}, reqScene = {}; let obsReq = 0;
+function connectObs() {
+  if (!CFG.useObs) return;
+  let ws; try { ws = new WebSocket(CFG.obs); } catch (e) { stat.obs = 'URL inválida'; return; }
+  const req = (requestType, requestData) => { const id = 'mvp' + (++obsReq); ws.send(JSON.stringify({ op: 6, d: { requestType, requestId: id, requestData } })); return id; };
+  const scan = () => req('GetSceneList', {});
+  ws.onmessage = async e => {
+    const msg = JSON.parse(e.data);
+    if (msg.op === 0) { const d = { rpcVersion: 1, eventSubscriptions: 1 | 4 | 128 }, au = msg.d.authentication;   // generales + escenas + elementos de escena
+      if (au) { if (!CFG.obspass) { stat.obs = 'OBS pide contraseña: agrega #obspass=…'; ws.close(); return; } d.authentication = await sha256b64(await sha256b64(CFG.obspass + au.salt) + au.challenge); }
+      ws.send(JSON.stringify({ op: 1, d })); }
+    else if (msg.op === 2) { stat.obs = 'conectado ✓'; scan(); }
+    else if (msg.op === 7) {
+      const r = msg.d.responseData || {};
+      if (msg.d.requestType === 'GetSceneList') (r.scenes || []).forEach(s => { reqScene[req('GetSceneItemList', { sceneName: s.sceneName })] = s.sceneName; });
+      if (msg.d.requestType === 'GetSceneItemList') { const sn = reqScene[msg.d.requestId]; delete reqScene[msg.d.requestId];
+        (r.sceneItems || []).forEach(i => { itemNames[sn + '#' + i.sceneItemId] = i.sourceName; });
+        stat.botones = Object.values(itemNames).filter(n => /^MVP[\s:_-]/i.test(n)).length; }
+    }
+    else if (msg.op === 5) {
+      const ev = msg.d.eventType, d = msg.d.eventData || {};
+      if (ev === 'CustomEvent' && d.mvpfx) trigger(d.mvpfx, 'manual');
+      if (ev === 'SceneItemCreated' || ev === 'SceneItemRemoved' || ev === 'SceneCreated' || ev === 'InputNameChanged') scan();
+      if (ev === 'SceneItemEnableStateChanged') {
+        const name = itemNames[d.sceneName + '#' + d.sceneItemId], mm = name && /^MVP[\s:_-]+@?(\S+)/i.exec(name);
+        if (mm) { const k = mm[1].toLowerCase(), b = /^\d$/.test(k) ? byKey(k) : null; trigger(b ? b.usuario : k, 'manual'); stat.deck = name; }
+        else if (!name) scan();
+      }
+    }
+  };
+  ws.onclose = ev => { if (!/contraseña/.test(stat.obs)) stat.obs = ev.code === 4009 ? 'contraseña incorrecta' : 'desconectado (¿WebSocket activado en OBS?)'; setTimeout(connectObs, 4000); };
+  ws.onerror = () => {};
+}
+if (!CFG.capture) connectObs();
+
+/* ── teclado / controlador MIDI directo en esta fuente (?midi=1) ──
+   Lo recomendado es mvp-midi.html en Chrome (manda el aviso a OBS). Esto es por si OBS deja usar MIDI directo.
+   En mvps.js:  midi: 36  (nota),  'cc20' (perilla/botón CC),  'pc3' (cambio de programa). Sin midi: nota 36, 37, 38… según la tecla. */
+const midiId = v => v == null ? '' : /^\d+$/.test(String(v)) ? 'n' + v : String(v).toLowerCase().replace(/[^a-z0-9]/g, '');
+const byMidi = id => Object.values(MV).find(m => midiId(m.midi ?? (35 + Number(m.tecla))) === id);
+function midiMsg(data) {
+  const [st, a, b] = data, ty = st & 0xf0;
+  const id = ty === 0x90 && b > 0 ? 'n' + a : ty === 0xb0 && b > 0 ? 'cc' + a : ty === 0xc0 ? 'pc' + a : ''; if (!id) return;
+  stat.midi = 'última: ' + id; const m = byMidi(id); if (m) trigger(m.usuario, 'manual');
+}
+if (Q.get('midi') === '1' && !CFG.capture) {
+  stat.midi = 'pidiendo permiso…';
+  if (!navigator.requestMIDIAccess) stat.midi = 'este navegador no tiene MIDI (usa mvp-midi.html en Chrome)';
+  else navigator.requestMIDIAccess().then(acc => {
+    const hook = () => { const ins = [...acc.inputs.values()]; ins.forEach(i => i.onmidimessage = e => midiMsg(e.data)); stat.midi = ins.length ? 'conectado: ' + ins.map(i => i.name).join(', ') : 'sin teclado conectado'; };
+    hook(); acc.onstatechange = hook;
+  }).catch(() => { stat.midi = 'sin permiso de MIDI (usa mvp-midi.html en Chrome)'; });
+}
+
+/* ── teclas, panel de prueba y demo ── */
+addEventListener('keydown', e => { const m = byKey(e.key); if (m) trigger(m.usuario, 'manual'); });
+const logs = [];
+function log(s) { logs.unshift(new Date().toLocaleTimeString() + '  ' + s); logs.length = Math.min(logs.length, 6); }
+if (CFG.test || CFG.demo) {
+  const pn = document.getElementById('panel'); pn.style.display = 'block';
+  Object.values(MV).forEach(m => { const b = document.createElement('button'); b.textContent = `${m.tecla} · ${m.nombre || m.usuario}`; if ((m.animacion || 'corona') === 'corona') b.className = 'b'; b.onclick = () => trigger(m.usuario, 'manual'); pn.appendChild(b); });
+  const st = document.getElementById('st'); st.style.display = 'block';
+  setInterval(() => st.textContent = [`MVP FX · ${Object.keys(MV).length} MVPs en la lista`, `TikFinity: ${stat.tik}`, `OBS (Stream Deck): ${stat.obs}${stat.botones != null ? '  · fuentes MVP: ' + stat.botones : ''}${stat.deck ? '  · última: ' + stat.deck : ''}`, ...(stat.midi ? ['MIDI: ' + stat.midi] : []), '', ...logs].join('\n'), 500);
+}
+if (CFG.demo) { let i = 0; const L = Object.values(MV); setInterval(() => { if (!cur && !queue.length && L.length) trigger(L[i++ % L.length].usuario, 'demo'); }, 800); }
+</script>
+</body>
+</html>

@@ -542,14 +542,43 @@ function part(geo, mat, parent, x = 0, y = 0, z = 0, sx = 1, sy = 1, sz = 1, ol 
   const o = new THREE.Mesh(geo, OUTM); o.position.copy(m.position); o.scale.set(sx + ol, sy + ol, sz + ol); parent.add(o);
   return m;
 }
-function makeGuitar() {
+function makeGuitar() {                                  // guitarra ELÉCTRICA (doble corte, golpeador, 3 pastillas, perillas, clavijero de 6 en línea)
   const g = new THREE.Group();
-  const red = toon(0xe3122b), wood = toon(0xc9a36b), blk = toon(0x14090d);
-  const disc = new THREE.CylinderGeometry(1, 1, 1, 28); disc.rotateX(PI / 2);
-  part(disc, red, g, -0.1, 0, 0, 0.17, 0.17, 2 * G_THICK); part(disc, red, g, 0.08, 0, 0, 0.13, 0.13, 2 * G_THICK); part(disc, blk, g, 0.0, 0, G_THICK, 0.05, 0.05, 0.006, 0.004);
-  const box = new THREE.BoxGeometry(1, 1, 1);
-  part(box, wood, g, 0.42, 0, 0.0, 0.58, 0.045, 0.03); part(box, blk, g, 0.75, 0, 0, 0.1, 0.08, 0.035);
-  part(box, blk, g, -0.16, 0, G_THICK, 0.025, 0.09, 0.008, 0.004);                    // puente
+  const red = toon(0xe3122b), maple = toon(0xe8c98a), rose = toon(0x3a2216), blk = toon(0x14090d), wht = toon(0xf4f1ea), chrome = toon(0xd8dde3);
+  const body = new THREE.Shape();
+  body.moveTo(-0.31, 0);
+  body.quadraticCurveTo(-0.32, 0.155, -0.22, 0.165); body.quadraticCurveTo(-0.13, 0.172, -0.08, 0.118);
+  body.quadraticCurveTo(-0.02, 0.098, 0.05, 0.142); body.quadraticCurveTo(0.13, 0.19, 0.165, 0.135);
+  body.quadraticCurveTo(0.1, 0.085, 0.06, 0.03); body.lineTo(0.06, -0.03);
+  body.quadraticCurveTo(0.095, -0.08, 0.115, -0.125); body.quadraticCurveTo(0.1, -0.175, 0.04, -0.15);
+  body.quadraticCurveTo(-0.02, -0.11, -0.08, -0.12); body.quadraticCurveTo(-0.13, -0.172, -0.22, -0.165);
+  body.quadraticCurveTo(-0.32, -0.155, -0.31, 0);
+  const ext = (shape, depth, bev = 0.006) => { const ge = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelThickness: bev, bevelSize: bev, bevelSegments: 2, curveSegments: 10 }); ge.translate(0, 0, -depth / 2); return ge; };
+  const bg = ext(body, 2 * G_THICK - 0.012); bg.translate(0.075, 0, 0);
+  part(bg, red, g, -0.075, 0, 0, 1, 1, 1, 0.028);
+  // golpeador blanco
+  const pg = new THREE.Shape(); pg.moveTo(0.05, 0.05); pg.quadraticCurveTo(0.02, 0.115, -0.07, 0.085); pg.quadraticCurveTo(-0.14, 0.05, -0.2, 0.06);
+  pg.quadraticCurveTo(-0.25, 0.0, -0.21, -0.07); pg.quadraticCurveTo(-0.15, -0.13, -0.05, -0.1); pg.quadraticCurveTo(0.03, -0.09, 0.05, -0.04); pg.lineTo(0.05, 0.05);
+  const pgm = new THREE.Mesh(ext(pg, 0.004, 0.002), wht); pgm.position.z = G_THICK + 0.001; g.add(pgm);
+  const box = new THREE.BoxGeometry(1, 1, 1), cyl = new THREE.CylinderGeometry(1, 1, 1, 14); cyl.rotateX(PI / 2);
+  for (const x of [0.0, -0.065, -0.135]) { const pu = new THREE.Mesh(box, blk); pu.position.set(x, 0, G_THICK + 0.007); pu.scale.set(0.022, 0.085, 0.008); pu.rotation.z = x < -0.1 ? 0.15 : 0; g.add(pu);
+    for (let k = -2.5; k <= 2.5; k++) { const pole = new THREE.Mesh(cyl, chrome); pole.position.set(x, k * 0.0125, G_THICK + 0.012); pole.scale.set(0.0035, 0.0035, 0.003); g.add(pole); } }
+  const br = new THREE.Mesh(box, chrome); br.position.set(-0.19, 0, G_THICK + 0.006); br.scale.set(0.035, 0.075, 0.008); g.add(br);
+  for (const [x, y] of [[-0.17, -0.085], [-0.215, -0.065], [-0.245, -0.03]]) { const kn = new THREE.Mesh(cyl, wht); kn.position.set(x, y, G_THICK + 0.01); kn.scale.set(0.012, 0.012, 0.014); g.add(kn); }
+  const sw = new THREE.Mesh(box, wht); sw.position.set(-0.12, -0.08, G_THICK + 0.008); sw.scale.set(0.012, 0.006, 0.012); sw.rotation.z = -0.5; g.add(sw);   // selector
+  // mástil de arce con diapasón oscuro, trastes y marcadores
+  part(box, maple, g, 0.41, 0, -0.004, 0.62, 0.046, 0.026, 0.014);
+  const fb = new THREE.Mesh(box, rose); fb.position.set(0.415, 0, 0.0115); fb.scale.set(0.6, 0.046, 0.006); g.add(fb);
+  for (let k = 1; k <= 14; k++) { const x = 0.715 - 0.6 * (1 - Math.pow(2, -k / 12)) / (1 - Math.pow(2, -14 / 12)) ; const fr2 = new THREE.Mesh(box, chrome); fr2.position.set(x, 0, 0.0155); fr2.scale.set(0.0025, 0.046, 0.002); g.add(fr2);
+    if ([3, 5, 7, 9, 12].includes(k)) { const dot = new THREE.Mesh(cyl, wht); dot.position.set(x + 0.02, 0, 0.0155); dot.scale.set(0.005, 0.005, 0.002); g.add(dot); } }
+  // clavijero (forma de pala) con 6 clavijas en línea
+  const hs = new THREE.Shape(); hs.moveTo(0, -0.024); hs.lineTo(0, 0.024); hs.quadraticCurveTo(0.05, 0.03, 0.1, 0.05); hs.quadraticCurveTo(0.17, 0.07, 0.19, 0.035);
+  hs.quadraticCurveTo(0.2, 0.0, 0.16, -0.005); hs.quadraticCurveTo(0.08, -0.02, 0, -0.024);
+  part(ext(hs, 0.018, 0.003), maple, g, 0.71, 0, -0.004, 1, 1, 1, 0.014);
+  for (let k = 0; k < 6; k++) { const pe = new THREE.Mesh(cyl, chrome); pe.position.set(0.735 + k * 0.024, 0.042 + k * 0.004 - (k > 3 ? 0.004 * (k - 3) : 0), 0.012); pe.scale.set(0.007, 0.007, 0.008); g.add(pe); }
+  // cuerdas
+  const strM = new THREE.MeshBasicMaterial({ color: 0xe9edf2 });
+  for (let k = 0; k < 6; k++) { const st = new THREE.Mesh(box, strM); const y = (k - 2.5) * 0.0068; st.position.set(0.26, y, 0.034); st.rotation.y = 0.031; st.scale.set(0.9, 0.0016, 0.0016); g.add(st); }   // bajan del puente a la cejuela
   g.visible = false; return g;
 }
 function pickShape() {                                   // púa de guitarra (triángulo redondeado, punta abajo)
@@ -991,6 +1020,53 @@ function spawnGift(tx, tz) {
 function spark(pos, col = 0xffffff) { const sp = new THREE.Sprite(new THREE.SpriteMaterial(Object.assign({ map: glowTex, color: col }, ADD))); sp.position.copy(pos); scene.add(sp); sparks.push({ sp, age: 0 }); }
 const idle = d => !d.job && d.grp.visible;
 function startWalk(d, b, tx, k, extra) { const dir = Math.sign(tx - d.origin.x) || 1; d.job = Object.assign({ k, b0: b, tx }, extra || {}); d.setAct(bb => walkPose(bb, dir), k === 'entrar'); }
+/* ── MÁS ANIMACIONES (2026-11-24): saludo + reverencia, trofeo, sentarse en un regalo, duelo de guitarras, festejo ── */
+function timed(d, k, b0, dur, fn, extra) { d.job = Object.assign({ k, b0, dur, timed: true }, extra || {}); d.setAct(fn); }
+function startWave(d, b) {                               // saluda al público con la mano y hace una reverencia
+  const b0 = Math.ceil(b), hand = Math.random() < 0.5 ? 'hR' : 'hL', other = hand === 'hR' ? 'hL' : 'hR';
+  timed(d, 'saludo', b0, 4.5, bb => { const s = bb - b0, p = DANCE.basico(bb + 64); p.yaw *= 0.3; p.turn = 0;
+    const w = sstep(0, 0.4, s) * (1 - sstep(2, 2.4, s)), bow = sstep(2.2, 2.8, s) * (1 - sstep(3.6, 4.3, s));
+    p[hand] = lerp3(p[hand], [0.22 + 0.14 * Math.sin(s * TAU * 1.5), 0.5, 0.12], w); p.tilt = 0.12 * w * Math.sin(s * TAU * 0.75);
+    p[hand] = lerp3(p[hand], [-0.12, -0.22, 0.22], bow); p[other] = lerp3(p[other], [0.04, -0.4, -0.24], bow);
+    p.lean = lerp(p.lean, 0.75, bow); p.nod = lerp(p.nod, 0.35, bow); p.py = lerp(p.py, -0.04, bow); p.fL = lerp3(p.fL, [0.1, 0, -0.08], bow); return p; });
+}
+function startDuel(b) {                                  // duelo de guitarras entre dos vecinos
+  const order = dancers.filter(idle).sort((a, c) => a.slotX - c.slotX);
+  for (let k = 0; k < order.length - 1; k++) { const A = order[k], B2 = order[k + 1], gap = B2.origin.x - A.origin.x; if (gap > 2.4 || gap < 0.9) continue;
+    const b0 = Math.ceil(b), f = (side, off) => bb => { const s = bb - b0, a = sstep(0, 0.6, s) * (1 - sstep(7.4, 8, s));
+      const p = DANCE.guitarra(s + off + 64 * 16); const q = DANCE.basico(bb + 64), m = sstep(0, 0.6, s) * (1 - sstep(7.6, 8, s));
+      const o = mixPose(q, p, m); o.yaw = side * 0.85 * a; o.mx = side * a * (gap / 2 - 0.65); o.turn = -side * 0.25 * a; return o; };
+    timed(A, 'duelo', b0, 8, f(1, 0), { mate: B2 }); timed(B2, 'duelo', b0, 8, f(-1, 8), { mate: A }); return true; }
+  return false;
+}
+function startGiftPlay(b) {                              // con un regalo quieto: levantarlo como trofeo o sentarse encima
+  const floor = gifts.filter(g => !g.thr && !g.claimed && !g.fade && !g.out && !g.held && g.rest > 0.8 && g.r > 0.2), free = dancers.filter(idle);
+  if (!floor.length || !free.length) return false;
+  let best = null, bd = 1e9; for (const d of free) for (const g of floor) { const dist = Math.abs(d.origin.x - g.p.x); if (dist < bd) { bd = dist; best = [d, g]; } }
+  if (bd > 3.5) return false;
+  const [d, g] = best, sit = g.r > 0.26 && g.r < 0.42 && Math.random() < 0.5, side = Math.sign(g.p.x - d.origin.x) || 1;
+  g.claimed = true; startWalk(d, b, sit ? g.p.x : g.p.x - side * (0.36 + g.r * 0.6), sit ? 'irSentar' : 'irTrofeo', { g, side, gp: true }); return true;
+}
+function startTrophy(d, b, g, side) {
+  const b0 = b, r = g.r;
+  timed(d, 'trofeo', b0, 6.4, bb => { const s = bb - b0, up = sstep(1.1, 1.8, s) * (1 - sstep(4.6, 5.2, s));
+    const c = s < 0.6 ? sstep(0, 0.6, s) : s < 1.3 ? 1 - sstep(0.7, 1.3, s) : s < 5 ? 0 : s < 5.6 ? sstep(5, 5.6, s) : 1 - sstep(5.7, 6.4, s);
+    const p = pickPose(side, c, r); p.yaw = lerp(side * PI / 2, 0.15 * Math.sin(s * PI / 2), up);
+    const hd = holdHands(r, true); hd[1] += 0.05 * onBeat(bb); if (s > 0.6 && s < 5.6) { const k = s < 1.3 ? sstep(0.6, 1.3, s) : 1 - sstep(5, 5.6, s); p.hL = lerp3(p.hL, hd, k); p.hR = lerp3(p.hR, hd, k); }
+    p.py += -0.06 * onBeat(bb) * up; p.nod -= 0.25 * up; return p; }, { g, gp: true, side });
+}
+function startSit(d, b, g) {
+  const b0 = b, top = g.p.y + g.r * 0.92;
+  timed(d, 'sentarse', b0, 9, bb => { const s = bb - b0, k = sstep(0, 1, s) * (1 - sstep(8, 9, s)), p = DANCE.basico(bb + 64);
+    const dz = g.p.z - d.origin.z, sitP = base(); sitP.py = top + 0.05 - STAND; sitP.pz = dz - 0.02; sitP.lean = -0.06 + 0.06 * onBeat(bb); sitP.nod = 0.15 * onBeat(bb);
+    const sw = Math.sin(bb * PI); sitP.fL = [0.13, 0.05 + 0.05 * sw, dz + 0.42]; sitP.fR = [0.13, 0.05 - 0.05 * sw, dz + 0.42];
+    const clap = onBeat(bb) ** 3; sitP.hL = lerp3([0.16, -0.16, 0.3], [-SHW + 0.03, -0.02, 0.32], clap); sitP.hR = sitP.hL.slice();
+    return mixPose(p, sitP, k); }, { g, gp: true });
+}
+function cheer(g) {                                      // cae un regalo grande: los que están cerca saltan y aplauden
+  for (const d of dancers) if (idle(d) && Math.abs(d.origin.x - g.p.x) < 2.6 && Math.random() < 0.8) { const b0 = Math.ceil(lastOB + 0.2) + 0.0;
+    timed(d, 'festejo', b0, 2, bb => bb < b0 ? DANCE.basico(bb + 64) : DANCE.salto(bb - b0 + 64), {}); }
+}
 function director(b) {
   const dt = lastOB === null ? 0 : clamp((b - lastOB) / BPS, 0, 0.1); lastOB = b;
   if (!bounds) { const f = worldAt(1, -0.958); bounds = { R: f.x, L: -f.x, top: worldAt(0, 1).y }; }
@@ -1005,19 +1081,22 @@ function director(b) {
     const n = 1 + Math.floor(Math.random() * 2.4); for (let k = 0; k < n; k++) { const tgt = vis.length && Math.random() < 0.6 ? vis[Math.floor(Math.random() * vis.length)] : null;
       spawnGift(tgt ? tgt.origin.x + (Math.random() - 0.5) * 0.1 : lerp(bounds.L + 0.4, bounds.R - 0.4, Math.random()), tgt ? tgt.origin.z : (Math.random() - 0.5) * 0.8); } }
   // eventos: trepar + mortal + paracaídas, choque de manos, alguien se va y entra otro
-  if (b > nextEvent) { nextEvent = b + (8 + Math.random() * 6) * clamp(5 / dancers.length, 0.45, 1);   // con más muñecos, más cosas a la vez
- const r = Math.random(), vis = dancers.filter(idle);
-    if (r < 0.45 && vis.length && !dancers.some(d => d.job && ['ir', 'subir', 'colgar', 'mortal', 'paraca'].includes(d.job.k))) {
+  if (b > nextEvent) { nextEvent = b + (5 + Math.random() * 4) * clamp(5 / dancers.length, 0.5, 1);   // con más muñecos, más cosas a la vez
+   for (let rep = 0; rep < (dancers.length >= 6 ? 2 : 1); rep++) { const r = Math.random(), vis = dancers.filter(idle);
+    if (r < 0.22 && vis.length && !dancers.some(d => d.job && ['ir', 'subir', 'colgar', 'mortal', 'paraca'].includes(d.job.k))) {
       const d = vis.sort((a, c) => Math.abs(c.slotX) - Math.abs(a.slotX))[0], side = d.slotX < 0 ? -1 : 1;
       startWalk(d, b, side * (bounds.R - 0.33), 'ir', { side }); }
-    else if (r < 0.8) { const order = dancers.filter(idle).sort((a, c) => a.slotX - c.slotX);
+    else if (r < 0.4) { const order = dancers.filter(idle).sort((a, c) => a.slotX - c.slotX);
       for (let k = 0; k < order.length - 1; k++) { const A = order[k], B2 = order[k + 1]; if (B2.slotX - A.slotX < 2.2) { const b0 = Math.ceil(b), gap = B2.slotX - A.slotX;
         A.job = { k: 'chocar', b0, mate: B2 }; B2.job = { k: 'chocar', b0, mate: A };
         const hf = (side, hand) => bb => { const s = clamp((bb - b0) / 2, 0, 1), a = sstep(0, 0.35, s) * (1 - sstep(0.75, 1, s)), hs = sstep(0.2, 0.45, s) * (1 - sstep(0.7, 0.9, s));
           const p = DANCE.basico(bb + 64); p.mx = side * a * (gap / 2 - 0.42); p.yaw = side * 0.95 * a; p.turn = 0;
           p[hand] = lerp3(p[hand], [0.06, 0.34, 0.4], hs); return p; };
         A.setAct(hf(1, 'hR')); B2.setAct(hf(-1, 'hL')); break; } } }
-    else { const vis2 = dancers.filter(idle); if (vis2.length) { const d = vis2[Math.floor(Math.random() * vis2.length)], side = d.slotX < 0 ? -1 : 1; startWalk(d, b, side * (bounds.R + 0.8), 'salir'); } }
+    else if (r < 0.54) startDuel(b);
+    else if (r < 0.68) { if (vis.length) startWave(vis[Math.floor(Math.random() * vis.length)], b); }
+    else if (r < 0.82) { if (!startGiftPlay(b) && vis.length) startWave(vis[Math.floor(Math.random() * vis.length)], b); }
+    else { const vis2 = dancers.filter(idle); if (vis2.length) { const d = vis2[Math.floor(Math.random() * vis2.length)], side = d.slotX < 0 ? -1 : 1; startWalk(d, b, side * (bounds.R + 0.8), 'salir'); } } }
   }
   // acomodar: muchos regalos en el piso → los recogen y se los llevan / los lanzan fuera
   { const floor = gifts.filter(g => !g.thr && !g.claimed && !g.fade && !g.out && g.rest > 0.5), busy = dancers.filter(d => d.job && d.job.tidy).length;
@@ -1027,22 +1106,17 @@ function director(b) {
       if (best) { const [d, g] = best;
         const side = Math.sign(g.p.x) || 1, mode = g.r > 0.3 || Math.random() < 0.35 ? 'llevar' : 'lanzar';
         g.claimed = true; startWalk(d, b, g.p.x - side * (0.36 + g.r * 0.6), 'irRegalo', { g, side, mode, tidy: true }); } } }
-  // patadas: un regalo quieto cerca de los pies de alguien que baila
-  if (!tidyOn) for (const d of dancers) if (idle(d)) { const g = gifts.find(g => g.rest > 0.4 && !g.claimed && Math.abs(g.p.x - d.origin.x) < 0.45 + g.r && g.age < G_LIFE - 3 && !g.fade);
-    if (g) { g.claimed = true; const b0 = Math.ceil(b), side = Math.sign(g.p.x - d.origin.x) || 1, foot = side > 0 ? 'fL' : 'fR';
-      d.job = { k: 'patear', b0, g, side };
-      d.setAct(bb => { const s = clamp(bb - b0, 0, 1), p = DANCE.basico(bb + 64); p.yaw = side * 0.9 * sstep(0, 0.25, s) * (1 - sstep(0.8, 1, s));
-        const z = s < 0.4 ? -0.3 * sstep(0, 0.4, s) : s < 0.6 ? lerp(-0.3, 0.5, sstep(0.4, 0.6, s)) : lerp(0.5, 0.02, sstep(0.6, 1, s));
-        const y = s < 0.4 ? 0.12 * sstep(0, 0.4, s) : s < 0.6 ? 0.3 : 0.3 * (1 - sstep(0.6, 1, s));
-        p[foot] = [0.1, y * 1.4, z * 1.2]; p.lean = -0.15 * Math.sin(PI * s); p.hL = [0.35, -0.2, 0.05]; p.hR = [0.35, -0.2, 0.05]; return p; }); } }
+  // (sin patadas: pedido de Rodrigo 2026-11-24)
   // trabajos de cada uno
   for (const d of dancers) { const j = d.job; if (!j) continue; const tj = (b - j.b0) / BPS;
-    if (j.tidy && j.g && !gifts.includes(j.g)) { startWalk(d, b, d.slotX, 'volver'); continue; }   // el regalo ya no está
-    if (['entrar', 'volver', 'salir', 'ir', 'irRegalo', 'llevar'].includes(j.k)) {
+    if ((j.tidy || j.gp) && j.g && !gifts.includes(j.g)) { startWalk(d, b, d.slotX, 'volver'); continue; }   // el regalo ya no está
+    if (['entrar', 'volver', 'salir', 'ir', 'irRegalo', 'llevar', 'irTrofeo', 'irSentar'].includes(j.k)) {
       const dx = j.tx - d.origin.x, st = WALK_V * (j.k === 'llevar' && j.big ? 0.8 : 1) * dt;
       if (Math.abs(dx) <= st) { d.origin.x = j.tx;
         if (j.k === 'salir') { d.grp.visible = false; d.job = { k: 'fuera', b0: b }; d.endAct(); d.actW = 0; d.actFn = null; }
         else if (j.k === 'ir') { const side = j.side, top = Math.min(4.2, bounds.top * 0.3); d.job = { k: 'subir', b0: b, side, top }; d.setAct(bb => climbPose(bb, side)); }
+        else if (j.k === 'irTrofeo') startTrophy(d, b, j.g, j.side);
+        else if (j.k === 'irSentar') startSit(d, b, j.g);
         else if (j.k === 'irRegalo') { const { g, side, mode } = j, b0 = b, big = mode === 'llevar' && g.r > 0.24;
           d.job = { k: 'agarrar', b0, g, side, mode, big, tidy: true };
           d.setAct(bb => { const s = clamp((bb - b0) / 1.3, 0, 1), c = s < 0.45 ? sstep(0, 0.45, s) : 1 - sstep(0.55, 1, s), p = pickPose(side, c, g.r);
@@ -1062,6 +1136,14 @@ function director(b) {
         j.vy += (-0.9 - j.vy) * Math.min(1, dt * 3); j.vx += (Math.cos(q * 2.1) * 0.35 * -j.side - j.vx) * Math.min(1, dt * 2); }
       d.origin.x = clamp(d.origin.x + j.vx * dt, bounds.L + 0.35, bounds.R - 0.35); d.origin.y += j.vy * dt;
       if (j.k === 'paraca' && d.origin.y <= 0) { d.origin.y = 0; d.chute.down = true; d.bump(0.8); d.job = { k: 'aterrizar', b0: b }; d.endAct(); }
+    } else if (j.timed) {
+      if (j.k === 'trofeo') { const g = j.g, s = b - j.b0;
+        if (!g.held && s >= 0.6 && s < 5.6) { g.held = d; g.v.set(0, 0, 0); }
+        g.big = s > 1.2 && s < 5.1;
+        if (g.held && s >= 5.6) { g.held = null; g.claimed = false; g.v.set(0, 0, 0); g.rest = 0; g.flat = false; } }
+      if (j.k === 'duelo' && !j.hit && b >= j.b0 + 7.7 && d.slotX < j.mate.slotX) { j.hit = true; spark(d.S.H.clone().lerp(j.mate.S.H, 0.5).add(V(0, 0.3, 0)), 0xffe27a); d.bump(0.6); j.mate.bump(0.6); }
+      if (b >= j.b0 + j.dur) { if (j.g) { j.g.claimed = false; if (j.g.held === d) j.g.held = null; }
+        if (['trofeo', 'sentarse'].includes(j.k)) startWalk(d, b, d.slotX, 'volver'); else { d.job = null; d.endAct(); } }
     } else if (j.k === 'agarrar') { const g = j.g;
       if (!g.held && b >= j.b0 + 0.6) { g.held = d; g.big = j.big; g.v.set(0, 0, 0); g.rest = 0; }
       if (b >= j.b0 + 1.3) { const side = j.side, big = j.big, r = g.r;
@@ -1087,7 +1169,7 @@ function director(b) {
   const _q = new THREE.Quaternion(), _e = new THREE.Euler(), _wq = new THREE.Quaternion(), _wv = V(0, 0, 0);
   for (let k = gifts.length - 1; k >= 0; k--) { const g = gifts[k]; g.age += dt; g.cd -= dt;
     if (g.held) {                                             // en las manos de un muñeco
-      const S = g.held.S; if (S) { g.p.copy(S.haL).lerp(S.haR, 0.5); if (g.big) g.p.y += g.r * 0.75; else g.p.y += g.r * 0.15; }
+      const S = g.held.S; if (S) { g.p.copy(S.haL).lerp(S.haR, 0.5); const ht = g.big ? 0.75 : 0.15; g.hy = g.hy === undefined ? ht : lerp(g.hy, ht, Math.min(1, dt * 8)); g.p.y += g.r * g.hy; }
       g.v.set(0, 0, 0); g.rest = 0;
     } else if (g.out) {                                       // lanzado fuera: vuela sin chocar y desaparece al salir
       g.v.y -= 9.8 * dt; g.p.addScaledVector(g.v, dt);
@@ -1109,7 +1191,7 @@ function director(b) {
         n.divideScalar(L); const push = (R - L) / 2; g.p.addScaledVector(n, push); o.p.addScaledVector(n, -push);
         const rv = g.v.clone().sub(o.v).dot(n); if (rv < 0) { g.v.addScaledVector(n, -rv * 0.6); o.v.addScaledVector(n, rv * 0.6); } }
       if (g.p.y < g.r) { const hard = g.v.y < -2; g.p.y = g.r; if (g.v.y < 0) g.v.y *= -0.3; g.v.x *= 0.82; g.v.z *= 0.82; g.w.multiplyScalar(0.7); if (Math.abs(g.v.y) < 0.5) g.v.y = 0;
-        if (hard && !g.landed) { g.landed = true; spark(V(g.p.x, 0.05, g.p.z), 0xffffff); } }
+        if (hard && !g.landed) { g.landed = true; spark(V(g.p.x, 0.05, g.p.z), 0xffffff); if (g.r > 0.3) cheer(g); } }
       g.p.z = clamp(g.p.z, -1.0, FRONT_Z);
       if (g.p.x < bounds.L + g.r || g.p.x > bounds.R - g.r) { g.p.x = clamp(g.p.x, bounds.L + g.r, bounds.R - g.r); g.v.x *= -0.5; }
     }

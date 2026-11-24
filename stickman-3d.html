@@ -488,7 +488,7 @@ class Cloth {                                             // capa: rejilla de pu
 }
 
 /* ════════════════ DIBUJO (three.js) ════════════════ */
-const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: true, alpha: true, preserveDrawingBuffer: true });
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: Q.get('aa') !== '0', alpha: true, preserveDrawingBuffer: Q.get('captura') === '1', powerPreference: 'high-performance' });
 renderer.setPixelRatio(1); renderer.setSize(W, H, false); renderer.setClearColor(0x000000, 0);
 const scene = new THREE.Scene();
 scene.add(new THREE.HemisphereLight(0xffffff, 0x8a7f99, 1.25));
@@ -496,9 +496,29 @@ const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(-3, 6, 5
 const grad = new THREE.DataTexture(new Uint8Array([90, 90, 90, 255, 175, 175, 175, 255, 255, 255, 255, 255]), 3, 1);
 grad.minFilter = grad.magFilter = THREE.NearestFilter; grad.needsUpdate = true;
 const toon = c => new THREE.MeshToonMaterial({ color: c, gradientMap: grad });
-const CYL = new THREE.CylinderGeometry(1, 1, 1, 14, 1, true), SPH = new THREE.SphereGeometry(1, 18, 12);
+const CYL = new THREE.CylinderGeometry(1, 1, 1, 10, 1, true), SPH = new THREE.SphereGeometry(1, 18, 12), SPH_LO = new THREE.SphereGeometry(1, 10, 7);
 const OUTM = new THREE.MeshBasicMaterial({ color: 0x14090d, side: THREE.BackSide });
 const OL = 0.022;                                                        // grosor del borde negro
+/* RENDIMIENTO: los huesos y articulaciones de TODOS los bailarines se dibujan juntos (4 llamadas en vez de ~60 por bailarín).
+   Cada hueso es un "fantasma" (Object3D sin dibujar) con su material; al final del cuadro se copian a mallas instanciadas. */
+const BODY_M = new THREE.MeshToonMaterial({ color: 0xffffff, gradientMap: grad });
+const BATCH = { list: [], mesh: null };
+function batchItem(kind, mat) { const m = new THREE.Object3D(); m.material = mat; m.kind = kind; m.matrixAutoUpdate = false; return m; }
+function flushBatch(dancerList) {
+  if (!BATCH.mesh) {
+    let nC = 0, nS = 0; for (const d of dancerList) { nC += d.bones.length; nS += d.joints.length; }
+    const im = (geo, mat, n, col) => { const m = new THREE.InstancedMesh(geo, mat, Math.max(1, n)); m.frustumCulled = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      if (col) { m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1, n) * 3), 3); m.instanceColor.setUsage(THREE.DynamicDrawUsage); } scene.add(m); return m; };
+    BATCH.mesh = { c: im(CYL, BODY_M, nC, true), co: im(CYL, OUTM, nC), s: im(SPH_LO, BODY_M, nS, true), so: im(SPH_LO, OUTM, nS) };
+  }
+  const M = BATCH.mesh, n = { c: 0, s: 0 };
+  const put = (it, im, imo, k) => { if (!it.m.visible) return; const i = n[k]++; it.m.updateMatrix(); it.o.updateMatrix();
+    im.setMatrixAt(i, it.m.matrix); im.setColorAt(i, it.m.material.color); imo.setMatrixAt(i, it.o.matrix); };
+  for (const d of dancerList) { if (!d.grp.visible || !d.S) continue;
+    for (const b of d.bones) put(b, M.c, M.co, 'c'); for (const j of d.joints) put(j, M.s, M.so, 's'); }
+  M.c.count = M.co.count = n.c; M.s.count = M.so.count = n.s;
+  for (const m of [M.c, M.co, M.s, M.so]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
+}
 const HUES = [355, 200, 45, 140, 290, 25, 175, 320];
 function radialTex(stops, size = 128) { const c = document.createElement('canvas'); c.width = c.height = size; const g = c.getContext('2d');
   const r = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2); stops.forEach(([o, col]) => r.addColorStop(o, col)); g.fillStyle = r; g.fillRect(0, 0, size, size);
@@ -545,8 +565,8 @@ class Dancer {
     this.bones = []; this.joints = [];
     const mk = (geo, mat, par = this.grp) => { const m = new THREE.Mesh(geo, mat); par.add(m); return m; };
     this.mk = mk;
-    const bone = (r, mat = this.mat) => { const b = { r, m: mk(CYL, mat), o: mk(CYL, OUTM) }; this.bones.push(b); return b; };
-    const joint = (r, mat = this.mat) => { const j = { r, m: mk(SPH, mat), o: mk(SPH, OUTM) }; this.joints.push(j); return j; };
+    const bone = (r, mat = this.mat) => { const b = { r, m: batchItem('c', mat), o: batchItem('c', OUTM) }; this.bones.push(b); return b; };
+    const joint = (r, mat = this.mat) => { const j = { r, m: batchItem('s', mat), o: batchItem('s', OUTM) }; this.joints.push(j); return j; };
     this.bone = bone; this.joint = joint;
     this.B = { torso: bone(0.062), clav: bone(0.045), hipb: bone(0.05) };
     for (const k of ['L', 'R']) { this.B['ua' + k] = bone(0.043); this.B['fa' + k] = bone(0.04); this.B['th' + k] = bone(0.052); this.B['sh' + k] = bone(0.048); this.B['ft' + k] = bone(0.045); }
@@ -850,7 +870,7 @@ let cam, cells = [];
 const t0 = performance.now() / 1000;
 const beatNow = () => (performance.now() / 1000 - t0) * BPS;
 const LVL_DEMO = LVM.max === 15 ? [15, 10, 7, 4, 13, 2, 8, 11] : [10, 7, 5, 3, 9, 2, 6, 4];
-const OVL = Q.get('overlay') === '1';
+const OVL = Q.get('overlay') === '1', FRONT_Z = 0.45;          // lo más adelante que llega algo en el piso (regalos)
 
 if (GAL) {
   const LVD = ['basico', 'disco', 'cumbia', 'twist', 'giro', 'caporal', 'charleston', 'runningman', 'tinku', 'robot', 'morenada', 'guitarra', 'shuffle', 'salto'];
@@ -872,8 +892,8 @@ if (GAL) {
   if (OVL) dancers.forEach(d => { d.slotX = d.origin.x; d.grp.visible = false; d.job = { k: 'fuera', b0: -99 }; });
   const span = Math.max(4.5, N * gap + 1), D = span / 2 / (Math.tan(11 * PI / 180) * (W / H)) / num('escala', 1), cy = num('altura', 3);
   cam = new THREE.PerspectiveCamera(22, W / H, 0.1, 400); cam.position.set(0, cy, D);
-  let ly = D * 0.18; const target = -(1880 / 1920 * 2 - 1);                 // piso a la altura de 1880 px
-  for (let k = 0; k < 30; k++) { cam.lookAt(0, ly, 0); cam.updateMatrixWorld(); const v = V(0, 0, 0).project(cam); ly += (v.y - target) * D * 0.2; }
+  let ly = D * 0.18; const target = -(num('piso', 1914) / 1920 * 2 - 1);      // el borde de adelante del piso pegado al borde de abajo de la pantalla (?piso= en px)
+  for (let k = 0; k < 30; k++) { cam.lookAt(0, ly, 0); cam.updateMatrixWorld(); const v = V(0, 0, FRONT_Z).project(cam); ly += (v.y - target) * D * 0.2; }
 }
 
 // qué baila cada uno: rota cada 8 tiempos (o fijo con ?baile=)
@@ -909,7 +929,7 @@ const gifts = [], sparks = [];
 /* REGALOS LANZADOS como en Rosas 7: salen desde abajo (el celular del espectador), enormes cerca de la cámara, hacen un arco
    girando como ficha y caen sobre la escena. El tamaño va en metros para que choquen con los muñecos: una rosa (1 moneda)
    mide como una cabeza y los caros crecen igual que en Rosas 7 (1 + 0,45·log10(monedas), hasta ×2,8). ?regalo= multiplica. */
-const GSZ = num('regalo', 1), G_R1 = 0.17 * GSZ, G_MAX = 2.8, G_TH = 0.22, G_LAYERS = 6, G_NEAR = num('cerca', 14), G_GHOSTS = 3, G_MAXN = clamp(Math.round(num('maxregalos', 40)), 5, 120);
+const GSZ = num('regalo', 1), G_R1 = 0.17 * GSZ, G_MAX = 2.8, G_TH = 0.22, G_LAYERS = 4, G_NEAR = num('cerca', 14), G_GHOSTS = 3, G_MAXN = clamp(Math.round(num('maxregalos', 40)), 5, 120);
 const GIFT_DEMO = [[1, '🌹', 34], [5, '💖', 12], [10, '🍩', 10], [30, '🎸', 8], [99, 'img/sombrero.png', 10], [199, 'img/amplificado.png', 6], [500, 'img/pistola.png', 4], [1000, 'img/galaxia.png', 3]];
 const GIFT_W = GIFT_DEMO.reduce((s, g) => s + g[2], 0);
 const gTex = new Map(), gPlane = new THREE.PlaneGeometry(2, 2);
@@ -951,7 +971,7 @@ function spawnGift(tx, tz) {
   const S3 = throwAt(thr, 0), ghosts = M.ghost.map(mt => { const sp = new THREE.Sprite(mt); sp.visible = false; scene.add(sp); return sp; });
   const axis = V(Math.random() - 0.5, Math.random() - 0.5, 0).normalize();
   m.quaternion.setFromAxisAngle(axis, 0.2 + Math.random() * 0.9);
-  gifts.push({ m, inner, ghosts, p: S3, v: V(0, 0, 0), w: V(Math.random() * 5 - 2.5, (9 + Math.random() * 7) * (Math.random() < 0.5 ? -1 : 1), 0), r, coins, age: 0, rest: 0, cd: 0,
+  gifts.push({ m, inner, ghosts, face: M.face, p: S3, v: V(0, 0, 0), w: V(Math.random() * 5 - 2.5, (9 + Math.random() * 7) * (Math.random() < 0.5 ? -1 : 1), 0), r, coins, age: 0, rest: 0, cd: 0,
     thr, tilt: (Math.random() - 0.5) * 0.35 });
 }
 function spark(pos, col = 0xffffff) { const sp = new THREE.Sprite(new THREE.SpriteMaterial(Object.assign({ map: glowTex, color: col }, ADD))); sp.position.copy(pos); scene.add(sp); sparks.push({ sp, age: 0 }); }
@@ -1040,35 +1060,47 @@ function director(b) {
         const rv = g.v.clone().sub(o.v).dot(n); if (rv < 0) { g.v.addScaledVector(n, -rv * 0.6); o.v.addScaledVector(n, rv * 0.6); } }
       if (g.p.y < g.r) { const hard = g.v.y < -2; g.p.y = g.r; if (g.v.y < 0) g.v.y *= -0.3; g.v.x *= 0.82; g.v.z *= 0.82; g.w.multiplyScalar(0.7); if (Math.abs(g.v.y) < 0.5) g.v.y = 0;
         if (hard && !g.landed) { g.landed = true; spark(V(g.p.x, 0.05, g.p.z), 0xffffff); } }
+      g.p.z = clamp(g.p.z, -1.0, FRONT_Z);
       if (g.p.x < bounds.L + g.r || g.p.x > bounds.R - g.r) { g.p.x = clamp(g.p.x, bounds.L + g.r, bounds.R - g.r); g.v.x *= -0.5; }
     }
     const resting = !g.thr && g.p.y <= g.r * 1.02 && g.v.length() < 0.3; g.rest = resting ? g.rest + dt : 0;
     if (resting) {                                            // quieto: la ficha se para mirando a la cámara, un poco inclinada (como la pila de Rosas 7)
       _e.set(0, Math.atan2(cam.position.x - g.p.x, cam.position.z - g.p.z), g.tilt); _q.setFromEuler(_e); g.m.quaternion.slerp(_q, Math.min(1, dt * 6)); g.w.multiplyScalar(0.8);
-    } else { const sp = g.w.length(); if (sp > 1e-3) { _wv.copy(g.w).divideScalar(sp); _wq.setFromAxisAngle(_wv, sp * dt); g.m.quaternion.premultiply(_wq); } g.w.multiplyScalar(g.thr ? 0.995 : 0.99); }
+      if (!g.flat && g.m.quaternion.angleTo(_q) < 0.04) { g.flat = true; g.inner.children.forEach((c, i) => c.visible = c.material === g.face); }   // de frente: solo la cara (1 dibujo en vez de 6)
+    } else { if (g.flat) { g.flat = false; g.inner.children.forEach(c => c.visible = true); } const sp = g.w.length(); if (sp > 1e-3) { _wv.copy(g.w).divideScalar(sp); _wq.setFromAxisAngle(_wv, sp * dt); g.m.quaternion.premultiply(_wq); } g.w.multiplyScalar(g.thr ? 0.995 : 0.99); }
     g.m.position.copy(g.p);
     if (g.fade) g.fade += dt; const life = g.fade ? 1 - clamp(g.fade / 0.5, 0, 1) : 1 - sstep(17, 18, g.age);
     g.m.scale.setScalar(life * g.r);
     if (life <= 0) { scene.remove(g.m); g.ghosts.forEach(sp => scene.remove(sp)); gifts.splice(k, 1); } }
   for (let k = sparks.length - 1; k >= 0; k--) { const s = sparks[k]; s.age += dt; const q = s.age / 0.35; s.sp.scale.setScalar(0.2 + 0.9 * q); s.sp.material.opacity = 1 - q; if (q >= 1) { scene.remove(s.sp); sparks.splice(k, 1); } }
 }
+const nameRects = [], _nv = new THREE.Vector3(), _nUp = new THREE.Vector3(0, 0.62, 0);
 function drawNames() {
-  uctx.clearRect(0, 0, W, H); uctx.font = '800 26px system-ui, Arial'; uctx.textAlign = 'center'; uctx.lineJoin = 'round';
-  for (const d of dancers) { if (!d.grp.visible || !d.S || !d.name) continue; const v = d.S.H.clone().add(V(0, 0.62, 0)).project(cam), x = (v.x + 1) / 2 * W, y = (1 - v.y) / 2 * H;
-    uctx.lineWidth = 6; uctx.strokeStyle = 'rgba(0,0,0,0.6)'; uctx.strokeText(d.name, x, y); uctx.fillStyle = '#fff'; uctx.fillText(d.name, x, y); }
+  for (const r of nameRects) uctx.clearRect(r[0], r[1], r[2], r[3]); nameRects.length = 0;      // solo borra donde había nombres (no toda la pantalla)
+  uctx.font = '800 26px system-ui, Arial'; uctx.textAlign = 'center'; uctx.lineJoin = 'round';
+  for (const d of dancers) { if (!d.grp.visible || !d.S || !d.name) continue; const v = _nv.copy(d.S.H).add(_nUp).project(cam), x = (v.x + 1) / 2 * W, y = (1 - v.y) / 2 * H;
+    const w = (d.nameW = d.nameW && d.nameFor === d.name ? d.nameW : (d.nameFor = d.name, uctx.measureText(d.name).width)) + 16;
+    uctx.lineWidth = 6; uctx.strokeStyle = 'rgba(0,0,0,0.6)'; uctx.strokeText(d.name, x, y); uctx.fillStyle = '#fff'; uctx.fillText(d.name, x, y); nameRects.push([x - w / 2, y - 30, w, 42]); }
 }
 
 function render(b) {
   choreo(b);
   if (OVL) director(b);
   for (const dn of dancers) if (dn.grp.visible) dn.draw(dn.animate(b));
+  flushBatch(dancers);
   if (OVL) drawNames();
   if (GAL) {
     renderer.setScissorTest(true); renderer.clear();
     cells.forEach(c => { renderer.setViewport(c.x, H - c.y - c.h, c.w, c.h); renderer.setScissor(c.x, H - c.y - c.h, c.w, c.h); renderer.render(scene, c.cam); });
   } else renderer.render(scene, cam);
 }
-function frame() { render(beatNow()); requestAnimationFrame(frame); }
+// ?fps=30 (por defecto): dibuja como máximo 30 cuadros por segundo aunque OBS o la pantalla vayan a 60 (la mitad de trabajo). ?fps=60 para más fluido.
+const FPS = clamp(num('fps', 30), 10, 240), FMS = 1000 / FPS; let lastF = -1e9;
+function frame(now) { requestAnimationFrame(frame); if (now - lastF < FMS - 2) return; lastF = Math.max(lastF + FMS, now - FMS); render(beatNow()); diagTick(now); }
+const DIAG = Q.get('diag') === '1', diagEl = DIAG ? Object.assign(document.body.appendChild(document.createElement('div')), { id: 'diag', style: 'position:fixed;left:8px;top:8px;z-index:9;font:700 22px system-ui;color:#fff;background:rgba(0,0,0,.6);padding:6px 10px;border-radius:8px' }) : null;
+let dN = 0, dT0 = 0, dMs = 0;
+function diagTick(now) { if (!DIAG) return; dN++; dMs += performance.now() - now; if (now - dT0 >= 1000) { const i = renderer.info.render;
+  diagEl.textContent = `${Math.round(dN * 1000 / (now - dT0))} fps · ${(dMs / dN).toFixed(1)} ms/cuadro · ${i.calls} dibujos · ${Math.round(i.triangles / 1000)}k triángulos · ${gifts.length} regalos`; dN = 0; dMs = 0; dT0 = now; } }
 if (Q.get('captura') !== '1') requestAnimationFrame(frame);           // ?captura=1: se dibuja cuadro por cuadro desde afuera (para grabar videos)
 
 // botones
@@ -1082,7 +1114,7 @@ if (Q.get('panel') !== '0' && !GAL) {
   mkB('Niveles variados', () => dancers.forEach((d, i) => d.setLevel(LVL_DEMO[i])), lbtns);
   for (let l = 1; l <= LVM.max; l++) mkB('Nv' + l, () => dancers.forEach(d => d.setLevel(l)), lbtns);
 }
-window.__s3d = { dancers, DANCE, ORDER, render, setDance: d => { fixed = d; choreo.dirty = true; } };
+window.__s3d = { dancers, DANCE, ORDER, render, renderer, scene, gifts, setDance: d => { fixed = d; choreo.dirty = true; } };
 </script>
 </body>
 </html>

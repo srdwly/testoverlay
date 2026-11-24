@@ -23,7 +23,9 @@
         - En el Stream Deck: acción OBS → "Visibilidad de fuente" → esa fuente.
         - Cada vez que aprietas la tecla (prende o apaga), sale la animación de ese MVP.
       Necesita #obspass=… en el enlace (o ?obs=1 si tu WebSocket no tiene contraseña).
-   4) Teclas 1-9 (clic derecho en la fuente → Interactuar) para probar.
+   4) Teclado MIDI: abre mvp-midi.html#obspass=… en Chrome, asigna un pad/tecla a cada MVP y listo
+      (manda el aviso a OBS). O ?midi=1 aquí si OBS deja usar MIDI directo (campo midi en mvps.js).
+   5) Teclas 1-9 (clic derecho en la fuente → Interactuar) para probar.
    (También acepta el evento "mvpfx" de OBS / Streamer.bot: {"mvpfx":"usuario"})
 
   OPCIONES:
@@ -504,6 +506,25 @@ function connectObs() {
 }
 if (!CFG.capture) connectObs();
 
+/* ── teclado / controlador MIDI directo en esta fuente (?midi=1) ──
+   Lo recomendado es mvp-midi.html en Chrome (manda el aviso a OBS). Esto es por si OBS deja usar MIDI directo.
+   En mvps.js:  midi: 36  (nota),  'cc20' (perilla/botón CC),  'pc3' (cambio de programa). Sin midi: nota 36, 37, 38… según la tecla. */
+const midiId = v => v == null ? '' : /^\d+$/.test(String(v)) ? 'n' + v : String(v).toLowerCase().replace(/[^a-z0-9]/g, '');
+const byMidi = id => Object.values(MV).find(m => midiId(m.midi ?? (35 + Number(m.tecla))) === id);
+function midiMsg(data) {
+  const [st, a, b] = data, ty = st & 0xf0;
+  const id = ty === 0x90 && b > 0 ? 'n' + a : ty === 0xb0 && b > 0 ? 'cc' + a : ty === 0xc0 ? 'pc' + a : ''; if (!id) return;
+  stat.midi = 'última: ' + id; const m = byMidi(id); if (m) trigger(m.usuario, 'manual');
+}
+if (Q.get('midi') === '1' && !CFG.capture) {
+  stat.midi = 'pidiendo permiso…';
+  if (!navigator.requestMIDIAccess) stat.midi = 'este navegador no tiene MIDI (usa mvp-midi.html en Chrome)';
+  else navigator.requestMIDIAccess().then(acc => {
+    const hook = () => { const ins = [...acc.inputs.values()]; ins.forEach(i => i.onmidimessage = e => midiMsg(e.data)); stat.midi = ins.length ? 'conectado: ' + ins.map(i => i.name).join(', ') : 'sin teclado conectado'; };
+    hook(); acc.onstatechange = hook;
+  }).catch(() => { stat.midi = 'sin permiso de MIDI (usa mvp-midi.html en Chrome)'; });
+}
+
 /* ── teclas, panel de prueba y demo ── */
 addEventListener('keydown', e => { const m = byKey(e.key); if (m) trigger(m.usuario, 'manual'); });
 const logs = [];
@@ -512,7 +533,7 @@ if (CFG.test || CFG.demo) {
   const pn = document.getElementById('panel'); pn.style.display = 'block';
   Object.values(MV).forEach(m => { const b = document.createElement('button'); b.textContent = `${m.tecla} · ${m.nombre || m.usuario}`; if ((m.animacion || 'corona') === 'corona') b.className = 'b'; b.onclick = () => trigger(m.usuario, 'manual'); pn.appendChild(b); });
   const st = document.getElementById('st'); st.style.display = 'block';
-  setInterval(() => st.textContent = [`MVP FX · ${Object.keys(MV).length} MVPs en la lista`, `TikFinity: ${stat.tik}`, `OBS (Stream Deck): ${stat.obs}${stat.botones != null ? '  · fuentes MVP: ' + stat.botones : ''}${stat.deck ? '  · última: ' + stat.deck : ''}`, '', ...logs].join('\n'), 500);
+  setInterval(() => st.textContent = [`MVP FX · ${Object.keys(MV).length} MVPs en la lista`, `TikFinity: ${stat.tik}`, `OBS (Stream Deck): ${stat.obs}${stat.botones != null ? '  · fuentes MVP: ' + stat.botones : ''}${stat.deck ? '  · última: ' + stat.deck : ''}`, ...(stat.midi ? ['MIDI: ' + stat.midi] : []), '', ...logs].join('\n'), 500);
 }
 if (CFG.demo) { let i = 0; const L = Object.values(MV); setInterval(() => { if (!cur && !queue.length && L.length) trigger(L[i++ % L.length].usuario, 'demo'); }, 800); }
 </script>

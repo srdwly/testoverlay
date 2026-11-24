@@ -9,6 +9,8 @@
    color      → color principal (opcional; si no, el de la animación)
    foto       → enlace de una foto (opcional; si no, usa la foto de perfil que manda TikFinity)
    tecla      → número del 1 al 9 para dispararlo a mano (opcional; si no, el orden de la lista)
+   midi       → pad/tecla del teclado MIDI: 36 (nota), 'cc20' (botón CC) o 'pc3' (programa).
+                Lo más fácil: asignarlo en mvp-midi.html (no hace falta tocar esto).
    video      → animación propia hecha con IA (sobre FONDO VERDE: el overlay quita el verde).
                 Guárdala en la carpeta mvp/ del repo. El nombre lo escribe el overlay encima.
    nombreY    → altura del nombre en el video (0 arriba, 1920 abajo; por defecto 430). Encima sale

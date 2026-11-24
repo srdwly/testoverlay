@@ -1,0 +1,1563 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Baile 3D</title>
+<script>
+/* ════════════════════════════════════════════════════════════════
+   BAILE 3D — la pista de baile EN VIVO con los stickmans 3D (TikFinity).
+   Archivo aparte: baile-regalos.html / baile.html / baile-libre.html siguen igual.
+
+   MISMAS REGLAS que la pista actual:
+     · Regalo = entras a bailar (el que regala SIEMPRE entra; si está lleno sale el que tiene menos energía).
+     · ❤️ Quiéreme = bailarín fijo 15 min (?fijo=) sin cansarse. Taps = energía. Emojis en el chat = pasos especiales.
+     · Niveles por monedas del DÍA (corte a medianoche): 10 bandana · 50 lentes · 200 sombrero · 1000 capa ·
+       2500 cadena con púa · 5000 fuego · 10000 aura · 20000 dorado · 50000 leyenda.
+     · PERMANENTE por monedas de siempre: bandana 100 · lentes 500 · sombrero 2000 · capa = top 3 histórico (5000+).
+     · 1000+ monedas en el día = no lo sacan nunca y vuelve solo. Regalo de 500+ = fiesta.
+     · Usa LOS MISMOS DATOS guardados que la pista actual (monedas del día, Quiéremes y niveles permanentes),
+       así puedes cambiar de una a otra sin perder niveles. NO tengas las dos activas a la vez (contarían doble).
+     · RESPALDO en OBS: agrega #obspass=TU_CONTRASEÑA al final del enlace.
+   Comandos del dueño: !bpm 110 · !fiesta · !limpiar · !reiniciar · !respaldo
+
+   ENLACE (fuente de navegador en OBS, 1080×1920):
+     baile-3d.html#obspass=TU_CONTRASEÑA
+     ?max=8       cuántos bailarines como máximo (1 a 10; con menos, se ven más grandes)
+     (usa los mismos 10 niveles de la pista actual)
+     ?piso=1914   altura del piso en px · ?fps=30 · ?bpm=100 · ?diag=1 muestra fps
+     ?limpiar=12  cuántos regalos en el piso antes de que los acomoden · ?vida=60 segundos que dura un regalo
+     ?demo=1      se juega solo con regalos de prueba · ?test=1 botones de prueba (teclas 1-6, Q, E, L, F, C)
+   ════════════════════════════════════════════════════════════════ */
+</script>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: transparent; overflow: hidden; }
+  body.fondo { background: linear-gradient(#36475a, #161c24); }
+  #stage { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; transform-origin: 0 0; }
+  #gl, #ui { position: absolute; left: 0; top: 0; width: 1080px; height: 1920px; }
+  #panel { position: absolute; left: 16px; top: 16px; display: flex; flex-wrap: wrap; gap: 10px; max-width: 1040px; z-index: 5; }
+  #panel button { font: 700 24px system-ui, Arial; padding: 10px 16px; border-radius: 14px; border: 0; background: rgba(20,20,30,.75); color: #fff; cursor: pointer; }
+  #panel button.on, #panel button:hover { background: #e3122b; }
+  #panel .sep { flex-basis: 100%; height: 0; }
+  #panel input { font: 700 24px system-ui, Arial; padding: 10px; border-radius: 12px; border: 0; width: 220px; }
+</style>
+<script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js" } }</script>
+</head>
+<body>
+<div id="stage"><canvas id="gl"></canvas><canvas id="ui"></canvas><div id="panel"></div></div>
+<script type="module">
+import * as THREE from 'three';
+
+const Q = new URLSearchParams(location.search);
+const num = (k, d) => { const v = parseFloat(Q.get(k)); return isFinite(v) ? v : d; };
+if (Q.get('fondo') === '1') document.body.classList.add('fondo');
+const W = 1080, H = 1920, GMODE = Q.get('galeria'), GAL = GMODE === '1' || GMODE === 'niveles';
+const PSCALE = GAL ? 0.25 : 1;                 // el tamaño de las partículas va en píxeles de pantalla: en la galería los cuadros están más cerca
+const stage = document.getElementById('stage');
+function fit() { stage.style.transform = `scale(${innerWidth / 1080})`; }
+addEventListener('resize', fit); fit();
+
+const PI = Math.PI, TAU = PI * 2;
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v, lerp = (a, b, t) => a + (b - a) * t;
+const fr = x => x - Math.floor(x);
+const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const ease = t => t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+const easeOut = t => 1 - (1 - t) ** 3;
+const backOut = x => { const c1 = 1.7, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
+const onBeat = b => (1 + Math.cos(TAU * b)) / 2;              // 1 justo en el tiempo, 0 entre tiempos
+const lerp3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+// mano que viaja en ARCO: además de ir de a a b, se abomba hacia "bulge" a mitad de camino
+const arc3 = (a, b, t, bulge) => { const s = Math.sin(PI * clamp(t, 0, 1)); const o = lerp3(a, b, t); return [o[0] + bulge[0] * s, o[1] + bulge[1] * s, o[2] + bulge[2] * s]; };
+// salto con física: sube rápido y cae como con gravedad (parábola)
+const para = q => 4 * q * (1 - q);
+
+/* ════════════════ MEDIDAS (en metros, más o menos) ════════════════ */
+const L1 = 0.46, L2 = 0.46, SPINE = 0.5, NECK = 0.09, HEADR = 0.17, UA = 0.3, FA = 0.29, SHW = 0.16, HPW = 0.095, STAND = 0.9, ANK = 0.05;
+let BPM = num('bpm', 100), BPS = BPM / 60;
+
+/* ════════════════ POSE ════════════════
+   Todo se mide desde el piso, mirando hacia +z (hacia la cámara). "Afuera" = hacia el lado de ese brazo/pierna.
+     mx, mz     mover todo el cuerpo por el piso          yaw   girar todo el cuerpo
+     px py pz   cadera (py = cuánto baja/sube)           hipYaw, hipRoll  cadera girada / ladeada
+     lean       espalda hacia adelante                    roll  espalda ladeada · twist  hombros girados
+     nod turn tilt   cabeza (asentir, girar, ladear)
+     hL hR      mano [afuera, arriba, adelante] desde el hombro, en el marco del pecho
+     fL fR      pie [afuera, alto, adelante] desde el centro, en el marco del cuerpo
+     pL pR      hacia dónde apunta el codo (opcional)
+     guitar     1 = con guitarra (las manos se van solas al mástil y a las cuerdas)
+     strum      mano que rasguea (-1 abajo … 1 arriba) · fret  mano del mástil (0 cerca … 1 lejos)
+     sq         aplastar (+) / estirar (−); lo calcula solo la capa de movimiento            */
+function base() {
+  return { mx: 0, mz: 0, yaw: 0, px: 0, py: 0, pz: 0, hipYaw: 0, hipRoll: 0, lean: 0.04, roll: 0, twist: 0, nod: 0, turn: 0, tilt: 0,
+    hL: [0.05, -0.56, 0.06], hR: [0.05, -0.56, 0.06], fL: [0.11, 0, 0.02], fR: [0.11, 0, 0.02], pL: null, pR: null, guitar: 0, strum: 0, fret: 0.5, sq: 0, wind: 0, windPh: 0, flip: 0 };
+}
+const NUMK = ['mx', 'mz', 'yaw', 'px', 'py', 'pz', 'hipYaw', 'hipRoll', 'lean', 'roll', 'twist', 'nod', 'turn', 'tilt', 'guitar', 'strum', 'fret', 'sq', 'wind', 'windPh', 'flip'];
+const ARRK = ['hL', 'hR', 'fL', 'fR'];
+function mixPose(A, B, t) {
+  const o = base();
+  for (const k of NUMK) o[k] = lerp(A[k], B[k], t);
+  for (const k of ARRK) o[k] = lerp3(A[k], B[k], t);
+  for (const k of ['pL', 'pR']) o[k] = A[k] && B[k] ? lerp3(A[k], B[k], t) : (t < 0.5 ? A[k] : B[k]);
+  return o;
+}
+// pies con x absoluta (centro del cuerpo): izquierda = +x
+function feetAbs(p, lx, rx, ly = 0, ry = 0, lz = 0.02, rz = 0.02) { p.fL = [lx, ly, lz]; p.fR = [-rx, ry, rz]; }
+// paso a un lado y junta (4 tiempos): devuelve x de cada pie, el centro y cuál pie se levanta.
+// El pie viaja en arco (sube en el medio) y el centro del cuerpo lo sigue un poco después.
+function stepTouch(b, w) {
+  const i = Math.floor(b) % 4, s = fr(b), e = ease(s), lift = 0.08 * Math.sin(PI * s);
+  let L, R, lL = 0, lR = 0;
+  if (i === 0) { L = lerp(-w + 0.11, w + 0.11, e); R = -w - 0.11; lL = lift; }
+  else if (i === 1) { L = w + 0.11; R = lerp(-w - 0.11, w - 0.11, e); lR = lift; }
+  else if (i === 2) { L = w + 0.11; R = lerp(w - 0.11, -w - 0.11, e); lR = lift; }
+  else { L = lerp(w + 0.11, -w + 0.11, e); R = -w - 0.11; lL = lift; }
+  const c = w * Math.sin(PI * (b - 0.35) / 2) * 0.9;          // el peso se mueve en curva suave, no a saltos
+  return { L, R, lL, lR, c };
+}
+// brazo que gira en un círculo frente/atrás del hombro (ángulo 0 = colgando, + = adelante/arriba)
+const swingArm = (th, out = 0.2, r = 0.55) => [out, -r * Math.cos(th), r * Math.sin(th)];
+
+/* ════════════════ BAILES ════════════════ */
+const ROBOT = [
+  { hL: [0.08, -0.3, 0.3], hR: [0.08, -0.3, 0.3] },
+  { hL: [0.3, 0.28, 0.02], hR: [0.08, -0.3, 0.3], turn: 0.7 },
+  { hL: [0.08, -0.3, 0.3], hR: [0.3, 0.28, 0.02], turn: -0.7 },
+  { hL: [0.55, 0.0, 0.05], hR: [0.55, 0.0, 0.05], py: -0.1, nod: 0.25 },
+  { hL: [0.04, -0.02, 0.57], hR: [0.04, -0.02, 0.57], yaw: 0.8, turn: -0.8 },
+  { hL: [0.04, -0.02, 0.57], hR: [0.3, 0.28, 0.02], yaw: 0.8, turn: -0.8, tilt: 0.35 },
+  { hL: [0.3, -0.3, 0.0], hR: [0.3, 0.28, 0.02], yaw: -0.8, turn: 0.8, twist: 0.2 },
+  { hL: [0.3, 0.28, 0.02], hR: [0.3, 0.28, 0.02], py: -0.16, nod: -0.25 },
+].map(k => Object.assign(base(), { lean: 0, fL: [0.17, 0, 0.02], fR: [0.17, 0, 0.02] }, k));
+function mixInto(p, A, B, t) { for (const k of NUMK) p[k] = lerp(A[k], B[k], t); for (const k of ARRK) p[k] = lerp3(A[k], B[k], t); return p; }
+
+const DANCE = {
+  basico(b) {
+    const p = base(), d = onBeat(b), sw = Math.sin(PI * b), st = stepTouch(b, 0.14);
+    feetAbs(p, st.L, st.R, st.lL, st.lR); p.px = st.c;
+    p.py = -0.08 * d; p.nod = 0.13 * d - 0.04; p.roll = -0.07 * sw; p.twist = 0.16 * sw; p.hipRoll = 0.06 * sw;
+    const up = Math.max(0, sw), dn = Math.max(0, -sw);                         // la mano que va adelante sube en arco
+    p.hL = [0.1 + 0.03 * up, -0.4 + 0.05 * d + 0.08 * up, 0.18 + 0.14 * sw]; p.hR = [0.1 + 0.03 * dn, -0.4 + 0.05 * d + 0.08 * dn, 0.18 - 0.14 * sw];
+    return p;
+  },
+  cumbia(b) {
+    const p = base(), i = Math.floor(b) % 4, s = fr(b), e = ease(s), d = onBeat(b);
+    const kL = i === 0 ? e : i === 1 ? 1 - e : 0, kR = i === 2 ? e : i === 3 ? 1 - e : 0, up = 0.07 * Math.sin(PI * s);
+    p.fL = [0.13 + 0.03 * kL, i < 2 ? up : 0, 0.04 - 0.3 * kL]; p.fR = [0.13 + 0.03 * kR, i >= 2 ? up : 0, 0.04 - 0.3 * kR];
+    p.hipYaw = 0.32 * (kL - kR); p.twist = -0.22 * (kL - kR); p.py = -0.1 - 0.05 * d; p.hipRoll = 0.08 * Math.sin(PI * b / 2);
+    p.yaw = 0.35 * Math.sin(TAU * b / 16); p.roll = 0.07 * Math.sin(PI * b); p.nod = 0.07 * d; p.tilt = 0.1 * Math.sin(PI * b / 2);
+    const aL = kR - kL;                                                         // brazos en arco, contrarios al pie
+    p.hL = [0.15 + 0.04 * Math.abs(aL), -0.3 + 0.04 * d + 0.05 * Math.max(0, aL), 0.22 + 0.14 * aL];
+    p.hR = [0.15 + 0.04 * Math.abs(aL), -0.3 + 0.04 * d + 0.05 * Math.max(0, -aL), 0.22 - 0.14 * aL];
+    return p;
+  },
+  caporal(b) {
+    const p = base(), k = Math.floor(b) % 2, s = fr(b), h = para(s);
+    p.py = -0.12 + 0.36 * h;                                                     // toca el piso agachado, vuela en parábola
+    const knee = Math.sin(PI * clamp(s * 1.15, 0, 1));                            // la rodilla sube rápido y baja justo antes de caer
+    const lifted = [0.11, 0.5 * knee, 0.3 * knee], stand = [0.11, 0, 0];
+    p.fL = k ? stand : lifted; p.fR = k ? lifted : stand;
+    p.hR = swingArm(0.8 + 1.35 * Math.sin(PI * b), 0.2); p.hL = swingArm(0.8 - 1.35 * Math.sin(PI * b), 0.2);   // brazos en círculo, opuestos a la rodilla
+    p.lean = 0.1 - 0.22 * h; p.nod = 0.1 - 0.22 * h; p.twist = 0.22 * Math.sin(PI * b);
+    p.yaw = 0.45 * Math.tanh(3 * Math.sin(PI * b / 4));
+    const T = b % 16;                                                            // vuelta completa cada 16 tiempos (con anticipación)
+    if (T > 13.5) p.yaw += -0.35 * sstep(13.5, 14, T) * (1 - sstep(14, 14.4, T)) + TAU * ease(clamp((T - 14) / 1.8, 0, 1));
+    return p;
+  },
+  robot(b) {
+    const i = Math.floor(b) % 8, s = fr(b), q = backOut(clamp(s / 0.2, 0, 1));
+    const p = mixInto(base(), ROBOT[(i + 7) % 8], ROBOT[i], q);                // golpe seco con rebotito
+    if (s > 0.8) { const a = mixInto(base(), ROBOT[i], ROBOT[(i + 1) % 8], -0.1 * sstep(0.8, 1, s)); mixInto(p, p, a, 1); }   // "carga" antes del siguiente
+    p.py += -0.03 * onBeat(b); p.pL = [0.35, -0.3, -0.7];
+    return p;
+  },
+  disco(b) {
+    const p = base(), up = Math.floor(b) % 2 === 0, s = fr(b);
+    const go = backOut(clamp(s / 0.32, 0, 1)), wind = s > 0.82 ? sstep(0.82, 1, s) : 0;
+    const lo = [-0.14, -0.45, 0.26], hi = [0.34, 0.44, 0.22];
+    let q = up ? go : 1 - go;
+    q += up ? 0.1 * wind : -0.1 * wind;                                           // se prepara al revés antes de apuntar
+    p.yaw = -0.3; p.hR = arc3(lo, hi, q, [0.06, -0.05, 0.16]);
+    p.hL = [-0.01, -0.4, -0.02]; p.pL = [1, 0.1, -0.3];                         // mano en la cintura
+    const c = clamp(q, -0.1, 1.1) * 2 - 1;
+    p.hipRoll = -0.13 * c; p.px = 0.06 * c; p.roll = 0.09 * c;
+    p.turn = -0.35 * q + 0.1; p.nod = -0.35 * q + 0.15; p.py = -0.06 * (1 - q) - 0.02;
+    p.fL = [0.15, 0, 0.02]; p.fR = [0.11, 0.05 * clamp(q, 0, 1), 0.08];
+    return p;
+  },
+  runningman(b) {
+    const p = base(), k = Math.floor(b) % 2, s = fr(b);
+    const up = [0.11, 0.4 * Math.sin(PI * s) ** 0.8, lerp(-0.35, 0.18, ease(s))], slide = [0.11, 0, lerp(0.18, -0.35, ease(s))];
+    p.fL = k ? slide : up; p.fR = k ? up : slide;
+    p.yaw = 0.55; p.lean = 0.14; p.py = -0.08 - 0.06 * Math.cos(TAU * s);
+    const fw = Math.sin(PI * b);
+    p.hL = swingArm(0.9 - 0.7 * fw, 0.12, 0.42); p.hR = swingArm(0.9 + 0.7 * fw, 0.12, 0.42);
+    p.nod = 0.1 * onBeat(b); p.twist = -0.12 * fw;
+    return p;
+  },
+  moonwalk(b) {
+    const p = base(), T = b % 16, k = Math.floor(b) % 2, s = fr(b), rise = sstep(0, 0.25, s);
+    const f = T < 7.5 ? 1 : T < 8.5 ? lerp(1, -1, ease(T - 7.5)) : T < 15.5 ? -1 : lerp(-1, 1, ease(T - 15.5));
+    p.yaw = f * PI / 2;                                                        // de perfil; gira de frente al cambiar de lado
+    p.mx = T < 8 ? 0.9 - 0.225 * T : -0.9 + 0.225 * (T - 8);                    // se desliza hacia atrás
+    const flat = [0.07, 0.06 * (1 - rise), 0.12 - 0.24 * s], toe = [0.07, 0.06 * rise, -0.12 + 0.24 * s];
+    p.fL = k ? toe : flat; p.fR = k ? flat : toe;
+    const w = Math.sin(PI * b);
+    p.py = -0.03 - 0.02 * onBeat(b); p.lean = 0.07; p.nod = 0.08 * w; p.hipRoll = 0.04 * w;
+    p.hL = [0.06, -0.5, 0.1 + 0.12 * w]; p.hR = [0.06, -0.5, 0.1 - 0.12 * w];
+    return p;
+  },
+  guitarra(b) {
+    const p = base(), bang = onBeat(b) ** 2, T = b % 16;
+    p.guitar = 1; p.yaw = 0.35;
+    p.fL = [0.25, 0, 0.1]; p.fR = [0.25, 0, -0.06];
+    p.py = -0.15 - 0.05 * bang; p.lean = 0.12 + 0.1 * bang; p.nod = 0.5 * bang - 0.12;
+    p.strum = Math.sin(2 * TAU * b) * 0.9; p.fret = 0.5 + 0.25 * Math.sin(PI * b / 2);
+    // MOLINO (como Pete Townshend): el brazo derecho da vueltas completas y golpea las cuerdas justo en el tiempo
+    const wm = sstep(7.4, 8, T) * (1 - sstep(12, 12.4, T));
+    if (wm > 0) {
+      const s = fr(T), hit = Math.exp(-s * 8);
+      p.wind = wm; p.windPh = TAU * Math.pow(s, 1.7);                             // sube lento, baja rápido
+      p.py += (-0.08 - 0.1 * hit) * wm; p.lean += (0.12 * hit - 0.1) * wm; p.nod += 0.3 * hit * wm; p.strum = 0;
+      p.fL[0] += 0.08 * wm; p.fR[0] += 0.08 * wm; p.yaw = lerp(0.35, 0.12, wm);
+    }
+    if (T > 13.5 && T < 15.8) {                                                   // salto de rockero: se agacha, vuela, cae y absorbe
+      const pre = sstep(13.5, 14, T) * (1 - sstep(14, 14.15, T)), q = clamp((T - 14.1) / 1.2, 0, 1), air = T > 14.1 && T < 15.3 ? para(q) : 0;
+      const land = T > 15.3 ? Math.sin(PI * clamp((T - 15.3) / 0.5, 0, 1)) : 0;
+      p.py += -0.12 * pre + 0.55 * air - 0.1 * land; p.fL[1] += 0.12 * air; p.fR[1] += 0.18 * air; p.fL[2] -= 0.08 * air; p.fR[2] -= 0.1 * air;
+      p.lean += 0.15 * pre - 0.22 * air + 0.12 * land; p.nod -= 0.35 * air;
+    }
+    return p;
+  },
+  floss(b) {
+    const p = base(), side = -Math.cos(PI * b), c = Math.sin(PI * b), X = 0.34 * side;
+    p.hL = [X - SHW, -0.5 + 0.04 * Math.abs(c), 0.2 * c]; p.hR = [-SHW - X, -0.5 + 0.04 * Math.abs(c), -0.2 * c];
+    const hs = -Math.cos(PI * (b - 0.08));                                       // la cadera va un pelo antes que los brazos
+    p.px = -0.07 * hs; p.hipRoll = 0.14 * hs; p.hipYaw = -0.12 * hs; p.roll = -0.05 * side;
+    p.py = -0.05 * onBeat(b); p.lean = 0.05; p.nod = 0.06 * onBeat(b);
+    p.fL = [0.13, 0, 0.02]; p.fR = [0.13, 0, 0.02];
+    return p;
+  },
+  manos(b) {
+    const p = base(), st = stepTouch(b, 0.14), d = onBeat(b);
+    feetAbs(p, st.L, st.R, st.lL, st.lR); p.px = st.c;
+    const swing = Math.sin(PI * (b - 0.5) / 2);
+    p.roll = -0.24 * swing; p.hipRoll = 0.1 * swing; p.py = -0.06 * d; p.nod = -0.15 + 0.08 * d;
+    p.hL = [0.06 - 0.12 * swing, 0.48 + 0.04 * d, 0.06 + 0.05 * Math.cos(PI * b / 2)]; p.hR = [0.06 + 0.12 * swing, 0.48 + 0.04 * d, 0.06 - 0.05 * Math.cos(PI * b / 2)];
+    return p;
+  },
+  giro(b) {
+    const T = b % 4; if (T < 1.5) return DANCE.basico(b);
+    const p = DANCE.basico(b);
+    if (T < 2) {                                                                  // anticipación: se tuerce al revés y baja
+      const a = sstep(1.5, 2, T); p.yaw = -0.45 * a; p.py -= 0.08 * a; p.hL = lerp3(p.hL, [0.4, -0.1, 0.25], a); p.hR = lerp3(p.hR, [0.4, -0.1, 0.25], a); return p;
+    }
+    const q = (T - 2) / 2, e = backOut(clamp(q / 0.85, 0, 1)), j = Math.sin(PI * q), tuck = Math.sin(PI * clamp(q / 0.8, 0, 1));
+    const o = base();
+    o.yaw = -0.45 * (1 - e) + TAU * e; o.py = 0.04 * j - 0.05 * (q > 0.85 ? Math.sin(PI * (q - 0.85) / 0.15) : 0);
+    const out = [0.5, 0.05, 0.18], inA = [0.05, -0.1, 0.32];                     // brazos abiertos → se recogen al girar (gira más rápido) → se abren
+    o.hL = lerp3(out, inA, tuck); o.hR = lerp3(out, inA, tuck);
+    o.fL = [0.09, 0, 0.0]; o.fR = [0.06, 0.4 * j, 0.06]; o.nod = -0.1 * j;
+    return o;
+  },
+  salto(b) {
+    const p = base(), T = b % 2;
+    let crouch = 0, air = 0, clap = 0;
+    if (T < 0.45) crouch = sstep(0, 0.45, T);
+    else if (T < 1.35) { const q = (T - 0.45) / 0.9; air = para(q); crouch = 1 - sstep(0.45, 0.55, T); clap = sstep(0.6, 0.85, T) * (1 - sstep(1.15, 1.35, T)); }
+    else crouch = Math.sin(PI * clamp((T - 1.35) / 0.65, 0, 1)) * 0.8;
+    p.py = -0.24 * crouch + 0.5 * air; p.lean = 0.32 * crouch - 0.08 * air; p.nod = 0.2 * crouch - 0.25 * air;
+    p.fL = [0.13, 0.2 * air, 0.02]; p.fR = [0.13, 0.2 * air, 0.02];
+    const low = [0.15, -0.45, -0.28], high = [0.15, 0.48, 0.12], meet = [-SHW + 0.04, 0.52, 0.12];
+    const h = arc3(lerp3([0.06, -0.55, 0.06], low, crouch), high, air, [0.1, 0, 0.2]);
+    p.hL = lerp3(h, meet, clap); p.hR = lerp3(h, meet, clap);
+    return p;
+  },
+  twist(b) {
+    const p = base(), w = Math.sin(TAU * b), dip = 0.5 - 0.5 * Math.cos(PI * b / 4);          // gira la cadera y baja/sube despacio
+    p.hipYaw = 0.55 * w; p.twist = -0.42 * w; p.py = -0.06 - 0.17 * dip; p.lean = 0.12 + 0.1 * dip;
+    p.fL = [0.15, 0.03 * Math.max(0, w), 0.03]; p.fR = [0.15, 0.03 * Math.max(0, -w), 0.03];
+    p.hL = [0.16, -0.28, 0.18 - 0.14 * w]; p.hR = [0.16, -0.28, 0.18 + 0.14 * w];
+    p.nod = 0.06 * onBeat(b * 2); p.tilt = 0.08 * w;
+    return p;
+  },
+  charleston(b) {
+    const p = base(), i = Math.floor(b) % 4, s = fr(b), e = ease(s), lift = 0.14 * Math.sin(PI * s), d = onBeat(b);
+    const fz = [e, 1 - e, 0, 0][i], bz = [0, 0, e, 1 - e][i];                       // derecha patea adelante, izquierda toca atrás
+    p.fR = [0.1, (i < 2 ? lift : 0) + 0.1 * fz, 0.34 * fz]; p.fL = [0.1, (i >= 2 ? lift : 0), -0.3 * bz];
+    p.py = -0.08 - 0.06 * d; p.lean = 0.04 - 0.14 * fz + 0.16 * bz; p.hipYaw = 0.25 * (fz - bz); p.nod = 0.08 * d;
+    p.hL = swingArm(0.2 + 1.0 * fz - 0.6 * bz, 0.15, 0.45); p.hR = swingArm(0.2 - 0.6 * fz + 1.0 * bz, 0.15, 0.45);
+    return p;
+  },
+  shuffle(b) {
+    const T = b % 4, A = DANCE.runningman(b * 2); A.yaw = 0.15; A.lean = 0.1;
+    const p = base(), q = fr(T * 2), k = Math.floor(T * 2) % 2, out = Math.sin(PI * q);
+    // T-step: el pie derecho patea al costado y vuelve en cada medio tiempo; el izquierdo gira en punta
+    p.fR = [0.12 + 0.28 * out, 0.1 * out, 0.02]; p.fL = [0.12 + 0.05 * (k ? 1 : -1) * out, 0, 0.04];
+    p.px = -0.08 * out; p.hipRoll = 0.12 * out; p.py = -0.1 + 0.04 * out; p.lean = 0.08; p.yaw = -0.15;
+    p.hL = swingArm(0.7 + 0.5 * out, 0.12, 0.4); p.hR = swingArm(0.7 - 0.3 * out, 0.12, 0.4); p.nod = 0.1 * onBeat(b * 2);
+    const w = T < 2 ? sstep(1.75, 2, T) : 1 - sstep(3.75, 4, T);
+    return mixPose(A, p, w);
+  },
+  morenada(b) {
+    const p = base(), h = b / 2, st = stepTouch(h, 0.2), d = onBeat(b), sway = Math.sin(PI * (h - 0.35) / 2);
+    feetAbs(p, st.L, st.R, st.lL * 0.8, st.lR * 0.8); p.px = st.c;                // pasos lentos y pesados, a medio tiempo
+    p.py = -0.14 - 0.05 * d; p.roll = -0.14 * sway; p.hipRoll = 0.12 * sway; p.lean = -0.04; p.nod = -0.12 + 0.05 * d; p.tilt = 0.1 * sway;
+    const a = TAU * b;                                                             // matraca: la mano derecha arriba gira en círculos
+    p.hR = [0.22 + 0.09 * Math.cos(a), 0.22 + 0.09 * Math.sin(a), 0.22]; p.pR = [0.8, 0.2, -0.5];
+    p.hL = [0.0, -0.4, 0.02]; p.pL = [1, 0.1, -0.3];
+    p.yaw = 0.3 * Math.sin(PI * b / 8);
+    return p;
+  },
+  tinku(b) {
+    const p = base(), k = Math.floor(b) % 2, s = fr(b), up = Math.sin(PI * clamp(s * 1.3, 0, 1)), stomp = Math.exp(-((s - 0.77) ** 2) / 0.004);
+    const lifted = [0.16, 0.32 * up, 0.12 * up], st = [0.16, 0, 0];              // agachado, zapateo fuerte, puños al frente
+    p.fL = k ? st : lifted; p.fR = k ? lifted : st;
+    p.py = -0.2 - 0.08 * stomp + 0.04 * up; p.lean = 0.25 + 0.08 * stomp; p.nod = 0.1 + 0.15 * stomp;
+    const pump = Math.sin(PI * b);
+    p.hL = [0.1, -0.12 + 0.12 * pump, 0.32]; p.hR = [0.1, -0.12 - 0.12 * pump, 0.32]; p.pL = [0.6, -0.5, -0.4]; p.pR = [0.6, -0.5, -0.4];
+    p.yaw = 0.5 * Math.tanh(3 * Math.sin(PI * b / 2)); p.twist = 0.15 * pump;
+    return p;
+  },
+  dab(b) {
+    const T = b % 4, g = DANCE.basico(b);
+    if (T < 2.75) return g;
+    const q = T < 3 ? backOut(clamp((T - 2.75) / 0.25, 0, 1)) : 1 - sstep(3.7, 4, T);
+    const d = base();
+    d.hL = [-0.3, 0.1, 0.2]; d.pL = [0.4, 1, 0.3]; d.hR = [0.42, 0.32, 0.12]; d.nod = 0.55; d.turn = 0.55; d.tilt = -0.15; d.lean = 0.15; d.twist = 0.25;
+    d.fL = [0.16, 0, 0.03]; d.fR = [0.16, 0, 0.03]; d.py = -0.08;
+    return mixPose(g, d, q);
+  },
+};
+const ORDER = ['basico', 'cumbia', 'caporal', 'robot', 'disco', 'runningman', 'moonwalk', 'guitarra', 'floss', 'manos', 'giro', 'salto', 'twist', 'charleston', 'shuffle', 'morenada', 'tinku', 'dab'];
+const NAME = { basico: 'Paso básico', cumbia: 'Cumbia', caporal: 'Caporal', robot: 'Robot', disco: 'Disco', runningman: 'Running man',
+  moonwalk: 'Moonwalk', guitarra: 'Guitarra al aire', floss: 'Floss', manos: 'Manos arriba', giro: 'Giro', salto: 'Salto y aplauso',
+  twist: 'Twist', charleston: 'Charleston', shuffle: 'Shuffle', morenada: 'Morenada', tinku: 'Tinku', dab: 'Dab' };
+// niveles: en qué nivel aparece cada accesorio (?niveles=10 vuelve al esquema viejo de 10 niveles)
+const LV15 = { band: 2, glasses: 3, phones: 4, hat: 5, shoes: 6, cape: 7, chain: 8, notes: 9, fire: 10, trail: 11, aura: 12, gold: 13, bolts: 14, legend: 15, max: 15 };
+const LV10 = { band: 2, glasses: 3, phones: 99, hat: 4, shoes: 99, cape: 5, chain: 6, notes: 99, fire: 7, trail: 99, aura: 8, gold: 9, bolts: 99, legend: 10, max: 10 };
+const LVM = Q.get('niveles') === '15' ? LV15 : LV10;   // en vivo: los mismos 10 niveles de la pista
+const PROPNAME = { band: 'Bandana', glasses: 'Lentes', phones: 'Audífonos', hat: 'Sombrero', shoes: 'Zapatillas con luces', cape: 'Capa', chain: 'Cadena con púa', notes: 'Notas musicales',
+  fire: 'Fuego', trail: 'Estela de colores', aura: 'Aura', gold: 'Dorado y aureola', bolts: 'Rayos', legend: 'LEYENDA' };
+const LVNAME = { 1: 'Nivel 1' }; for (const k in PROPNAME) if (LVM[k] <= LVM.max) LVNAME[LVM[k]] = PROPNAME[k];
+
+/* ════════════════ ESQUELETO 3D ════════════════ */
+const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+const qE = (x, y, z) => new THREE.Quaternion().setFromEuler(new THREE.Euler(x, y, z, 'YXZ'));
+function ik(A, T, l1, l2, pole) {                    // devuelve el codo/rodilla; acorta T si no alcanza
+  const d = T.clone().sub(A); let dist = d.length();
+  const max = (l1 + l2) * 0.999;
+  if (dist > max) { d.multiplyScalar(max / dist); dist = max; T.copy(A).add(d); }
+  dist = Math.max(dist, Math.abs(l1 - l2) + 0.02);
+  const dir = d.normalize(), cosA = clamp((l1 * l1 + dist * dist - l2 * l2) / (2 * l1 * dist), -1, 1), sinA = Math.sqrt(1 - cosA * cosA);
+  const perp = pole.clone().sub(dir.clone().multiplyScalar(pole.dot(dir))).normalize();
+  return A.clone().add(dir.multiplyScalar(l1 * cosA)).add(perp.multiplyScalar(l1 * sinA));
+}
+// guitarra: caja delante del torso (sin tocarlo), mástil hacia la izquierda y arriba.
+// Devuelve el marco de la guitarra y dónde van las manos: una sobre las cuerdas, la otra agarrando el mástil.
+const G_THICK = 0.035, G_FRONT = 0.062 + G_THICK + 0.07;
+function guitarFrame(P, chestQ, p) {
+  const fwd = V(0, 0, 1).applyQuaternion(chestQ), up = V(0, 1, 0).applyQuaternion(chestQ), left = V(1, 0, 0).applyQuaternion(chestQ);
+  const G = P.clone().addScaledVector(up, 0.14).addScaledVector(fwd, G_FRONT).addScaledVector(left, -0.05);
+  const nd = left.clone().multiplyScalar(0.84).addScaledVector(up, 0.46).addScaledVector(fwd, 0.16).normalize();
+  const n = fwd.clone().addScaledVector(nd, -fwd.dot(nd)).normalize(), yv = n.clone().cross(nd).normalize();
+  const fretT = G.clone().addScaledVector(nd, 0.36 + 0.24 * p.fret).addScaledVector(yv, -0.045).addScaledVector(n, -0.005);
+  const strumT = G.clone().addScaledVector(nd, 0.03).addScaledVector(yv, 0.07 * p.strum - 0.01).addScaledVector(n, G_THICK + 0.062);
+  return { G, nd, n, yv, fretT, strumT };
+}
+function solve(p, origin) {
+  const rootQ = qE(0, p.yaw, 0), root = origin.clone().add(V(p.mx, 0, p.mz));
+  const toRoot = v => v.applyQuaternion(rootQ).add(root);
+  const pelvisQ = qE(0, p.yaw + p.hipYaw, p.hipRoll), chestQ = qE(p.lean, p.yaw + p.hipYaw + p.twist, p.roll);
+  const headQ = chestQ.clone().multiply(qE(p.nod, p.turn, p.tilt));
+  const sq = clamp(p.sq, -0.18, 0.2), spine = SPINE * (1 - 0.55 * sq);
+  const P = toRoot(V(p.px, STAND + p.py, p.pz));
+  const N = P.clone().add(V(0, spine, 0).applyQuaternion(chestQ));
+  const Hd = N.clone().add(V(0, NECK + HEADR * (1 - 0.7 * sq), 0).applyQuaternion(headQ));
+  const S = { P, N, H: Hd, headQ, chestQ, rootQ, pelvisQ, sq };
+  const g = clamp(p.guitar, 0, 1), GF = g > 0.01 ? guitarFrame(P, chestQ, p) : null; S.GF = GF;
+  for (const [s, k] of [[1, 'L'], [-1, 'R']]) {
+    const sh = P.clone().add(V(s * SHW, spine - 0.05, 0).applyQuaternion(chestQ));
+    const h = p['h' + k]; let hand = sh.clone().add(V(s * h[0], h[1], h[2]).applyQuaternion(chestQ));
+    let pp = p['p' + k] || [0.35, -0.3, -0.7], poleW = null;
+    if (GF && k === 'L') { hand.lerp(GF.fretT, g); pp = [0.3, -0.8, -0.3]; }
+    if (GF && k === 'R') {
+      const upC = V(0, 1, 0).applyQuaternion(chestQ), outR = V(-1, 0, 0).applyQuaternion(chestQ), w = clamp(p.wind, 0, 1);
+      // codo por DELANTE y por encima del borde de la caja: el antebrazo cae sobre las cuerdas y nunca atraviesa la guitarra
+      const elbowWant = GF.G.clone().addScaledVector(GF.yv, 0.27).addScaledVector(GF.n, 0.15).addScaledVector(GF.nd, -0.14);
+      let tgt = GF.strumT; poleW = elbowWant.sub(sh);
+      if (w > 0) {                                                                // molino: círculo grande por delante de la guitarra
+        const C = GF.strumT.clone().addScaledVector(upC, 0.5).addScaledVector(GF.n, 0.08), side = outR.clone().addScaledVector(GF.n, 0.45).normalize();
+        const wmT = C.clone().addScaledVector(upC, -0.5 * Math.cos(p.windPh)).addScaledVector(side, 0.5 * Math.sin(p.windPh));
+        tgt = tgt.clone().lerp(wmT, w); poleW.lerp(side.clone().addScaledVector(upC, -0.3), w);
+      }
+      hand.lerp(tgt, g);
+    }
+    const pole = poleW || V(s * pp[0], pp[1], pp[2]).applyQuaternion(chestQ);
+    const el = ik(sh, hand, UA, FA, pole);
+    const hip = P.clone().add(V(s * HPW, 0, 0).applyQuaternion(pelvisQ));
+    const f = p['f' + k], ank = toRoot(V(s * f[0], f[1] + ANK, f[2]));
+    const kn = ik(hip, ank, L1, L2, V(s * 0.18, 0, 1).applyQuaternion(pelvisQ));
+    const toe = ank.clone().add(V(s * 0.03, -0.03, 0.13).applyQuaternion(rootQ));
+    S['sh' + k] = sh; S['el' + k] = el; S['ha' + k] = hand; S['hip' + k] = hip; S['kn' + k] = kn; S['an' + k] = ank; S['to' + k] = toe;
+  }
+  if (p.flip) {                                    // vuelta en el aire: todo el cuerpo gira alrededor de la cadera
+    const qf = new THREE.Quaternion().setFromAxisAngle(V(1, 0, 0).applyQuaternion(rootQ), p.flip), c = P.clone();
+    for (const key in S) { const v = S[key]; if (v && v.isVector3) v.sub(c).applyQuaternion(qf).add(c); }
+    S.headQ.premultiply(qf); S.chestQ.premultiply(qf);
+  }
+  return S;
+}
+
+/* ════════════════ CAPA DE MOVIMIENTO (principios de animación) ════════════════ */
+// resorte amortiguado: llega al objetivo con un pequeño rebote (seguimiento / follow-through)
+function spring(st, key, target, dt, hz, zeta) {
+  let s = st[key]; if (!s || dt <= 0 || dt > 0.25) { st[key] = { x: target, v: 0 }; return target; }
+  const w = TAU * hz, n = Math.max(1, Math.ceil(dt / (1 / 240))), h = dt / n;
+  for (let i = 0; i < n; i++) { s.v += (w * w * (target - s.x) - 2 * zeta * w * s.v) * h; s.x += s.v * h; }
+  return s.x;
+}
+const LAG = { chest: 0.025, arms: 0.04, head: 0.06 };        // cuánto llega tarde cada parte (en tiempos)
+
+/* ════════════════ FÍSICA SIMPLE (tela y cuerdas) ════════════════ */
+const GRAV = V(0, -9.8, 0);
+function pushCapsule(pt, a, b, r) {
+  const ab = b.clone().sub(a), t = clamp(pt.clone().sub(a).dot(ab) / Math.max(1e-6, ab.lengthSq()), 0, 1);
+  const c = a.clone().addScaledVector(ab, t), d = pt.clone().sub(c), L = d.length();
+  if (L < r) { if (L < 1e-5) d.set(0, 0, -1); else d.divideScalar(L); pt.copy(c).addScaledVector(d, r); return true; }
+  return false;
+}
+class Rope {                                              // cadena de puntos colgando de un ancla
+  constructor(n, seg) { this.n = n; this.seg = seg; this.p = []; this.o = []; }
+  step(anchor, dt, collide, wind) {
+    if (!this.p.length || dt <= 0 || dt > 0.25) { this.p = []; this.o = []; for (let i = 0; i < this.n; i++) { const q = anchor.clone().add(V(0, -this.seg * i, -0.001 * i)); this.p.push(q); this.o.push(q.clone()); } return; }
+    const g = GRAV.clone().add(wind || V()).multiplyScalar(dt * dt);
+    this.p[0].copy(anchor); this.o[0].copy(anchor);
+    for (let i = 1; i < this.n; i++) { const v = this.p[i].clone().sub(this.o[i]).multiplyScalar(0.97); this.o[i].copy(this.p[i]); this.p[i].add(v).add(g); }
+    for (let it = 0; it < 4; it++) for (let i = 1; i < this.n; i++) {
+      const a = this.p[i - 1], c = this.p[i], d = c.clone().sub(a), L = d.length() || 1e-6, diff = (L - this.seg) / L;
+      if (i === 1) c.addScaledVector(d, -diff); else { a.addScaledVector(d, diff / 2); c.addScaledVector(d, -diff / 2); }
+      if (collide) collide(c);
+    }
+  }
+}
+class Cloth {                                             // capa: rejilla de puntos con restricciones (Verlet)
+  constructor(cols, rows) { this.c = cols; this.r = rows; this.p = []; this.o = []; this.cons = []; this.ok = false; }
+  init(pins, down, len) {
+    this.p = []; this.o = []; this.cons = [];
+    for (let j = 0; j < this.r; j++) for (let i = 0; i < this.c; i++) {
+      const t = j / (this.r - 1), flare = 1 + 0.45 * t, mid = pins[(this.c - 1) >> 1];
+      const q = pins[i].clone().sub(mid).multiplyScalar(flare).add(mid).addScaledVector(down, len * t);
+      this.p.push(q); this.o.push(q.clone());
+    }
+    const id = (i, j) => j * this.c + i, add = (a, b) => this.cons.push([a, b, this.p[a].distanceTo(this.p[b])]);
+    for (let j = 0; j < this.r; j++) for (let i = 0; i < this.c; i++) {
+      if (i < this.c - 1) add(id(i, j), id(i + 1, j));
+      if (j < this.r - 1) add(id(i, j), id(i, j + 1));
+      if (j < this.r - 2) add(id(i, j), id(i, j + 2));                    // rigidez para que no se arrugue como papel
+      if (i < this.c - 1 && j < this.r - 1) { add(id(i, j), id(i + 1, j + 1)); add(id(i + 1, j), id(i, j + 1)); }
+    }
+    this.ok = true;
+  }
+  step(pins, dt, colliders, down, wind) {
+    if (!this.ok || dt <= 0 || dt > 0.25) { this.init(pins, down, 0.72); return; }
+    const n = 2, h = dt / n;
+    for (let sub = 0; sub < n; sub++) {
+      const g = GRAV.clone().add(wind).multiplyScalar(h * h);
+      for (let k = this.c; k < this.p.length; k++) { const v = this.p[k].clone().sub(this.o[k]).multiplyScalar(0.985); this.o[k].copy(this.p[k]); this.p[k].add(v).add(g); }
+      for (let i = 0; i < this.c; i++) { this.p[i].copy(pins[i]); this.o[i].copy(pins[i]); }
+      for (let it = 0; it < 5; it++) {
+        for (const [a, b, rest] of this.cons) {
+          const pa = this.p[a], pb = this.p[b], d = pb.clone().sub(pa), L = d.length() || 1e-6, diff = (L - rest) / L * 0.5;
+          if (a < this.c) pb.addScaledVector(d, -diff * 2); else if (b < this.c) pa.addScaledVector(d, diff * 2); else { pa.addScaledVector(d, diff); pb.addScaledVector(d, -diff); }
+        }
+        for (let k = this.c; k < this.p.length; k++) { const q = this.p[k]; for (const [a, b, r] of colliders) pushCapsule(q, a, b, r); if (q.y < 0.012) q.y = 0.012; }
+      }
+    }
+  }
+}
+
+/* ════════════════ DIBUJO (three.js) ════════════════ */
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: Q.get('aa') !== '0', alpha: true, preserveDrawingBuffer: Q.get('captura') === '1', powerPreference: 'high-performance' });
+renderer.setPixelRatio(1); renderer.setSize(W, H, false); renderer.setClearColor(0x000000, 0);
+const scene = new THREE.Scene();
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8a7f99, 1.25));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(-3, 6, 5); scene.add(sun);
+const grad = new THREE.DataTexture(new Uint8Array([90, 90, 90, 255, 175, 175, 175, 255, 255, 255, 255, 255]), 3, 1);
+grad.minFilter = grad.magFilter = THREE.NearestFilter; grad.needsUpdate = true;
+const toon = c => new THREE.MeshToonMaterial({ color: c, gradientMap: grad });
+const CYL = new THREE.CylinderGeometry(1, 1, 1, 10, 1, true), SPH = new THREE.SphereGeometry(1, 18, 12), SPH_LO = new THREE.SphereGeometry(1, 10, 7);
+const OUTM = new THREE.MeshBasicMaterial({ color: 0x14090d, side: THREE.BackSide });
+const OL = 0.022;                                                        // grosor del borde negro
+/* RENDIMIENTO: los huesos y articulaciones de TODOS los bailarines se dibujan juntos (4 llamadas en vez de ~60 por bailarín).
+   Cada hueso es un "fantasma" (Object3D sin dibujar) con su material; al final del cuadro se copian a mallas instanciadas. */
+const BODY_M = new THREE.MeshToonMaterial({ color: 0xffffff, gradientMap: grad });
+const BATCH = { list: [], mesh: null };
+function batchItem(kind, mat) { const m = new THREE.Object3D(); m.material = mat; m.kind = kind; m.matrixAutoUpdate = false; return m; }
+function flushBatch(dancerList) {
+  if (!BATCH.mesh) {
+    let nC = 0, nS = 0; for (const d of dancerList) { nC += d.bones.length; nS += d.joints.length; }
+    const im = (geo, mat, n, col) => { const m = new THREE.InstancedMesh(geo, mat, Math.max(1, n)); m.frustumCulled = false; m.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      if (col) { m.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(Math.max(1, n) * 3), 3); m.instanceColor.setUsage(THREE.DynamicDrawUsage); } scene.add(m); return m; };
+    BATCH.mesh = { c: im(CYL, BODY_M, nC, true), co: im(CYL, OUTM, nC), s: im(SPH_LO, BODY_M, nS, true), so: im(SPH_LO, OUTM, nS) };
+  }
+  const M = BATCH.mesh, n = { c: 0, s: 0 };
+  const put = (it, im, imo, k) => { if (!it.m.visible) return; const i = n[k]++; it.m.updateMatrix(); it.o.updateMatrix();
+    im.setMatrixAt(i, it.m.matrix); im.setColorAt(i, it.m.material.color); imo.setMatrixAt(i, it.o.matrix); };
+  for (const d of dancerList) { if (!d.grp.visible || !d.S) continue;
+    for (const b of d.bones) put(b, M.c, M.co, 'c'); for (const j of d.joints) put(j, M.s, M.so, 's'); }
+  M.c.count = M.co.count = n.c; M.s.count = M.so.count = n.s;
+  for (const m of [M.c, M.co, M.s, M.so]) { m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true; }
+}
+const HUES = [355, 200, 45, 140, 290, 25, 175, 320];
+function radialTex(stops, size = 128) { const c = document.createElement('canvas'); c.width = c.height = size; const g = c.getContext('2d');
+  const r = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2); stops.forEach(([o, col]) => r.addColorStop(o, col)); g.fillStyle = r; g.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(c); }
+const shadowTex = radialTex([[0, 'rgba(0,0,0,0.45)'], [1, 'rgba(0,0,0,0)']], 64);
+const glowTex = radialTex([[0, 'rgba(255,255,255,1)'], [0.25, 'rgba(255,255,255,0.55)'], [0.6, 'rgba(255,255,255,0.18)'], [1, 'rgba(255,255,255,0)']]);
+const flameTex = radialTex([[0, 'rgba(255,255,255,1)'], [0.3, 'rgba(255,255,255,0.7)'], [1, 'rgba(255,255,255,0)']], 64);
+const beamTex = (() => { const c = document.createElement('canvas'); c.width = 4; c.height = 128; const g = c.getContext('2d');
+  const l = g.createLinearGradient(0, 0, 0, 128); l.addColorStop(0, 'rgba(255,255,255,0.55)'); l.addColorStop(1, 'rgba(255,255,255,0.02)'); g.fillStyle = l; g.fillRect(0, 0, 4, 128);
+  return new THREE.CanvasTexture(c); })();
+const ADD = { transparent: true, blending: THREE.AdditiveBlending, depthWrite: false };
+const noteTex = ['♪', '♫'].map(ch => { const c = document.createElement('canvas'); c.width = c.height = 96; const g = c.getContext('2d');
+  g.font = '800 78px "Segoe UI Symbol", "Noto Sans Symbols", serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.lineWidth = 9; g.strokeStyle = '#14090d'; g.strokeText(ch, 48, 52); g.fillStyle = '#fff'; g.fillText(ch, 48, 52); return new THREE.CanvasTexture(c); });
+function setSeg(m, a, c, r) { const d = c.clone().sub(a), L = d.length(); m.position.copy(a).add(c).multiplyScalar(0.5);
+  m.quaternion.setFromUnitVectors(V(0, 1, 0), L > 1e-6 ? d.divideScalar(L) : V(0, 1, 0)); m.scale.set(r, L, r); }
+
+// pieza con borde negro (para accesorios)
+function part(geo, mat, parent, x = 0, y = 0, z = 0, sx = 1, sy = 1, sz = 1, ol = OL) {
+  const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); parent.add(m);
+  const o = new THREE.Mesh(geo, OUTM); o.position.copy(m.position); o.scale.set(sx + ol, sy + ol, sz + ol); parent.add(o);
+  return m;
+}
+function makeGuitar() {                                  // guitarra ELÉCTRICA (doble corte, golpeador, 3 pastillas, perillas, clavijero de 6 en línea)
+  const g = new THREE.Group();
+  const red = toon(0xe3122b), maple = toon(0xe8c98a), rose = toon(0x3a2216), blk = toon(0x14090d), wht = toon(0xf4f1ea), chrome = toon(0xd8dde3);
+  const body = new THREE.Shape();
+  body.moveTo(-0.31, 0);
+  body.quadraticCurveTo(-0.32, 0.155, -0.22, 0.165); body.quadraticCurveTo(-0.13, 0.172, -0.08, 0.118);
+  body.quadraticCurveTo(-0.02, 0.098, 0.05, 0.142); body.quadraticCurveTo(0.13, 0.19, 0.165, 0.135);
+  body.quadraticCurveTo(0.1, 0.085, 0.06, 0.03); body.lineTo(0.06, -0.03);
+  body.quadraticCurveTo(0.095, -0.08, 0.115, -0.125); body.quadraticCurveTo(0.1, -0.175, 0.04, -0.15);
+  body.quadraticCurveTo(-0.02, -0.11, -0.08, -0.12); body.quadraticCurveTo(-0.13, -0.172, -0.22, -0.165);
+  body.quadraticCurveTo(-0.32, -0.155, -0.31, 0);
+  const ext = (shape, depth, bev = 0.006) => { const ge = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: true, bevelThickness: bev, bevelSize: bev, bevelSegments: 2, curveSegments: 10 }); ge.translate(0, 0, -depth / 2); return ge; };
+  const bg = ext(body, 2 * G_THICK - 0.012); bg.translate(0.075, 0, 0);
+  part(bg, red, g, -0.075, 0, 0, 1, 1, 1, 0.028);
+  // golpeador blanco
+  const pg = new THREE.Shape(); pg.moveTo(0.05, 0.05); pg.quadraticCurveTo(0.02, 0.115, -0.07, 0.085); pg.quadraticCurveTo(-0.14, 0.05, -0.2, 0.06);
+  pg.quadraticCurveTo(-0.25, 0.0, -0.21, -0.07); pg.quadraticCurveTo(-0.15, -0.13, -0.05, -0.1); pg.quadraticCurveTo(0.03, -0.09, 0.05, -0.04); pg.lineTo(0.05, 0.05);
+  const pgm = new THREE.Mesh(ext(pg, 0.004, 0.002), wht); pgm.position.z = G_THICK + 0.001; g.add(pgm);
+  const box = new THREE.BoxGeometry(1, 1, 1), cyl = new THREE.CylinderGeometry(1, 1, 1, 14); cyl.rotateX(PI / 2);
+  for (const x of [0.0, -0.065, -0.135]) { const pu = new THREE.Mesh(box, blk); pu.position.set(x, 0, G_THICK + 0.007); pu.scale.set(0.022, 0.085, 0.008); pu.rotation.z = x < -0.1 ? 0.15 : 0; g.add(pu);
+    for (let k = -2.5; k <= 2.5; k++) { const pole = new THREE.Mesh(cyl, chrome); pole.position.set(x, k * 0.0125, G_THICK + 0.012); pole.scale.set(0.0035, 0.0035, 0.003); g.add(pole); } }
+  const br = new THREE.Mesh(box, chrome); br.position.set(-0.19, 0, G_THICK + 0.006); br.scale.set(0.035, 0.075, 0.008); g.add(br);
+  for (const [x, y] of [[-0.17, -0.085], [-0.215, -0.065], [-0.245, -0.03]]) { const kn = new THREE.Mesh(cyl, wht); kn.position.set(x, y, G_THICK + 0.01); kn.scale.set(0.012, 0.012, 0.014); g.add(kn); }
+  const sw = new THREE.Mesh(box, wht); sw.position.set(-0.12, -0.08, G_THICK + 0.008); sw.scale.set(0.012, 0.006, 0.012); sw.rotation.z = -0.5; g.add(sw);   // selector
+  // mástil de arce con diapasón oscuro, trastes y marcadores
+  part(box, maple, g, 0.41, 0, -0.004, 0.62, 0.046, 0.026, 0.014);
+  const fb = new THREE.Mesh(box, rose); fb.position.set(0.415, 0, 0.0115); fb.scale.set(0.6, 0.046, 0.006); g.add(fb);
+  for (let k = 1; k <= 14; k++) { const x = 0.715 - 0.6 * (1 - Math.pow(2, -k / 12)) / (1 - Math.pow(2, -14 / 12)) ; const fr2 = new THREE.Mesh(box, chrome); fr2.position.set(x, 0, 0.0155); fr2.scale.set(0.0025, 0.046, 0.002); g.add(fr2);
+    if ([3, 5, 7, 9, 12].includes(k)) { const dot = new THREE.Mesh(cyl, wht); dot.position.set(x + 0.02, 0, 0.0155); dot.scale.set(0.005, 0.005, 0.002); g.add(dot); } }
+  // clavijero (forma de pala) con 6 clavijas en línea
+  const hs = new THREE.Shape(); hs.moveTo(0, -0.024); hs.lineTo(0, 0.024); hs.quadraticCurveTo(0.05, 0.03, 0.1, 0.05); hs.quadraticCurveTo(0.17, 0.07, 0.19, 0.035);
+  hs.quadraticCurveTo(0.2, 0.0, 0.16, -0.005); hs.quadraticCurveTo(0.08, -0.02, 0, -0.024);
+  part(ext(hs, 0.018, 0.003), maple, g, 0.71, 0, -0.004, 1, 1, 1, 0.014);
+  for (let k = 0; k < 6; k++) { const pe = new THREE.Mesh(cyl, chrome); pe.position.set(0.735 + k * 0.024, 0.042 + k * 0.004 - (k > 3 ? 0.004 * (k - 3) : 0), 0.012); pe.scale.set(0.007, 0.007, 0.008); g.add(pe); }
+  // cuerdas
+  const strM = new THREE.MeshBasicMaterial({ color: 0xe9edf2 });
+  for (let k = 0; k < 6; k++) { const st = new THREE.Mesh(box, strM); const y = (k - 2.5) * 0.0068; st.position.set(0.26, y, 0.034); st.rotation.y = 0.031; st.scale.set(0.9, 0.0016, 0.0016); g.add(st); }   // bajan del puente a la cejuela
+  g.visible = false; return g;
+}
+function pickShape() {                                   // púa de guitarra (triángulo redondeado, punta abajo)
+  const s = new THREE.Shape(); s.moveTo(-0.034, 0); s.quadraticCurveTo(0, 0.012, 0.034, 0); s.quadraticCurveTo(0.03, -0.045, 0, -0.07); s.quadraticCurveTo(-0.03, -0.045, -0.034, 0);
+  const g = new THREE.ExtrudeGeometry(s, { depth: 0.01, bevelEnabled: true, bevelThickness: 0.004, bevelSize: 0.004, bevelSegments: 2 }); g.translate(0, 0, -0.005); return g;
+}
+
+class Dancer {
+  constructor(i, origin, lvl = 1) {
+    this.i = i; this.origin = origin; this.grp = new THREE.Group(); scene.add(this.grp);
+    this.hue = HUES[i % HUES.length];
+    this.mat = toon(new THREE.Color().setHSL(this.hue / 360, 0.85, 0.58));
+    this.bones = []; this.joints = [];
+    const mk = (geo, mat, par = this.grp) => { const m = new THREE.Mesh(geo, mat); par.add(m); return m; };
+    this.mk = mk;
+    const bone = (r, mat = this.mat) => { const b = { r, m: batchItem('c', mat), o: batchItem('c', OUTM) }; this.bones.push(b); return b; };
+    const joint = (r, mat = this.mat) => { const j = { r, m: batchItem('s', mat), o: batchItem('s', OUTM) }; this.joints.push(j); return j; };
+    this.bone = bone; this.joint = joint;
+    this.B = { torso: bone(0.062), clav: bone(0.045), hipb: bone(0.05) };
+    for (const k of ['L', 'R']) { this.B['ua' + k] = bone(0.043); this.B['fa' + k] = bone(0.04); this.B['th' + k] = bone(0.052); this.B['sh' + k] = bone(0.048); this.B['ft' + k] = bone(0.045); }
+    this.J = {};
+    for (const k of ['N', 'P']) this.J[k] = joint(0.062);
+    for (const k of ['L', 'R']) { this.J['sh' + k] = joint(0.045); this.J['el' + k] = joint(0.043); this.J['ha' + k] = joint(0.058); this.J['hip' + k] = joint(0.052);
+      this.J['kn' + k] = joint(0.052); this.J['an' + k] = joint(0.048); this.J['to' + k] = joint(0.045); }
+    // cabeza: todo lo que va en la cabeza cuelga de headG (se mueve y se aplasta junto con ella)
+    this.headG = new THREE.Group(); this.grp.add(this.headG);
+    this.head = { m: mk(SPH, this.mat, this.headG), o: mk(SPH, OUTM, this.headG) }; this.head.m.scale.setScalar(HEADR); this.head.o.scale.setScalar(HEADR + OL);
+    const eyeM = new THREE.MeshBasicMaterial({ color: 0x14090d });
+    this.eyes = [mk(SPH, eyeM, this.headG), mk(SPH, eyeM, this.headG)];
+    this.eyes[0].position.set(0.062, 0.035, HEADR * 0.9); this.eyes[1].position.set(-0.062, 0.035, HEADR * 0.9); this.eyes.forEach(e => e.scale.setScalar(0.024));
+    this.mouth = mk(new THREE.TorusGeometry(0.06, 0.013, 6, 14, PI), eyeM, this.headG); this.mouth.position.set(0, -0.02, HEADR * 0.93); this.mouth.quaternion.copy(qE(0.35, 0, PI));
+    this.guitar = makeGuitar(); this.grp.add(this.guitar);
+    this.shadow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false }));
+    this.shadow.rotation.x = -PI / 2; this.grp.add(this.shadow);
+    this.dance = 'basico'; this.prev = null; this.switchB = -9;
+    this.st = {}; this.lastB = null; this.lastY = null; this.lastV = 0;
+    this.buildProps(); this.setLevel(lvl);
+  }
+
+  /* ── accesorios por nivel ── */
+  buildProps() {
+    const H = this.headG, red = toon(0xe3122b), dark = toon(0x20151a);
+    this.mGlass = toon(0x0b0b0f); this.mGold = toon(0xffcf3a);
+    // bandana: cinta alrededor de la cabeza + dos puntas que cuelgan atrás (se mueven solas)
+    this.bandM = toon(0xe3122b);
+    this.band = new THREE.Group(); H.add(this.band);
+    const ring = new THREE.TorusGeometry(HEADR * 0.99, 0.03, 8, 28); ring.rotateX(PI / 2);
+    part(ring, this.bandM, this.band, 0, 0.105, 0, 1.0, 1.4, 1.0, 0.012);
+    part(SPH, this.bandM, this.band, 0, 0.1, -HEADR * 0.95, 0.035, 0.035, 0.03, 0.012);           // nudo
+    this.tails = [new Rope(4, 0.045), new Rope(4, 0.05)];
+    this.tailB = [[], []]; for (const t of [0, 1]) for (let k = 0; k < 3; k++) this.tailB[t].push(this.bone(0.016, this.bandM));
+    // lentes de sol
+    this.glasses = new THREE.Group(); H.add(this.glasses);
+    const box = new THREE.BoxGeometry(1, 1, 1);
+    for (const s of [1, -1]) { part(box, this.mGlass, this.glasses, s * 0.06, 0.035, HEADR * 0.96, 0.088, 0.052, 0.018, 0.012);
+      part(box, this.mGlass, this.glasses, s * 0.112, 0.045, HEADR * 0.55, 0.012, 0.012, 0.17, 0.006); }
+    part(box, this.mGlass, this.glasses, 0, 0.045, HEADR * 0.99, 0.04, 0.012, 0.012, 0.006);
+    // sombrero (fedora oscuro con cinta roja)
+    this.hat = new THREE.Group(); H.add(this.hat); this.hat.position.set(0, HEADR * 0.58, 0); this.hat.rotation.x = -0.12;
+    part(new THREE.CylinderGeometry(1, 1, 1, 32), dark, this.hat, 0, 0, 0, 0.29, 0.022, 0.29, 0.014);
+    part(new THREE.CylinderGeometry(0.85, 1, 1, 28), dark, this.hat, 0, 0.09, 0, 0.17, 0.17, 0.16, 0.014);
+    part(new THREE.CylinderGeometry(1, 1, 1, 28, 1, true), red, this.hat, 0, 0.035, 0, 0.176, 0.04, 0.166, 0.004);
+    // capa de tela
+    this.cloth = new Cloth(5, 8);
+    const cg = new THREE.BufferGeometry(), np = 5 * 8, idx = [], uv = [];
+    cg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(np * 3), 3));
+    for (let j = 0; j < 8; j++) for (let i = 0; i < 5; i++) { uv.push(i / 4, j / 7); if (i < 4 && j < 7) { const a = j * 5 + i; idx.push(a, a + 5, a + 1, a + 1, a + 5, a + 6); } }
+    cg.setIndex(idx); cg.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    this.capeM = new THREE.MeshToonMaterial({ color: 0xc2102a, gradientMap: grad, side: THREE.DoubleSide });
+    this.cape = this.mk(cg, this.capeM); this.cape.frustumCulled = false;
+    // cadena de oro con púa
+    this.chain = this.mk(new THREE.TorusGeometry(0.125, 0.011, 6, 36), this.mGold);
+    this.pendRope = new Rope(2, 0.05);
+    this.pick = new THREE.Group(); this.grp.add(this.pick);
+    part(pickShape(), red, this.pick, 0, 0, 0, 1, 1, 1, 0.0); const rim = new THREE.Mesh(pickShape(), new THREE.MeshBasicMaterial({ color: 0xffd54a, side: THREE.BackSide })); rim.scale.set(1.25, 1.18, 1.4); rim.position.y = 0.006; this.pick.add(rim);
+    part(SPH, this.mGold, this.pick, 0, 0.004, 0, 0.012, 0.012, 0.012, 0.004);
+    // fuego en los pies (partículas)
+    this.fireN = 90; this.fire = []; const fg = new THREE.BufferGeometry();
+    fg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(this.fireN * 3), 3)); fg.setAttribute('color', new THREE.BufferAttribute(new Float32Array(this.fireN * 3), 3));
+    this.flames = new THREE.Points(fg, new THREE.PointsMaterial(Object.assign({ map: flameTex, size: 0.6 * PSCALE, vertexColors: true, sizeAttenuation: true }, ADD)));
+    this.flames.frustumCulled = false; this.grp.add(this.flames);
+    for (let k = 0; k < this.fireN; k++) this.fire.push({ age: 9, life: 1, p: V(0, -9, 0), v: V() });
+    this.fireAcc = 0;
+    // aura: brillo detrás del cuerpo + anillos de energía
+    this.aura = new THREE.Sprite(new THREE.SpriteMaterial(Object.assign({ map: glowTex, opacity: 0.5 }, ADD))); this.grp.add(this.aura);
+    this.rings = [0, 1].map(k => { const m = new THREE.Mesh(new THREE.TorusGeometry(0.5 - 0.06 * k, 0.012, 6, 40, 2.3), new THREE.MeshBasicMaterial(Object.assign({ opacity: 0.85 }, ADD))); this.grp.add(m); return m; });
+    // aureola
+    this.halo = new THREE.Group(); H.add(this.halo);
+    const hr = new THREE.TorusGeometry(0.125, 0.017, 8, 36); hr.rotateX(PI / 2);
+    this.haloM = new THREE.MeshBasicMaterial({ color: 0xffe27a }); this.halo.add(new THREE.Mesh(hr, this.haloM));
+    this.haloGlow = new THREE.Sprite(new THREE.SpriteMaterial(Object.assign({ map: glowTex, color: 0xffe27a, opacity: 0.55 }, ADD))); this.haloGlow.scale.set(0.5, 0.25, 1); this.halo.add(this.haloGlow);
+    // foco propio (leyenda): cono de luz desde arriba + círculo de luz en el piso
+    this.spot = new THREE.Group(); this.grp.add(this.spot);
+    const cone = new THREE.ConeGeometry(0.85, 3.6, 40, 1, true); cone.translate(0, 1.8, 0);
+    this.spotM = new THREE.MeshBasicMaterial(Object.assign({ map: beamTex, side: THREE.DoubleSide, opacity: 0.32 }, ADD));
+    this.spot.add(new THREE.Mesh(cone, this.spotM));
+    const pool = new THREE.Mesh(new THREE.CircleGeometry(0.9, 40), new THREE.MeshBasicMaterial(Object.assign({ map: glowTex, opacity: 0.4 }, ADD))); pool.rotation.x = -PI / 2; pool.position.y = 0.004;
+    this.poolM = pool.material; this.spot.add(pool);
+    // audífonos (el arco se esconde si hay sombrero)
+    this.phones = new THREE.Group(); H.add(this.phones); this.phBand = new THREE.Group(); this.phones.add(this.phBand);
+    const phM = toon(0x18121a);
+    part(new THREE.TorusGeometry(HEADR * 1.1, 0.017, 6, 24, PI), phM, this.phBand, 0, 0.0, 0, 1, 1, 1, 0.01);
+    for (const sd of [1, -1]) { const cup = new THREE.CylinderGeometry(1, 1, 1, 20); cup.rotateZ(PI / 2);
+      part(cup, phM, this.phones, sd * HEADR * 1.02, 0, 0, 0.055, 0.068, 0.068, 0.012); part(cup, red, this.phones, sd * HEADR * 1.13, 0, 0, 0.02, 0.045, 0.045, 0.008); }
+    // zapatillas con luces: pies blancos y suela que cambia de color con el ritmo
+    this.shoeM = toon(0xf4f4f4);
+    this.soles = [0, 1].map(() => { const sp = new THREE.Sprite(new THREE.SpriteMaterial(Object.assign({ map: glowTex, opacity: 0.9 }, ADD))); sp.scale.set(0.32, 0.16, 1); this.grp.add(sp); return sp; });
+    // notas musicales que salen flotando
+    this.notes = [];
+    for (let k = 0; k < 8; k++) { const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: noteTex[k % 2], transparent: true, depthWrite: false })); sp.scale.setScalar(0.2); sp.visible = false; this.grp.add(sp);
+      this.notes.push({ sp, age: 9, life: 1.6, p: V(), vx: 0 }); }
+    this.noteBeat = -1;
+    // estela de colores detrás de las manos
+    this.trails = [0, 1].map(() => { const g = new THREE.BufferGeometry(), n = 16;
+      g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3)); g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+      const pt = new THREE.Points(g, new THREE.PointsMaterial(Object.assign({ map: glowTex, size: 0.2 * PSCALE, vertexColors: true }, ADD))); pt.frustumCulled = false; this.grp.add(pt);
+      return { pt, hist: [] }; });
+    // rayos alrededor del cuerpo
+    this.boltM = new THREE.MeshBasicMaterial(Object.assign({ color: 0x9fe8ff, opacity: 1 }, ADD));
+    this.bolts = [0, 1].map(() => Array.from({ length: 6 }, () => { const m = this.mk(CYL, this.boltM); m.visible = false; return m; }));
+    this.boltBeat = -1;
+    // paracaídas (lo usa la vista de overlay)
+    const dome = new THREE.SphereGeometry(0.85, 16, 6, 0, TAU, 0, PI * 0.42), dc = [], dp = dome.attributes.position;
+    for (let k = 0; k < dp.count; k++) { const a = Math.atan2(dp.getZ(k), dp.getX(k)) + PI, st2 = Math.floor(a / (TAU / 12)) % 2; const c = new THREE.Color(st2 ? 0xffffff : 0xe3122b); dc.push(c.r, c.g, c.b); }
+    dome.setAttribute('color', new THREE.Float32BufferAttribute(dc, 3));
+    this.chuteG = new THREE.Group(); this.grp.add(this.chuteG); this.chuteG.visible = false;
+    const dm = new THREE.Mesh(dome, new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: grad, side: THREE.DoubleSide, transparent: true }));
+    const dmo = new THREE.Mesh(dome, OUTM); dmo.scale.setScalar(1.025); this.chuteG.add(dmo); this.chuteG.add(dm); this.domeM = dm.material;
+    this.chuteLines = [0, 1, 2, 3].map(() => this.mk(CYL, new THREE.MeshBasicMaterial({ color: 0xffffff })));
+    this.chuteLines.forEach(m => m.visible = false); this.chute = null;
+  }
+  setLevel(l) {
+    this.lvl = l = clamp(Math.round(l), 1, LVM.max); const has = k => l >= LVM[k];
+    this.band.visible = has('band'); this.tailB.flat().forEach(b => { b.m.visible = b.o.visible = has('band'); });
+    this.bandM.color.set(has('hat') ? 0x111111 : 0xe3122b);
+    this.glasses.visible = has('glasses'); this.mGlass.color.set(has('chain') ? 0xe8b020 : 0x0b0b0f);
+    this.phones.visible = has('phones'); this.phBand.visible = !has('hat');
+    this.hat.visible = has('hat'); this.eyes.forEach(e => e.visible = !has('glasses'));
+    const sm = has('shoes') ? this.shoeM : this.mat;
+    for (const k of ['L', 'R']) { this.B['ft' + k].m.material = sm; this.J['to' + k].m.material = sm; this.J['an' + k].m.material = sm; }
+    this.soles.forEach(sp => sp.visible = has('shoes'));
+    this.cape.visible = has('cape'); this.cloth.ok = false;
+    this.chain.visible = this.pick.visible = has('chain');
+    this.notes.forEach(n => { n.sp.visible = false; n.age = 9; });
+    this.trails.forEach(tr => { tr.pt.visible = has('trail'); tr.hist = []; });
+    this.flames.visible = has('fire'); this.aura.visible = has('aura'); this.rings.forEach(r => r.visible = has('aura'));
+    this.bolts.flat().forEach(m => m.visible = false);
+    this.halo.visible = has('gold'); this.halo.position.set(0, HEADR + (has('hat') ? 0.3 : 0.12), 0);
+    this.spot.visible = has('legend');
+    if (!has('gold')) { if (this.grey) this.mat.color.set(0xbdbdbd); else this.mat.color.setHSL(this.hue / 360, 0.85, 0.58); }
+  }
+  recolor(i) { this.i = i; this.hue = HUES[i % HUES.length]; this.mat.color.setHSL(this.hue / 360, 0.85, 0.58); }
+  setLook(hue, grey) { this.hue = hue; this.grey = grey; if (!(this.lvl >= LVM.gold)) { if (grey) this.mat.color.set(0xbdbdbd); else this.mat.color.setHSL(hue / 360, 0.85, 0.58); } }
+  // reacción a un golpe en la cabeza (los resortes hacen el rebote)
+  bump(k = 1) { const st = this.st; if (st.nod) st.nod.v += 10 * k; if (st.sq) st.sq.v += 4 * k; if (st.tilt) st.tilt.v += (Math.random() - 0.5) * 10 * k; }
+  setAct(fn, instant) { this.actFn = fn; this.actOn = true; if (instant) this.actW = 1; }
+  endAct() { this.actOn = false; }
+  resetPhysics() { this.st = {}; this.lastB = null; this.lastY = null; this.cloth.ok = false; this.tails.forEach(r => r.p = []); this.pendRope.p = []; this.trails.forEach(t => t.hist = []); }
+
+  setBone(b, a, c) {
+    const d = c.clone().sub(a), len = d.length(), mid = a.clone().add(c).multiplyScalar(0.5);
+    const q = new THREE.Quaternion().setFromUnitVectors(V(0, 1, 0), len > 1e-6 ? d.divideScalar(len) : V(0, 1, 0));
+    for (const [m, r] of [[b.m, b.r], [b.o, b.r + OL]]) { m.position.copy(mid); m.quaternion.copy(q); m.scale.set(r, len, r); }
+  }
+  setJoint(j, pos) { j.m.position.copy(pos); j.m.scale.setScalar(j.r); j.o.position.copy(pos); j.o.scale.setScalar(j.r + OL); }
+
+  sample(b) {                                         // pose del baile, con mezcla suave de un tiempo entero al cambiar de baile
+    const bb = b + 64, t = (b - this.switchB) / 1.0;                              // +64 tiempos: nunca negativo (mismo compás)
+    let p = DANCE[this.dance](bb);
+    if (this.prev && t < 1) p = mixPose(DANCE[this.prev](bb), p, ease(clamp(t, 0, 1)));
+    if (this.actFn && this.actW > 0) p = mixPose(p, this.actFn(b), ease(this.actW));    // acción (caminar, trepar, patear…) encima del baile
+    return p;
+  }
+  // la capa de movimiento: cadera a tiempo, pecho/brazos/cabeza un poquito después y con resortes
+  animate(b) {
+    const dt = this.lastB === null ? 0 : (b - this.lastB) / BPS; this.lastB = b;
+    if (this.actFn) { this.actW = clamp((this.actW || 0) + (this.actOn ? 1 : -1) * dt / 0.3, 0, 1); if (!this.actOn && this.actW === 0) this.actFn = null; }
+    const p = this.sample(b), pc = this.sample(b - LAG.chest), pa = this.sample(b - LAG.arms), ph = this.sample(b - LAG.head), st = this.st;
+    p.lean = spring(st, 'lean', pc.lean, dt, 4.5, 0.6); p.roll = spring(st, 'roll', pc.roll, dt, 4.5, 0.6); p.twist = spring(st, 'twist', pc.twist, dt, 4.5, 0.6);
+    p.nod = spring(st, 'nod', ph.nod, dt, 3.2, 0.42); p.turn = spring(st, 'turn', ph.turn, dt, 3.6, 0.5); p.tilt = spring(st, 'tilt', ph.tilt, dt, 3.2, 0.42);
+    for (const k of ['hL', 'hR']) p[k] = pa[k].map((v, n) => spring(st, k + n, v, dt, 5, 0.62));
+    // aplastar y estirar según la aceleración vertical de la cadera
+    const y = STAND + p.py; let a = 0;
+    if (dt > 0 && dt < 0.25 && this.lastY !== null) { const v = (y - this.lastY) / dt; a = (v - this.lastV) / dt; this.lastV = v; } else this.lastV = 0;
+    this.lastY = y;
+    p.sq = spring(st, 'sq', clamp(a * 0.009, -0.14, 0.16), dt, 6, 0.45);
+    this.dt = dt; this.t = b / BPS;
+    return p;
+  }
+
+  draw(p) {
+    const S = solve(p, this.origin), B = this.B, J = this.J, dt = this.dt || 0, t = this.t || 0; this.S = S; this.lastP = p;
+    this.setBone(B.torso, S.P, S.N); this.setBone(B.clav, S.shL, S.shR); this.setBone(B.hipb, S.hipL, S.hipR);
+    for (const k of ['L', 'R']) {
+      this.setBone(B['ua' + k], S['sh' + k], S['el' + k]); this.setBone(B['fa' + k], S['el' + k], S['ha' + k]);
+      this.setBone(B['th' + k], S['hip' + k], S['kn' + k]); this.setBone(B['sh' + k], S['kn' + k], S['an' + k]); this.setBone(B['ft' + k], S['an' + k], S['to' + k]);
+      for (const n of ['sh', 'el', 'ha', 'hip', 'kn', 'an', 'to']) this.setJoint(J[n + k], S[n + k]);
+    }
+    this.setJoint(J.N, S.N); this.setJoint(J.P, S.P);
+    // cabeza (se aplasta un poco más que el cuerpo: se nota más el rebote)
+    this.headG.position.copy(S.H); this.headG.quaternion.copy(S.headQ);
+    const sq = S.sq; this.headG.scale.set(1 + 0.45 * sq, 1 - 0.8 * sq, 1 + 0.45 * sq);
+    // guitarra
+    this.guitar.visible = !!S.GF;
+    if (S.GF) { const F = S.GF;
+      this.guitar.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(F.nd, F.yv, F.n)); this.guitar.position.copy(F.G);
+      this.guitar.scale.setScalar(clamp(p.guitar, 0, 1)); }
+    // sombra
+    const h = Math.max(0, Math.min(S.anL.y, S.anR.y) - ANK);
+    this.shadow.position.set((S.anL.x + S.anR.x) / 2, 0.002, (S.anL.z + S.anR.z) / 2);
+    this.shadow.scale.setScalar(0.85 * (1 - 0.5 * clamp(h / 0.6, 0, 1)));
+    this.drawProps(S, dt, t);
+  }
+
+  drawProps(S, dt, t) {
+    const l = this.lvl, fwd = V(0, 0, 1).applyQuaternion(S.chestQ), up = V(0, 1, 0).applyQuaternion(S.chestQ), left = V(1, 0, 0).applyQuaternion(S.chestQ);
+    const has = k => l >= LVM[k], hueNow = has('legend') ? (t * 0.39 + this.hue / 360) % 1 : null;
+    if (has('legend')) this.mat.color.setHSL(hueNow, 0.95, 0.6);
+    else if (has('gold')) this.mat.color.setHSL(45 / 360, 0.95, 0.56 + 0.08 * Math.sin(t * 4));
+    const headCol = (pt, r) => { const d = pt.clone().sub(S.H), L = d.length(); if (L < r) pt.copy(S.H).addScaledVector(d.divideScalar(L || 1), r); };
+    // puntas de la bandana
+    if (has('band')) {
+      const sway = V(Math.sin(t * 7) * 1.5, 0, Math.cos(t * 5) * 1.2);
+      for (const k of [0, 1]) {
+        const anchor = S.H.clone().add(V((k ? -0.022 : 0.022) * (1 + 0.5 * S.sq), 0.095, -HEADR * 0.97).applyQuaternion(S.headQ));
+        this.tails[k].step(anchor, dt, pt => headCol(pt, HEADR + 0.02), sway);
+        const P = this.tails[k].p; if (P.length) for (let s = 0; s < 3; s++) this.setBone(this.tailB[k][s], P[s], P[s + 1]);
+      }
+    }
+    // capa: va de hombro a hombro por la espalda y choca con el cuerpo
+    if (has('cape')) {
+      const back = fwd.clone().multiplyScalar(-1), pins = [];
+      for (let i = 0; i < 5; i++) { const u = i / 4; pins.push(S.shR.clone().lerp(S.shL, u).addScaledVector(left, (u - 0.5) * 0.08).addScaledVector(back, 0.075 + 0.02 * Math.sin(PI * u)).addScaledVector(up, 0.02)); }
+      const col = [[S.P, S.N, 0.11], [S.hipL, S.hipR, 0.1], [S.hipL, S.knL, 0.085], [S.hipR, S.knR, 0.085], [S.knL, S.anL, 0.07], [S.knR, S.anR, 0.07],
+        [S.shL, S.elL, 0.065], [S.shR, S.elR, 0.065], [S.shL, S.shR, 0.08]];
+      const wind = back.clone().multiplyScalar(0.6 + 0.4 * Math.sin(t * 2.3)).add(V(Math.sin(t * 1.7) * 0.4, 0, 0));
+      this.cloth.step(pins, dt, col, V(0, -1, 0), wind);
+      const pos = this.cape.geometry.attributes.position; this.cloth.p.forEach((q, k) => pos.setXYZ(k, q.x, q.y, q.z));
+      pos.needsUpdate = true; this.cape.geometry.computeVertexNormals(); this.cape.geometry.computeBoundingSphere();
+    }
+    // cadena y púa (la púa cuelga y se balancea delante del pecho)
+    if (has('chain')) {
+      const cc = S.N.clone().addScaledVector(up, -0.045);
+      this.chain.position.copy(cc); this.chain.quaternion.copy(S.chestQ).multiply(qE(PI / 2 + 0.5, 0, 0));
+      const anchor = cc.clone().addScaledVector(up, -0.06).addScaledVector(fwd, 0.105);
+      this.pendRope.step(anchor, dt, pt => pushCapsule(pt, S.P, S.N, 0.062 + 0.035));
+      const end = this.pendRope.p[1] || anchor.clone().addScaledVector(up, -0.05);
+      const y = anchor.clone().sub(end).normalize(), z = fwd.clone().addScaledVector(y, -fwd.dot(y)).normalize(), x = y.clone().cross(z);
+      this.pick.position.copy(end).addScaledVector(y, 0.008); this.pick.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+    }
+    // fuego en los pies
+    if (has('fire')) {
+      const pos = this.flames.geometry.attributes.position, colA = this.flames.geometry.attributes.color;
+      this.fireAcc += dt * 95;
+      for (const f of this.fire) {
+        if (f.age >= f.life && this.fireAcc >= 1) { this.fireAcc -= 1; const a = Math.random() < 0.5 ? S.anL : S.anR;
+          f.p.copy(a).add(V((Math.random() - 0.5) * 0.14, -0.03, (Math.random() - 0.5) * 0.14)); f.v.set((Math.random() - 0.5) * 0.15, 0.5 + Math.random() * 0.5, (Math.random() - 0.5) * 0.15);
+          f.age = 0; f.life = 0.45 + Math.random() * 0.35; }
+        f.age += dt; f.p.addScaledVector(f.v, dt); f.v.x *= 0.96;
+      }
+      const c = new THREE.Color();
+      this.fire.forEach((f, k) => { const q = clamp(f.age / f.life, 0, 1), alive = f.age < f.life;
+        pos.setXYZ(k, f.p.x, alive ? f.p.y : -9, f.p.z);
+        if (hueNow !== null) c.setHSL((hueNow + q * 0.3) % 1, 1, 0.55 * (1 - q)); else c.setRGB(1.0 * (1 - q * 0.6), (0.85 - 0.75 * q) * (1 - q * 0.5), 0.35 * (1 - q) ** 3).multiplyScalar(1 - q * 0.7);
+        colA.setXYZ(k, c.r, c.g, c.b); });
+      pos.needsUpdate = colA.needsUpdate = true;
+    }
+    // aura y anillos
+    if (has('aura')) {
+      const c = new THREE.Color(); if (hueNow !== null) c.setHSL(hueNow, 1, 0.6); else if (has('gold')) c.setHSL(45 / 360, 1, 0.6); else c.setHSL(this.hue / 360, 1, 0.6);
+      const pulse = 1 + 0.07 * Math.sin(t * 5), mid = S.P.clone().addScaledVector(up, 0.25);
+      this.aura.position.copy(mid); this.aura.scale.set(1.6 * pulse, 2.5 * pulse, 1); this.aura.material.color.copy(c);
+      this.rings.forEach((r, k) => { r.position.copy(mid); r.rotation.set(1.25 + 0.15 * k, (k ? -2.4 : 3) * t, 0.2 * Math.sin(t + k)); r.material.color.copy(c).offsetHSL(0.08, 0, 0.15); });
+    }
+    if (has('gold')) { const k = 0.8 + 0.2 * Math.sin(t * 5); this.haloM.color.setRGB(k, k * 0.89, k * 0.48); this.halo.position.y = HEADR + (has('hat') ? 0.3 : 0.12) + 0.015 * Math.sin(t * 3); }
+    if (has('legend')) { this.spot.position.set(S.P.x, 0, S.P.z); this.spotM.color.setHSL(hueNow, 1, 0.55); this.poolM.color.setHSL(hueNow, 1, 0.55); }
+    const beat = this.lastB || 0, bi = Math.floor(beat);
+    // zapatillas: la suela brilla y cambia de color en cada tiempo
+    if (has('shoes')) [['L', 0], ['R', 1]].forEach(([k, n]) => { const sp = this.soles[n]; sp.position.copy(S['an' + k]).lerp(S['to' + k], 0.5).add(V(0, -0.03, 0));
+      sp.material.color.setHSL(fr(bi * 0.17 + n * 0.5), 1, 0.55); sp.material.opacity = 0.45 + 0.5 * onBeat(beat); });
+    // notas musicales: una sale en cada tiempo y sube flotando
+    if (has('notes')) {
+      if (bi !== this.noteBeat) { this.noteBeat = bi; const n = this.notes.find(x => x.age >= x.life);
+        if (n) { const sd = bi % 2 ? 1 : -1; n.p.copy(S.H).add(V(sd * 0.3, 0.05, 0)); n.vx = sd * 0.12; n.age = 0; n.life = 1.6; n.sp.visible = true; n.sp.material.color.setHSL(fr(this.hue / 360 + bi * 0.13), 0.9, 0.75); } }
+      for (const n of this.notes) { if (n.age >= n.life) { n.sp.visible = false; continue; } n.age += dt; n.p.y += 0.45 * dt; n.p.x += (n.vx + 0.15 * Math.sin(n.age * 6)) * dt;
+        n.sp.position.copy(n.p); n.sp.material.opacity = 1 - sstep(0.6, 1, n.age / n.life); n.sp.scale.setScalar(0.16 + 0.06 * Math.min(1, n.age * 4)); }
+    }
+    // estela: guarda las últimas posiciones de cada mano
+    if (has('trail')) this.trails.forEach((tr, n) => { const hp = n ? S.haR : S.haL; tr.hist.unshift(hp.clone()); if (tr.hist.length > 16) tr.hist.pop();
+      const pos = tr.pt.geometry.attributes.position, col = tr.pt.geometry.attributes.color, c = new THREE.Color();
+      for (let k = 0; k < 16; k++) { const q = tr.hist[Math.min(k, tr.hist.length - 1)]; pos.setXYZ(k, q.x, q.y, q.z); c.setHSL(fr(t * 0.6 + k * 0.05 + n * 0.5), 1, 0.55 * (1 - k / 16)); col.setXYZ(k, c.r, c.g, c.b); }
+      pos.needsUpdate = col.needsUpdate = true; });
+    // rayos: en cada tiempo nace uno nuevo que se apaga rápido
+    if (has('bolts')) {
+      if (bi !== this.boltBeat) { this.boltBeat = bi; const bolt = this.bolts[bi % 2], sd = bi % 2 ? 1 : -1;
+        let a = S.H.clone().add(V(sd * (0.25 + Math.random() * 0.2), 0.35 + Math.random() * 0.2, (Math.random() - 0.5) * 0.3)); const end = S.P.clone().add(V(sd * (0.35 + Math.random() * 0.15), -0.5 - Math.random() * 0.3, (Math.random() - 0.5) * 0.3));
+        bolt.forEach((m, k) => { const c = a.clone().lerp(end, (k + 1) / 6).add(k < 5 ? V((Math.random() - 0.5) * 0.16, 0, (Math.random() - 0.5) * 0.16) : V()); setSeg(m, a, c, 0.02); m.visible = true; a = c; }); }
+      const f = fr(beat); this.boltM.opacity = Math.max(0, 1 - f * 3.5); this.boltM.color.setHSL(hueNow !== null ? hueNow : 0.53, 1, 0.75);
+    }
+    // paracaídas
+    if (this.chute) { const c = this.chute; this.chuteG.visible = true;
+      if (!c.down) c.pos = S.P.clone().add(V(Math.sin(c.sway) * 1.3, 1.3 * Math.cos(c.sway) + 0.1, 0));
+      else { c.cl = Math.min(1, (c.cl || 0) + dt / 1.0); c.pos.y = Math.max(0.12, c.pos.y - dt * 1.3); c.pos.x += c.dir * dt * 0.6; }
+      const sc = backOut(clamp(c.s, 0, 1)), cl = c.cl || 0;
+      this.chuteG.position.copy(c.pos); this.chuteG.rotation.set(0, 0, -c.sway * 0.8 + c.dir * cl * 1.2); this.chuteG.scale.set(sc * (1 + 0.15 * cl), sc * (1 - 0.85 * cl), sc * (1 + 0.15 * cl));
+      this.domeM.opacity = 1 - sstep(0.6, 1, cl);
+      const rim = [V(0.8, 0.12, 0), V(-0.8, 0.12, 0), V(0, 0.12, 0.8), V(0, 0.12, -0.8)];
+      this.chuteLines.forEach((m, k) => { m.visible = !c.down && sc > 0.2; if (!m.visible) return; const r = rim[k].multiply(this.chuteG.scale).applyEuler(this.chuteG.rotation).add(c.pos); setSeg(m, r, k % 2 ? S.shR : S.shL, 0.006); });
+      if (cl >= 1) { this.chute = null; this.chuteG.visible = false; }
+    } else this.chuteG.visible = false;
+  }
+  setDance(d, b) { if (d === this.dance) return; this.prev = this.dance; this.dance = d; this.switchB = b; }
+}
+
+/* ════════════════ ESCENA / GALERÍA ════════════════ */
+const ui = document.getElementById('ui'), uctx = ui.getContext('2d'); ui.width = W; ui.height = H;
+const dancers = [];
+let cam, cells = [];
+let t0 = performance.now() / 1000;
+const beatNow = () => (performance.now() / 1000 - t0) * BPS;
+const LVL_DEMO = LVM.max === 15 ? [15, 10, 7, 4, 13, 2, 8, 11] : [10, 7, 5, 3, 9, 2, 6, 4];
+const OVL = true, LIVE = true, FRONT_Z = 0.45;          // lo más adelante que llega algo en el piso (regalos)
+
+if (GAL) {
+  const LVD = ['basico', 'disco', 'cumbia', 'twist', 'giro', 'caporal', 'charleston', 'runningman', 'tinku', 'robot', 'morenada', 'guitarra', 'shuffle', 'salto'];
+  const list = GMODE === 'niveles' ? Array.from({ length: LVM.max - 1 }, (_, k) => [k + 2, LVD[k % LVD.length]]) : ORDER.map(d => [1, d]);
+  const cols = list.length > 12 ? 4 : 3, rows = Math.ceil(list.length / cols), cw = W / cols, ch = Math.min(480, Math.floor(H / rows)), oy = Math.round((H - rows * ch) / 2);
+  list.forEach(([lv, d], i) => { const dn = new Dancer(i, V(i * 30, 0, 0), lv); dn.dance = d; dancers.push(dn);
+    const c = new THREE.PerspectiveCamera(30, cw / ch, 0.1, 100), az = num('az', GMODE === 'niveles' ? 0.65 : 0.5);
+    c.position.set(i * 30 + Math.sin(az) * 6.4, 1.85, Math.cos(az) * 6.4); c.lookAt(i * 30, 1.0, 0);
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(0.95, 40), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12, depthWrite: false }));
+    disc.rotation.x = -PI / 2; disc.position.set(i * 30, 0.001, 0); scene.add(disc);
+    cells.push({ cam: c, x: (i % cols) * cw, y: oy + Math.floor(i / cols) * ch, w: cw, h: ch, label: GMODE === 'niveles' ? `Nv${lv} · ${LVNAME[lv]}` : NAME[d] }); });
+  const fs = Math.round(30 * Math.min(1, cw / 330));
+  uctx.font = `800 ${fs}px system-ui, Arial`; uctx.textAlign = "center"; uctx.lineJoin = "round";
+  cells.forEach(c => { uctx.font = `800 ${fs}px system-ui, Arial`; const wT = uctx.measureText(c.label).width; if (wT > c.w - 20) uctx.font = `800 ${Math.floor(fs * (c.w - 20) / wT)}px system-ui, Arial`; uctx.lineWidth = 6; uctx.strokeStyle = 'rgba(0,0,0,0.55)'; uctx.strokeText(c.label, c.x + c.w / 2, c.y + fs + 14); uctx.fillStyle = '#fff'; uctx.fillText(c.label, c.x + c.w / 2, c.y + fs + 14);
+    uctx.strokeStyle = 'rgba(255,255,255,0.18)'; uctx.lineWidth = 2; uctx.strokeRect(c.x + 4, c.y + 4, c.w - 8, c.h - 8); });
+} else {
+  const N = clamp(Math.round(num('max', 8)), 1, 10), gap = 1.75, lv = Q.get('nivel');
+  for (let i = 0; i < N; i++) dancers.push(new Dancer(i, V((i - (N - 1) / 2) * gap, 0, (i % 2) * -0.6), lv ? num('nivel', 1) : LVL_DEMO[i]));
+  if (OVL) dancers.forEach(d => { d.slotX = d.origin.x; d.grp.visible = false; d.job = { k: 'fuera', b0: -99 }; });
+  const span = Math.max(4.5, N * gap + 1), D = span / 2 / (Math.tan(11 * PI / 180) * (W / H)) / num('escala', 1), cy = num('altura', 3);
+  cam = new THREE.PerspectiveCamera(22, W / H, 0.1, 400); cam.position.set(0, cy, D);
+  let ly = D * 0.18; const target = -(num('piso', 1914) / 1920 * 2 - 1);      // el borde de adelante del piso pegado al borde de abajo de la pantalla (?piso= en px)
+  for (let k = 0; k < 30; k++) { cam.lookAt(0, ly, 0); cam.updateMatrixWorld(); const v = V(0, 0, FRONT_Z).project(cam); ly += (v.y - target) * D * 0.2; }
+}
+
+// qué baila cada uno: rota cada 8 tiempos (o fijo con ?baile=)
+let fixed = ORDER.includes(Q.get('baile')) ? Q.get('baile') : null, mezcla = Q.get('mezcla') !== '0', lastBar = -1;
+function choreo(b) {
+  if (GAL) return;
+  const bar = Math.floor(b / 8);
+  if (bar === lastBar && !choreo.dirty) return; lastBar = bar; choreo.dirty = false;
+  dancers.forEach((dn, i) => { const p = dn.person, low = p && !p.forever && p.energy < 12;
+    dn.setDance(fiestaDance(b) || fixed || (low ? 'basico' : ORDER[(bar + (mezcla ? i * 3 + (p ? p.hue % 5 : 0) : 0)) % ORDER.length]), b); });
+}
+
+/* ════════════════ VISTA DE OVERLAY: entradas, regalos, patadas, trepar, paracaídas, choque de manos ════════════════ */
+const WALK_V = 0.95, CLIMB_V = 0.5 * BPS;                    // m/s (un paso por tiempo, sin patinar)
+function walkPose(b, dir) {
+  const p = base(), ph = b / 2, S = WALK_V / BPS;                // largo de paso = lo que avanza el cuerpo en un tiempo
+  const foot = o => { const f = fr(ph + o); if (f < 0.5) return [0.1, 0, S / 2 - S * (f / 0.5)]; const q = (f - 0.5) / 0.5; return [0.1, 0.13 * Math.sin(PI * q), -S / 2 + S * ease(q)]; };
+  p.yaw = dir * PI / 2; p.fL = foot(0); p.fR = foot(0.5);
+  const sw = Math.sin(TAU * ph);
+  p.py = -0.04 - 0.05 * onBeat(b); p.lean = 0.08; p.hipYaw = 0.12 * sw; p.twist = -0.25 * sw; p.nod = 0.08 * onBeat(b); p.turn = -dir * 0.75;   // camina con estilo mirando al público
+  p.hL = swingArm(0.55 * sw, 0.08, 0.5); p.hR = swingArm(-0.55 * sw, 0.08, 0.5);
+  return p;
+}
+function climbPose(b, side) {
+  const p = base(), s = fr(b), k = Math.floor(b + 64) % 2;
+  p.yaw = side * PI / 2; p.py = -0.28; p.lean = 0.05; p.nod = -0.35;
+  const hold = [0.12, lerp(0.45, 0.0, s), 0.27], reach = [0.12, lerp(0.0, 0.45, ease(s)), 0.27 - 0.1 * Math.sin(PI * s)];
+  p.hL = k ? reach : hold; p.hR = k ? hold : reach;
+  const fh = [0.12, lerp(0.55, 0.1, s), 0.3], fu = [0.12, lerp(0.1, 0.55, ease(s)), 0.3 - 0.1 * Math.sin(PI * s)];
+  p.fL = k ? fh : fu; p.fR = k ? fu : fh;
+  return p;
+}
+const gifts = [], sparks = [];
+// ACOMODAR REGALOS: cuando hay ?limpiar= (12) o más regalos quietos en el piso, los muñecos que están libres los recogen
+// y se los llevan caminando fuera de la pantalla, o los lanzan fuera de un tirón. Siguen hasta que quedan ~5 menos.
+const G_LIFE = num('vida', 60), TIDY_AT = Math.max(2, Math.round(num('limpiar', 12)));
+let tidyOn = false;
+const holdOut = r => clamp(r * 0.95 - 0.16, -0.1, 0.3);                     // manos a los costados del regalo
+const holdHands = (r, big) => big ? [holdOut(r), 0.5, 0.06] : [holdOut(r), -0.16, 0.34];
+function pickPose(side, c, r) {                            // agacharse a recoger (c = cuánto está agachado, 0..1)
+  const p = base(); p.yaw = side * PI / 2; p.py = -0.34 * c; p.lean = 0.04 + 0.6 * c; p.nod = 0.35 * c; p.turn = 0;
+  p.fL = [0.12, 0, 0.13 * c]; p.fR = [0.12, 0, -0.12 * c];
+  const h = [holdOut(r), -0.52, 0.4]; p.hL = lerp3(p.hL, h, c); p.hR = lerp3(p.hR, h, c); return p;
+}
+function carryPose(b, dir, r, big) {                       // caminar llevando el regalo (adelante, o arriba de la cabeza si es grande)
+  const p = walkPose(b, dir), h = holdHands(r, big); p.hL = h; p.hR = h; p.twist *= 0.3; p.hipYaw *= 0.5; p.turn = -dir * 0.45; p.lean = big ? -0.04 : 0.12; return p;
+}
+/* REGALOS LANZADOS como en Rosas 7: salen desde abajo (el celular del espectador), enormes cerca de la cámara, hacen un arco
+   girando como ficha y caen sobre la escena. El tamaño va en metros para que choquen con los muñecos: una rosa (1 moneda)
+   mide como una cabeza y los caros crecen igual que en Rosas 7 (1 + 0,45·log10(monedas), hasta ×2,8). ?regalo= multiplica. */
+const GSZ = num('regalo', 1), G_R1 = 0.17 * GSZ, G_MAX = 2.8, G_TH = 0.22, G_LAYERS = 4, G_NEAR = num('cerca', 14), G_GHOSTS = 3, G_MAXN = clamp(Math.round(num('maxregalos', 40)), 5, 120);
+const GIFT_DEMO = [[1, '🌹', 34], [5, '💖', 12], [10, '🍩', 10], [30, '🎸', 8], [99, 'img/sombrero.png', 10], [199, 'img/amplificado.png', 6], [500, 'img/pistola.png', 4], [1000, 'img/galaxia.png', 3]];
+const GIFT_W = GIFT_DEMO.reduce((s, g) => s + g[2], 0);
+const gTex = new Map(), gPlane = new THREE.PlaneGeometry(2, 2);
+function giftMats(src) {                                   // cara, canto y reverso (se arman una vez por imagen)
+  if (gTex.has(src)) return gTex.get(src);
+  let tex;
+  if (src.length <= 3) { const c = document.createElement('canvas'); c.width = c.height = 128; const x = c.getContext('2d');
+    x.font = '100px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(src, 64, 70);
+    tex = new THREE.CanvasTexture(c); }
+  else { tex = new THREE.TextureLoader().load(src, undefined, undefined, () => {      // si TikTok no deja usar la imagen: un regalo genérico
+      const c = document.createElement('canvas'); c.width = c.height = 128; const x = c.getContext('2d');
+      x.font = '100px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText('🎁', 64, 70);
+      tex.image = c; tex.needsUpdate = true; }); }
+  tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+  const mk = (col, side) => new THREE.MeshBasicMaterial({ map: tex, color: col, alphaTest: 0.45, side, transparent: false });
+  const m = { face: mk(0xffffff, THREE.FrontSide), back: mk(0x9f97ad, THREE.FrontSide), edge: mk(0x5b4232, THREE.DoubleSide),
+    ghost: [1, 2, 3].map(k => new THREE.SpriteMaterial({ map: tex, transparent: true, opacity: 0.12 * (4 - k), depthWrite: false })) };   // estela (motion blur) de Rosas 7
+  gTex.set(src, m); return m;
+}
+const rndGift = () => { let k = Math.random() * GIFT_W; for (const g of GIFT_DEMO) if ((k -= g[2]) < 0) return g; return GIFT_DEMO[0]; };
+const gSize = coins => G_R1 * Math.min(G_MAX, 1 + 0.45 * Math.log10(Math.max(1, coins))) * (0.9 + Math.random() * 0.2);
+let bounds = null, lastOB = null, nextGift = 4, nextEvent = 10, nameOf = ['Mari', 'Don Lucho', 'Rosita', 'Jhonny', 'La Pao', 'Ceci', 'Wilmer', 'Pame', 'Kathy', 'Rolo'], spawnCount = 0;
+function worldAt(nx, ny) { const v = V(nx, ny, 0.5).unproject(cam), d = v.sub(cam.position).normalize(), t = -cam.position.z / d.z; return cam.position.clone().addScaledVector(d, t); }
+function camPoint(nx, ny, dist) { const d = V(nx, ny, 0.5).unproject(cam).sub(cam.position).normalize(); return cam.position.clone().addScaledVector(d, dist); }
+function throwAt(T, t) {                                   // punto del lanzamiento en el tiempo t (0..1)
+  const ex = 1 - (1 - t) ** 3, nx = lerp(T.S.x, T.Tn.x, 1 - (1 - Math.min(1, t / T.ta * 0.8)) ** 2);   // el avance de lado termina cerca de la cima: después cae vertical
+  const ny = t < T.ta ? lerp(T.S.y, T.apex, 1 - (1 - t / T.ta) ** 2) : lerp(T.apex, T.Tn.y, ((t - T.ta) / (1 - T.ta)) ** 2);   // sube frenando y cae acelerando
+  return camPoint(nx, ny, T.D / (1 + G_NEAR * (1 - ex)));   // cerca de la cámara = enorme
+}
+function spawnGift(tx, tz, gsrc, gcoins) {
+  const [coins, src] = gsrc ? [gcoins || 1, gsrc] : rndGift(), r = gSize(coins), M = giftMats(src), m = new THREE.Group(), inner = new THREE.Group(); m.add(inner);
+  for (let i = 0; i <= G_LAYERS; i++) { const k = i / G_LAYERS - 0.5, last = i === G_LAYERS;
+    const pl = new THREE.Mesh(gPlane, last ? M.face : M.edge); pl.position.z = k * G_TH; inner.add(pl);
+    if (last) { const bk = new THREE.Mesh(gPlane, M.back); bk.rotation.y = PI; bk.position.z = -0.5 * G_TH; inner.add(bk); } }
+  m.scale.setScalar(r); scene.add(m);
+  if (gifts.length >= G_MAXN) { const old = gifts.find(g => !g.thr && !g.fade && !g.claimed); if (old) old.fade = 0.001; }
+  // lanzamiento: sale de abajo (el celular), enorme cerca de la cámara, sube hasta 2/3 de la pantalla o más y cae casi vertical
+  // sobre el bailarín; se va achicando hasta su tamaño real. Con estela como en Rosas 7.
+  const T = V(tx, 2.35 + Math.random() * 0.3, tz), Tn = T.clone().project(cam);
+  const S = V((Math.random() - 0.5) * 0.7, -1.3, 0), apex = 0.33 + Math.random() * 0.3;
+  const thr = { t: 0, dur: 1.15 + Math.random() * 0.3, S, Tn, T, D: cam.position.distanceTo(T), apex, ta: 0.42 + Math.random() * 0.08 };
+  const S3 = throwAt(thr, 0), ghosts = M.ghost.map(mt => { const sp = new THREE.Sprite(mt); sp.visible = false; scene.add(sp); return sp; });
+  const axis = V(Math.random() - 0.5, Math.random() - 0.5, 0).normalize();
+  m.quaternion.setFromAxisAngle(axis, 0.2 + Math.random() * 0.9);
+  gifts.push({ m, inner, ghosts, face: M.face, p: S3, v: V(0, 0, 0), w: V(Math.random() * 5 - 2.5, (9 + Math.random() * 7) * (Math.random() < 0.5 ? -1 : 1), 0), r, coins, age: 0, rest: 0, cd: 0,
+    thr, tilt: (Math.random() - 0.5) * 0.35 });
+}
+function spark(pos, col = 0xffffff) { const sp = new THREE.Sprite(new THREE.SpriteMaterial(Object.assign({ map: glowTex, color: col }, ADD))); sp.position.copy(pos); scene.add(sp); sparks.push({ sp, age: 0 }); }
+const idle = d => !d.job && d.grp.visible;
+function startWalk(d, b, tx, k, extra) { const dir = Math.sign(tx - d.origin.x) || 1; d.job = Object.assign({ k, b0: b, tx }, extra || {}); d.setAct(bb => walkPose(bb, dir), k === 'entrar'); }
+/* ── MÁS ANIMACIONES (2026-11-24): saludo + reverencia, trofeo, sentarse en un regalo, duelo de guitarras, festejo ── */
+function timed(d, k, b0, dur, fn, extra) { d.job = Object.assign({ k, b0, dur, timed: true }, extra || {}); d.setAct(fn); }
+function startWave(d, b) {                               // saluda al público con la mano y hace una reverencia
+  const b0 = Math.ceil(b), hand = Math.random() < 0.5 ? 'hR' : 'hL', other = hand === 'hR' ? 'hL' : 'hR';
+  timed(d, 'saludo', b0, 4.5, bb => { const s = bb - b0, p = DANCE.basico(bb + 64); p.yaw *= 0.3; p.turn = 0;
+    const w = sstep(0, 0.4, s) * (1 - sstep(2, 2.4, s)), bow = sstep(2.2, 2.8, s) * (1 - sstep(3.6, 4.3, s));
+    p[hand] = lerp3(p[hand], [0.22 + 0.14 * Math.sin(s * TAU * 1.5), 0.5, 0.12], w); p.tilt = 0.12 * w * Math.sin(s * TAU * 0.75);
+    p[hand] = lerp3(p[hand], [-0.12, -0.22, 0.22], bow); p[other] = lerp3(p[other], [0.04, -0.4, -0.24], bow);
+    p.lean = lerp(p.lean, 0.75, bow); p.nod = lerp(p.nod, 0.35, bow); p.py = lerp(p.py, -0.04, bow); p.fL = lerp3(p.fL, [0.1, 0, -0.08], bow); return p; });
+}
+function startDuel(b) {                                  // duelo de guitarras entre dos vecinos
+  const order = dancers.filter(idle).sort((a, c) => a.slotX - c.slotX);
+  for (let k = 0; k < order.length - 1; k++) { const A = order[k], B2 = order[k + 1], gap = B2.origin.x - A.origin.x; if (gap > 2.4 || gap < 0.9) continue;
+    const b0 = Math.ceil(b), f = (side, off) => bb => { const s = bb - b0, a = sstep(0, 0.6, s) * (1 - sstep(7.4, 8, s));
+      const p = DANCE.guitarra(s + off + 64 * 16); const q = DANCE.basico(bb + 64), m = sstep(0, 0.6, s) * (1 - sstep(7.6, 8, s));
+      const o = mixPose(q, p, m); o.yaw = side * 0.85 * a; o.mx = side * a * (gap / 2 - 0.65); o.turn = -side * 0.25 * a; return o; };
+    timed(A, 'duelo', b0, 8, f(1, 0), { mate: B2 }); timed(B2, 'duelo', b0, 8, f(-1, 8), { mate: A }); return true; }
+  return false;
+}
+function startGiftPlay(b) {                              // con un regalo quieto: levantarlo como trofeo o sentarse encima
+  const floor = gifts.filter(g => !g.thr && !g.claimed && !g.fade && !g.out && !g.held && g.rest > 0.8 && g.r > 0.2), free = dancers.filter(idle);
+  if (!floor.length || !free.length) return false;
+  let best = null, bd = 1e9; for (const d of free) for (const g of floor) { const dist = Math.abs(d.origin.x - g.p.x); if (dist < bd) { bd = dist; best = [d, g]; } }
+  if (bd > 3.5) return false;
+  const [d, g] = best, sit = g.r > 0.26 && g.r < 0.42 && Math.random() < 0.5, side = Math.sign(g.p.x - d.origin.x) || 1;
+  g.claimed = true; startWalk(d, b, sit ? g.p.x : g.p.x - side * (0.36 + g.r * 0.6), sit ? 'irSentar' : 'irTrofeo', { g, side, gp: true }); return true;
+}
+function startTrophy(d, b, g, side) {
+  const b0 = b, r = g.r;
+  timed(d, 'trofeo', b0, 6.4, bb => { const s = bb - b0, up = sstep(1.1, 1.8, s) * (1 - sstep(4.6, 5.2, s));
+    const c = s < 0.6 ? sstep(0, 0.6, s) : s < 1.3 ? 1 - sstep(0.7, 1.3, s) : s < 5 ? 0 : s < 5.6 ? sstep(5, 5.6, s) : 1 - sstep(5.7, 6.4, s);
+    const p = pickPose(side, c, r); p.yaw = lerp(side * PI / 2, 0.15 * Math.sin(s * PI / 2), up);
+    const hd = holdHands(r, true); hd[1] += 0.05 * onBeat(bb); if (s > 0.6 && s < 5.6) { const k = s < 1.3 ? sstep(0.6, 1.3, s) : 1 - sstep(5, 5.6, s); p.hL = lerp3(p.hL, hd, k); p.hR = lerp3(p.hR, hd, k); }
+    p.py += -0.06 * onBeat(bb) * up; p.nod -= 0.25 * up; return p; }, { g, gp: true, side });
+}
+function startSit(d, b, g) {
+  const b0 = b, top = g.p.y + g.r * 0.92;
+  timed(d, 'sentarse', b0, 9, bb => { const s = bb - b0, k = sstep(0, 1, s) * (1 - sstep(8, 9, s)), p = DANCE.basico(bb + 64);
+    const dz = g.p.z - d.origin.z, sitP = base(); sitP.py = top + 0.05 - STAND; sitP.pz = dz - 0.02; sitP.lean = -0.06 + 0.06 * onBeat(bb); sitP.nod = 0.15 * onBeat(bb);
+    const sw = Math.sin(bb * PI); sitP.fL = [0.13, 0.05 + 0.05 * sw, dz + 0.42]; sitP.fR = [0.13, 0.05 - 0.05 * sw, dz + 0.42];
+    const clap = onBeat(bb) ** 3; sitP.hL = lerp3([0.16, -0.16, 0.3], [-SHW + 0.03, -0.02, 0.32], clap); sitP.hR = sitP.hL.slice();
+    return mixPose(p, sitP, k); }, { g, gp: true });
+}
+function cheer(g) {                                      // cae un regalo grande: los que están cerca saltan y aplauden
+  for (const d of dancers) if (idle(d) && Math.abs(d.origin.x - g.p.x) < 2.6 && Math.random() < 0.8) { const b0 = Math.ceil(lastOB + 0.2) + 0.0;
+    timed(d, 'festejo', b0, 2, bb => bb < b0 ? DANCE.basico(bb + 64) : DANCE.salto(bb - b0 + 64), {}); }
+}
+function director(b) {
+  const dt = lastOB === null ? 0 : clamp((b - lastOB) / BPS, 0, 0.1); lastOB = b;
+  if (!bounds) { const f = worldAt(1, -0.958); bounds = { R: f.x, L: -f.x, top: worldAt(0, 1).y }; }
+  // entradas escalonadas al comienzo / reemplazos
+  curB = b; brainUpdate(dt, b);
+  if (!LIVE) dancers.forEach((d, i) => { const j = d.job;
+    if (j && j.k === 'fuera' && b - j.b0 > 2 && (j.b0 > -99 || b > 1 + i * 2.2)) {
+      if (j.b0 > -99) { spawnCount++; d.recolor(i + 3 * spawnCount); d.setLevel(1 + Math.floor(Math.random() * LVM.max)); d.name = nameOf[(i + 5 * spawnCount) % nameOf.length]; } else d.name = nameOf[i];
+      const side = d.slotX < 0 ? -1 : 1; d.origin.set(side * (bounds.R + 0.7), 0, d.origin.z); d.resetPhysics(); d.grp.visible = true; startWalk(d, b, d.slotX, 'entrar');
+    } });
+  // regalos que caen (60% justo encima de alguien) · demo: ?ritmo=0.5 = llegan el doble de seguido
+  if (!LIVE && b > nextGift) { nextGift = b + num('ritmo', 1) * (2.2 + Math.random() * 3.5); const vis = dancers.filter(d => d.grp.visible && !d.job);
+    const n = 1 + Math.floor(Math.random() * 2.4); for (let k = 0; k < n; k++) { const tgt = vis.length && Math.random() < 0.6 ? vis[Math.floor(Math.random() * vis.length)] : null;
+      spawnGift(tgt ? tgt.origin.x + (Math.random() - 0.5) * 0.1 : lerp(bounds.L + 0.4, bounds.R - 0.4, Math.random()), tgt ? tgt.origin.z : (Math.random() - 0.5) * 0.8); } }
+  // eventos: trepar + mortal + paracaídas, choque de manos, alguien se va y entra otro
+  if (b > nextEvent) { nextEvent = b + (5 + Math.random() * 4) * clamp(5 / dancers.length, 0.5, 1);   // con más muñecos, más cosas a la vez
+   for (let rep = 0; rep < (dancers.length >= 6 ? 2 : 1); rep++) { const r = Math.random(), vis = dancers.filter(idle);
+    if (r < 0.22 && vis.length && !dancers.some(d => d.job && ['ir', 'subir', 'colgar', 'mortal', 'paraca'].includes(d.job.k))) {
+      const d = vis.sort((a, c) => Math.abs(c.slotX) - Math.abs(a.slotX))[0], side = d.slotX < 0 ? -1 : 1;
+      startWalk(d, b, side * (bounds.R - 0.33), 'ir', { side }); }
+    else if (r < 0.4) { const order = dancers.filter(idle).sort((a, c) => a.slotX - c.slotX);
+      for (let k = 0; k < order.length - 1; k++) { const A = order[k], B2 = order[k + 1]; if (B2.slotX - A.slotX < 2.2) { const b0 = Math.ceil(b), gap = B2.slotX - A.slotX;
+        A.job = { k: 'chocar', b0, mate: B2 }; B2.job = { k: 'chocar', b0, mate: A };
+        const hf = (side, hand) => bb => { const s = clamp((bb - b0) / 2, 0, 1), a = sstep(0, 0.35, s) * (1 - sstep(0.75, 1, s)), hs = sstep(0.2, 0.45, s) * (1 - sstep(0.7, 0.9, s));
+          const p = DANCE.basico(bb + 64); p.mx = side * a * (gap / 2 - 0.42); p.yaw = side * 0.95 * a; p.turn = 0;
+          p[hand] = lerp3(p[hand], [0.06, 0.34, 0.4], hs); return p; };
+        A.setAct(hf(1, 'hR')); B2.setAct(hf(-1, 'hL')); break; } } }
+    else if (r < 0.54) startDuel(b);
+    else if (r < 0.68) { if (vis.length) startWave(vis[Math.floor(Math.random() * vis.length)], b); }
+    else if (r < 0.82) { if (!startGiftPlay(b) && vis.length) startWave(vis[Math.floor(Math.random() * vis.length)], b); }
+    else { const vis2 = dancers.filter(idle); if (vis2.length) startWave(vis2[Math.floor(Math.random() * vis2.length)], b); } }
+  }
+  // acomodar: muchos regalos en el piso → los recogen y se los llevan / los lanzan fuera
+  { const floor = gifts.filter(g => !g.thr && !g.claimed && !g.fade && !g.out && g.rest > 0.5), busy = dancers.filter(d => d.job && d.job.tidy).length;
+    if (floor.length >= TIDY_AT) tidyOn = true; else if (floor.length <= TIDY_AT - 5) tidyOn = false;
+    if (tidyOn && floor.length && busy < Math.min(Math.ceil(dancers.length / 2), 1 + Math.floor((floor.length - TIDY_AT + 5) / 2))) {
+      let best = null, bd = 1e9; for (const dd of dancers.filter(idle)) for (const gg of floor) { const dist = Math.abs(dd.origin.x - gg.p.x) - gg.age * 0.02; if (dist < bd) { bd = dist; best = [dd, gg]; } }   // el más cercano (y si empatan, el más viejo)
+      if (best) { const [d, g] = best;
+        const side = Math.sign(g.p.x) || 1, mode = g.r > 0.3 || Math.random() < 0.35 ? 'llevar' : 'lanzar';
+        g.claimed = true; startWalk(d, b, g.p.x - side * (0.36 + g.r * 0.6), 'irRegalo', { g, side, mode, tidy: true }); } } }
+  // (sin patadas: pedido de Rodrigo 2026-11-24)
+  // trabajos de cada uno
+  for (const d of dancers) { const j = d.job; if (!j) continue; const tj = (b - j.b0) / BPS;
+    if ((j.tidy || j.gp) && j.g && !gifts.includes(j.g)) { startWalk(d, b, d.slotX, 'volver'); continue; }   // el regalo ya no está
+    if (['entrar', 'volver', 'salir', 'ir', 'irRegalo', 'llevar', 'irTrofeo', 'irSentar'].includes(j.k)) {
+      const dx = j.tx - d.origin.x, st = WALK_V * (j.k === 'llevar' && j.big ? 0.8 : 1) * dt;
+      if (Math.abs(dx) <= st) { d.origin.x = j.tx;
+        if (j.k === 'salir') { d.grp.visible = false; d.job = { k: 'fuera', b0: b }; d.endAct(); d.actW = 0; d.actFn = null; unbind(d); }
+        else if (j.k === 'ir') { const side = j.side, top = Math.min(4.2, bounds.top * 0.3); d.job = { k: 'subir', b0: b, side, top }; d.setAct(bb => climbPose(bb, side)); }
+        else if (j.k === 'irTrofeo') startTrophy(d, b, j.g, j.side);
+        else if (j.k === 'irSentar') startSit(d, b, j.g);
+        else if (j.k === 'irRegalo') { const { g, side, mode } = j, b0 = b, big = mode === 'llevar' && g.r > 0.24;
+          d.job = { k: 'agarrar', b0, g, side, mode, big, tidy: true };
+          d.setAct(bb => { const s = clamp((bb - b0) / 1.3, 0, 1), c = s < 0.45 ? sstep(0, 0.45, s) : 1 - sstep(0.55, 1, s), p = pickPose(side, c, g.r);
+            if (s > 0.5) { const h = mode === 'lanzar' ? [holdOut(g.r), -0.2, 0.3] : holdHands(g.r, big), k = sstep(0.5, 1, s); p.hL = lerp3(p.hL, h, k); p.hR = lerp3(p.hR, h, k); } return p; }); }
+        else if (j.k === 'llevar') { const g = j.g; g.held = null; scene.remove(g.m); g.ghosts.forEach(sp => scene.remove(sp)); gifts.splice(gifts.indexOf(g), 1); startWalk(d, b, d.slotX, 'volver'); }
+        else { d.job = null; d.endAct(); } }
+      else d.origin.x += Math.sign(dx) * st;
+    } else if (j.k === 'subir') { d.origin.y += CLIMB_V * dt * (0.6 + 0.4 * Math.sin(PI * fr(b))) / 0.8; if (d.origin.y >= j.top) { const bh = b; d.job = { k: 'colgar', b0: b, side: j.side }; d.setAct(() => climbPose(bh, j.side)); } }
+    else if (j.k === 'colgar') { if (tj > 0.45) { const side = j.side, b0 = b; d.job = { k: 'mortal', b0, side, vx: -side * 1.9, vy: 3.4 };
+        d.setAct(bb => { const q = clamp((bb - b0) / BPS / 0.75, 0, 1), p = base(); p.yaw = side * PI / 2; p.flip = -TAU * ease(q); p.py = -0.2;
+          const tk = Math.sin(PI * q); p.fL = [0.1, 0.55 * tk, 0.35 * tk]; p.fR = [0.1, 0.55 * tk, 0.35 * tk]; p.hL = [0.12, lerp(-0.2, -0.38, tk), 0.3]; p.hR = [0.12, lerp(-0.2, -0.38, tk), 0.3]; p.nod = 0.4 * tk; return p; }, true); } }
+    else if (j.k === 'mortal' || j.k === 'paraca') {
+      if (j.k === 'mortal') { j.vy -= 9.8 * dt; if (tj > 0.75) { j.k = 'paraca'; j.b1 = b; d.chute = { s: 0, sway: 0, down: false, dir: -j.side };
+          const side = j.side, b1 = b; d.setAct(bb => { const q = (bb - b1) / BPS, p = base(); p.yaw = side * PI / 2 * (1 - sstep(0.3, 2.2, q)); p.hL = [0.1, 0.5, 0.0]; p.hR = [0.1, 0.5, 0.0];
+            const sw = Math.sin(q * 3.1); p.fL = [0.1, 0.05 * sw, 0.06]; p.fR = [0.1, -0.05 * sw, -0.04]; p.lean = -0.05; p.nod = -0.2; return p; }, true); } }
+      else { const c = d.chute; c.s = Math.min(1.2, c.s + dt * 2.4); const q = (b - j.b1) / BPS; c.sway = 0.22 * Math.sin(q * 2.1) * sstep(0, 1, q);
+        j.vy += (-0.9 - j.vy) * Math.min(1, dt * 3); j.vx += (Math.cos(q * 2.1) * 0.35 * -j.side - j.vx) * Math.min(1, dt * 2); }
+      d.origin.x = clamp(d.origin.x + j.vx * dt, bounds.L + 0.35, bounds.R - 0.35); d.origin.y += j.vy * dt;
+      if (j.k === 'paraca' && d.origin.y <= 0) { d.origin.y = 0; d.chute.down = true; d.bump(0.8); d.job = { k: 'aterrizar', b0: b }; d.endAct(); }
+    } else if (j.timed) {
+      if (j.k === 'trofeo') { const g = j.g, s = b - j.b0;
+        if (!g.held && s >= 0.6 && s < 5.6) { g.held = d; g.v.set(0, 0, 0); }
+        g.big = s > 1.2 && s < 5.1;
+        if (g.held && s >= 5.6) { g.held = null; g.claimed = false; g.v.set(0, 0, 0); g.rest = 0; g.flat = false; } }
+      if (j.k === 'duelo' && !j.hit && b >= j.b0 + 7.7 && d.slotX < j.mate.slotX) { j.hit = true; spark(d.S.H.clone().lerp(j.mate.S.H, 0.5).add(V(0, 0.3, 0)), 0xffe27a); d.bump(0.6); j.mate.bump(0.6); }
+      if (b >= j.b0 + j.dur) { if (j.g) { j.g.claimed = false; if (j.g.held === d) j.g.held = null; }
+        if (_timedEnd(d)) {} else if (['trofeo', 'sentarse'].includes(j.k)) startWalk(d, b, d.slotX, 'volver'); else { d.job = null; d.endAct(); } }
+    } else if (j.k === 'agarrar') { const g = j.g;
+      if (!g.held && b >= j.b0 + 0.6) { g.held = d; g.big = j.big; g.v.set(0, 0, 0); g.rest = 0; }
+      if (b >= j.b0 + 1.3) { const side = j.side, big = j.big, r = g.r;
+        if (j.mode === 'llevar') { d.job = { k: 'llevar', b0: b, tx: side * (bounds.R + 0.9), g, big, tidy: true }; d.setAct(bb => carryPose(bb, side, r, big)); }
+        else { const b0 = b; d.job = { k: 'lanzar', b0, g, side, tidy: true };
+          d.setAct(bb => { const s = clamp((bb - b0) / 1.7, 0, 1), p = base(); p.yaw = side * PI / 2; p.turn = -side * 0.3 * (1 - sstep(0.3, 0.5, s));
+            const hold = [holdOut(r), -0.2, 0.3], back = [holdOut(r) + 0.05, 0.05, -0.32], up = [holdOut(r), 0.5, 0.42];
+            const h = s < 0.4 ? lerp3(hold, back, sstep(0, 0.4, s)) : s < 0.58 ? lerp3(back, up, sstep(0.4, 0.58, s)) : lerp3(up, base().hL, sstep(0.7, 1, s));
+            p.hL = h; p.hR = h; p.lean = s < 0.4 ? -0.18 * sstep(0, 0.4, s) : lerp(-0.18, 0.3, sstep(0.4, 0.6, s)) * (1 - sstep(0.75, 1, s));
+            p.twist = (s < 0.4 ? 0.35 * sstep(0, 0.4, s) : 0.35 - 0.7 * sstep(0.4, 0.6, s)) * (1 - sstep(0.75, 1, s));
+            p.py = -0.12 * Math.sin(PI * clamp(s / 0.6, 0, 1)); p.fL = [0.12, 0, 0.16]; p.fR = [0.12, 0, -0.14]; return p; }); } } }
+    else if (j.k === 'lanzar') { const g = j.g;
+      if (g && g.held && b >= j.b0 + 0.95) { j.g = null; g.held = null; g.out = true; const dist = bounds.R + 1.2 - j.side * g.p.x;
+        g.v.set(j.side * clamp(dist / 1.05, 3, 11), 6.2, -0.6); g.w.set(Math.random() * 10 - 5, Math.random() * 16 - 8, Math.random() * 10 - 5); spark(g.p.clone(), 0xfff1a8); }
+      if (b >= j.b0 + 1.7) startWalk(d, b, d.slotX, 'volver'); }
+    else if (j.k === 'aterrizar') { if (tj > 0.7) startWalk(d, b, d.slotX, 'volver'); }
+    else if (j.k === 'patear') { if (!j.hit && b >= j.b0 + 0.52) { j.hit = true; const g = j.g, hv = Math.sqrt(G_R1 / g.r); g.v.set(j.side * (2.2 + Math.random() * 1.2) * hv, (3 + Math.random() * 1.5) * hv, (Math.random() - 0.5) * 0.6); g.w.set(Math.random() * 14 - 7, Math.random() * 14 - 7, Math.random() * 14 - 7); g.rest = 0; g.claimed = false; spark(g.p.clone(), 0xfff1a8); }
+      if (b >= j.b0 + 1) { d.job = null; d.endAct(); } }
+    else if (j.k === 'chocar') { if (!j.hit && b >= j.b0 + 1 && d.slotX < j.mate.slotX) { j.hit = true; const a = d.S.haR.clone().lerp(j.mate.S.haL, 0.5); spark(a, 0xffe27a); d.bump(0.35); j.mate.bump(0.35); }
+      if (b >= j.b0 + 2) { d.job = null; d.endAct(); } }
+  }
+  // física de los regalos
+  const _q = new THREE.Quaternion(), _e = new THREE.Euler(), _wq = new THREE.Quaternion(), _wv = V(0, 0, 0);
+  for (let k = gifts.length - 1; k >= 0; k--) { const g = gifts[k]; g.age += dt; g.cd -= dt;
+    if (g.held) {                                             // en las manos de un muñeco
+      const S = g.held.S; if (S) { g.p.copy(S.haL).lerp(S.haR, 0.5); const ht = g.big ? 0.75 : 0.15; g.hy = g.hy === undefined ? ht : lerp(g.hy, ht, Math.min(1, dt * 8)); g.p.y += g.r * g.hy; }
+      g.v.set(0, 0, 0); g.rest = 0;
+    } else if (g.out) {                                       // lanzado fuera: vuela sin chocar y desaparece al salir
+      g.v.y -= 9.8 * dt; g.p.addScaledVector(g.v, dt);
+      if (Math.abs(g.p.x) > bounds.R + 2 || g.p.y < -3) { scene.remove(g.m); g.ghosts.forEach(sp => scene.remove(sp)); gifts.splice(k, 1); continue; }
+    } else if (g.thr) {                                       // en el aire, lanzado desde el celular
+      const T = g.thr; T.t += dt; const t = Math.min(1, T.t / T.dur);
+      g.p.copy(throwAt(T, t));
+      const spd = g.p.distanceTo(throwAt(T, Math.max(0, t - 0.005))) / 0.005, gd = clamp(0.75 * g.r / Math.max(spd, 1e-3), 0.004, 0.045);   // estela pegada al regalo (como un barrido), también cuando cae rápido
+      g.ghosts.forEach((sp, i) => { const tk = t - (i + 1) * gd; sp.visible = tk > 0; if (tk > 0) { sp.position.copy(throwAt(T, tk)); sp.scale.setScalar(g.r * 2); } });
+      if (t >= 1) { const prev = throwAt(T, Math.max(0, 1 - 0.02)); g.v.copy(g.p).sub(prev).divideScalar(0.02 * T.dur); g.v.z = 0; g.v.x *= 0.3; g.v.y = clamp(g.v.y, -9, -2.5);   // sigue con la misma caída
+        g.thr = null; g.ghosts.forEach(sp => { scene.remove(sp); }); g.ghosts = []; }
+    } else {
+      g.v.y -= 9.8 * dt; g.p.addScaledVector(g.v, dt);
+      for (const d of dancers) if (d.grp.visible && d.S && g.cd <= 0) { const n = g.p.clone().sub(d.S.H), L = n.length(), R = HEADR + g.r * 0.85;
+        if (L < R) { n.divideScalar(L || 1); g.p.copy(d.S.H).addScaledVector(n, R); const vn = g.v.dot(n);
+          if (vn < 0) { g.v.addScaledVector(n, -1.6 * vn); g.v.y = Math.max(g.v.y, 2.6); g.v.x += n.x * 1.2 + (Math.random() - 0.5); d.bump(clamp(-vn / 4 * Math.sqrt(g.r / G_R1), 0.5, 1.6)); g.cd = 0.25; g.w.multiplyScalar(1.5); spark(g.p.clone().addScaledVector(n, -g.r * 0.6), 0xfff1a8); } } }
+      for (let j = 0; j < k; j++) { const o = gifts[j]; if (o.thr || o.held || o.out) continue;      // se apilan sin atravesarse
+        const n = g.p.clone().sub(o.p), L = n.length(), R = (g.r + o.r) * 0.82; if (L >= R || L < 1e-4) continue;
+        n.divideScalar(L); const push = (R - L) / 2; g.p.addScaledVector(n, push); o.p.addScaledVector(n, -push);
+        const rv = g.v.clone().sub(o.v).dot(n); if (rv < 0) { g.v.addScaledVector(n, -rv * 0.6); o.v.addScaledVector(n, rv * 0.6); } }
+      if (g.p.y < g.r) { const hard = g.v.y < -2; g.p.y = g.r; if (g.v.y < 0) g.v.y *= -0.3; g.v.x *= 0.82; g.v.z *= 0.82; g.w.multiplyScalar(0.7); if (Math.abs(g.v.y) < 0.5) g.v.y = 0;
+        if (hard && !g.landed) { g.landed = true; spark(V(g.p.x, 0.05, g.p.z), 0xffffff); if (g.r > 0.3) cheer(g); } }
+      g.p.z = clamp(g.p.z, -1.0, FRONT_Z);
+      if (g.p.x < bounds.L + g.r || g.p.x > bounds.R - g.r) { g.p.x = clamp(g.p.x, bounds.L + g.r, bounds.R - g.r); g.v.x *= -0.5; }
+    }
+    const resting = !g.thr && !g.held && !g.out && g.p.y <= g.r * 1.02 && g.v.length() < 0.3; g.rest = resting ? g.rest + dt : 0;
+    if (resting || g.held) {                                  // quieto (o en las manos): la ficha se para mirando a la cámara, un poco inclinada (como la pila de Rosas 7)
+      _e.set(0, Math.atan2(cam.position.x - g.p.x, cam.position.z - g.p.z), g.tilt); _q.setFromEuler(_e); g.m.quaternion.slerp(_q, Math.min(1, dt * 6)); g.w.multiplyScalar(0.8);
+      if (!g.flat && g.m.quaternion.angleTo(_q) < 0.04) { g.flat = true; g.inner.children.forEach((c, i) => c.visible = c.material === g.face); }   // de frente: solo la cara (1 dibujo en vez de 6)
+    } else { if (g.flat) { g.flat = false; g.inner.children.forEach(c => c.visible = true); } const sp = g.w.length(); if (sp > 1e-3) { _wv.copy(g.w).divideScalar(sp); _wq.setFromAxisAngle(_wv, sp * dt); g.m.quaternion.premultiply(_wq); } g.w.multiplyScalar(g.thr ? 0.995 : 0.99); }
+    g.m.position.copy(g.p);
+    if (g.fade) g.fade += dt; const life = g.fade ? 1 - clamp(g.fade / 0.5, 0, 1) : 1 - sstep(G_LIFE - 1, G_LIFE, g.age);
+    g.m.scale.setScalar(life * g.r);
+    if (life <= 0) { scene.remove(g.m); g.ghosts.forEach(sp => scene.remove(sp)); gifts.splice(k, 1); } }
+  for (let k = sparks.length - 1; k >= 0; k--) { const s = sparks[k]; s.age += dt; const q = s.age / 0.35; s.sp.scale.setScalar(0.2 + 0.9 * q); s.sp.material.opacity = 1 - q; if (q >= 1) { scene.remove(s.sp); sparks.splice(k, 1); } }
+}
+const nameRects = [], _nv = new THREE.Vector3(), _nUp = new THREE.Vector3(0, 0.62, 0);
+function drawNames() {
+  for (const r of nameRects) uctx.clearRect(r[0], r[1], r[2], r[3]); nameRects.length = 0;      // solo borra donde había nombres (no toda la pantalla)
+  uctx.font = '800 26px system-ui, Arial'; uctx.textAlign = 'center'; uctx.textBaseline = 'alphabetic'; uctx.lineJoin = 'round';
+  const tn = performance.now() / 1000;
+  const labs = [];                                            // nombres que se tocan: el siguiente sube una fila
+  for (const d of dancers) { if (!d.grp.visible || !d.S || !d.name) continue; const v = _nv.copy(d.S.H).add(_nUp).project(cam);
+    uctx.font = '800 26px system-ui, Arial';
+    const w = (d.nameW = d.nameW && d.nameFor === d.name ? d.nameW : (d.nameFor = d.name, uctx.measureText(d.name).width)) + 16;
+    labs.push({ d, x: (v.x + 1) / 2 * W, y: (1 - v.y) / 2 * H, w: Math.max(w, 92) }); }
+  labs.sort((a, c) => a.x - c.x);
+  for (let i = 0; i < labs.length; i++) { const L = labs[i]; let row = 0;
+    while (labs.slice(0, i).some(o => o.row === row && Math.abs(o.x - L.x) < (o.w + L.w) / 2 && Math.abs(o.y0 - L.y) < 90)) row++;
+    L.row = row; L.y0 = L.y; L.d.nameRow = lerp(L.d.nameRow || 0, row, 0.2); }
+  for (const { d, x, y: y0, w } of labs) { const y = y0 - d.nameRow * 46;
+    uctx.font = '800 26px system-ui, Arial';
+    uctx.lineWidth = 6; uctx.strokeStyle = 'rgba(0,0,0,0.6)'; uctx.strokeText(d.name, x, y); uctx.fillStyle = '#fff'; uctx.fillText(d.name, x, y); nameRects.push([x - w / 2, y - 30, w, 42]);
+    const p = d.person;
+    if (p) { const bw = 84, e = p.forever ? 1 : clamp(p.energy / capOf(p), 0, 1);                 // barra = tanque (celeste si tiene más de 10 min)
+      uctx.fillStyle = 'rgba(0,0,0,0.65)'; uctx.fillRect(x - bw / 2 - 2, y + 6, bw + 4, 9);
+      uctx.fillStyle = p.forever || p.energy > 600 ? '#5fd8ff' : e > 0.4 ? '#36e07a' : e > 0.12 ? '#ffd54a' : '#ff4b4b'; uctx.fillRect(x - bw / 2, y + 8, bw * Math.max(e, p.energy > 0 ? 0.03 : 0), 5);
+      nameRects.push([x - bw / 2 - 4, y + 4, bw + 8, 14]);
+      for (const f of floats) if (f.p === p) { const q = (tn - f.t0) / f.life; if (q > 1) continue;
+        const fs = f.big ? 44 : 32, fy = y - 40 - q * 70; uctx.font = `900 ${fs}px system-ui, Arial`; uctx.globalAlpha = q < 0.8 ? 1 : (1 - q) / 0.2;
+        uctx.lineWidth = fs / 6; uctx.strokeStyle = 'rgba(0,0,0,0.85)'; uctx.strokeText(f.txt, x, fy); uctx.fillStyle = f.col; uctx.fillText(f.txt, x, fy); uctx.globalAlpha = 1;
+        const fw = uctx.measureText(f.txt).width + 20; nameRects.push([x - fw / 2, fy - fs, fw, fs + 14]); } } }
+  for (let i = floats.length - 1; i >= 0; i--) if (tn - floats[i].t0 > floats[i].life) floats.splice(i, 1);
+}
+
+function render(b) {
+  choreo(b);
+  if (OVL) director(b);
+  for (const dn of dancers) if (dn.grp.visible) dn.draw(dn.animate(b));
+  flushBatch(dancers);
+  if (OVL) drawNames();
+  if (GAL) {
+    renderer.setScissorTest(true); renderer.clear();
+    cells.forEach(c => { renderer.setViewport(c.x, H - c.y - c.h, c.w, c.h); renderer.setScissor(c.x, H - c.y - c.h, c.w, c.h); renderer.render(scene, c.cam); });
+  } else renderer.render(scene, cam);
+}
+// ?fps=30 (por defecto): dibuja como máximo 30 cuadros por segundo aunque OBS o la pantalla vayan a 60 (la mitad de trabajo). ?fps=60 para más fluido.
+const FPS = clamp(num('fps', 30), 10, 240), FMS = 1000 / FPS; let lastF = -1e9;
+function frame(now) { requestAnimationFrame(frame); if (now - lastF < FMS - 2) return; lastF = Math.max(lastF + FMS, now - FMS); render(beatNow()); diagTick(now); }
+const DIAG = Q.get('diag') === '1', diagEl = DIAG ? Object.assign(document.body.appendChild(document.createElement('div')), { id: 'diag', style: 'position:fixed;left:8px;top:8px;z-index:9;font:700 22px system-ui;color:#fff;background:rgba(0,0,0,.6);padding:6px 10px;border-radius:8px' }) : null;
+let dN = 0, dT0 = 0, dMs = 0;
+function diagTick(now) { if (!DIAG) return; dN++; dMs += performance.now() - now; if (now - dT0 >= 1000) { const i = renderer.info.render;
+  diagEl.textContent = `${Math.round(dN * 1000 / (now - dT0))} fps · ${(dMs / dN).toFixed(1)} ms/cuadro · ${i.calls} dibujos · ${Math.round(i.triangles / 1000)}k triángulos · ${gifts.length} regalos`; dN = 0; dMs = 0; dT0 = now; } }
+if (Q.get('captura') !== '1') requestAnimationFrame(frame);           // ?captura=1: se dibuja cuadro por cuadro desde afuera (para grabar videos)
+
+// botones
+if (Q.get('panel') === '1' && !GAL) {
+  const pn = document.getElementById('panel'), btns = [], lbtns = [];
+  const mkB = (txt, fn, group = btns) => { const b = document.createElement('button'); b.textContent = txt; b.onclick = () => { fn(); group.forEach(x => x.classList.remove('on')); b.classList.add('on'); }; pn.appendChild(b); group.push(b); return b; };
+  mkB('Rotar', () => { fixed = null; mezcla = false; choreo.dirty = true; }).classList.add('on');
+  mkB('Mezcla', () => { fixed = null; mezcla = true; choreo.dirty = true; });
+  ORDER.forEach(d => mkB(NAME[d], () => { fixed = d; choreo.dirty = true; }));
+  const sep = document.createElement('div'); sep.className = 'sep'; pn.appendChild(sep);
+  mkB('Niveles variados', () => dancers.forEach((d, i) => d.setLevel(LVL_DEMO[i])), lbtns);
+  for (let l = 1; l <= LVM.max; l++) mkB('Nv' + l, () => dancers.forEach(d => d.setLevel(l)), lbtns);
+}
+/* ════════════════ EN VIVO: reglas de la pista (las mismas de baile-regalos.html) ════════════════ */
+const CFG = {
+  wsUrl: 'ws://localhost:21213/',
+  owners: ['rodrigovelizguitar'],
+  guests: Q.get('invitados') !== '0',
+  fixedMin: num('fijo', 15),
+  energyMax: 7200, secPerCoin: 8, guestCap: num('tanque', 30), giftCapMin: 60,
+  tapPct: num('tap', 0.2), tapGap: 0.6, coinPct: 0.25,
+  vipCoins: num('vip', 1000),
+  fest: (Q.get('fest') || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean),
+  fanGift: Q.get('fan') || '', fanGiftId: 7934,
+  emojiSec: 2, emojiCooldown: 4, tiredSec: 8,
+  levels: [0, 10, 50, 200, 1000, 2500, 5000, 10000, 20000, 50000],
+  permLevels: [0, 100, 500, 2000],
+  capaTop: num('permtop', 3), capaMin: 5000, capaLevel: 5,
+  fiestaSec: 15, fiestaCoins: 500,
+};
+const OWNERS = CFG.owners.map(s => s.toLowerCase()), TESTING = Q.has('test') || Q.has('demo');
+const nowS = () => performance.now() / 1000;
+let curB = 0, fiestaUntil = 0;
+const people = new Map(), floats = [];
+// datos guardados: LOS MISMOS que baile-regalos.html (Quiéremes, monedas del día) y que todas las pistas (permanentes)
+const FKEY = 'bailereg_fijos_v2', DKEY = 'bailereg_dia_v1', PKEY = 'baile_permanente_v1', SKEY = 'baile3d_pista_v1';
+let FANS = {}; try { if (!TESTING) FANS = JSON.parse(localStorage.getItem(FKEY) || '{}') || {}; } catch (e) {}
+function saveFans() { if (TESTING) return; const n = Date.now(); for (const k in FANS) if (FANS[k] < n) delete FANS[k]; try { localStorage.setItem(FKEY, JSON.stringify(FANS)); } catch (e) {} }
+const DAY_GAP_MIN = 60;
+const dayKey = t => { const d = new Date(t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+let DAY = { day: dayKey(Date.now()), act: 0, coins: {}, v: 2 };
+try { const s = JSON.parse(localStorage.getItem(DKEY) || 'null'); if (s && s.coins && !TESTING) { if (s.v === 2) DAY = s; else if (s.day === dayKey(Date.now())) DAY = Object.assign(s, { v: 2 }); } } catch (e) {}
+function rollDay() { const t = Date.now(); if (!(DAY.act && t - DAY.act <= DAY_GAP_MIN * 60e3) && DAY.day !== dayKey(t)) DAY = { day: dayKey(t), act: 0, coins: {}, v: 2 }; DAY.act = t; }
+function saveDay() { if (TESTING) return; try { localStorage.setItem(DKEY, JSON.stringify(DAY)); } catch (e) {} }
+const isFan = uid => (FANS[uid] || 0) > Date.now();
+const isVip = uid => (DAY.coins[uid] || 0) >= CFG.vipCoins;
+const isFanGift = (name, id) => CFG.fanGift ? String(name || '').toLowerCase() === CFG.fanGift.toLowerCase() : (/heart\s*me|qui[eé]reme/i.test(name || '') || +id === CFG.fanGiftId);
+const isFest = (name, id) => /\bfest\b/i.test(name || '') || CFG.fest.includes(String(name || '').toLowerCase()) || CFG.fest.includes(String(id));
+function hueOf(s) { let h = 2166136261; for (const c of s) h = Math.imul(h ^ c.charCodeAt(0), 16777619); h ^= h >>> 13; h = Math.imul(h, 0x5bd1e995); h ^= h >>> 15; return (h >>> 0) % 360; }
+function levelOf(coins) { let l = 1; CFG.levels.forEach((c, i) => { if (coins >= c) l = i + 1; }); return l; }
+// niveles permanentes + respaldo en OBS (igual que la pista actual)
+let PERM = { coins: {}, names: {} }, permTop = [], permDirty = 0;
+try { const s = JSON.parse(localStorage.getItem(PKEY) || 'null'); if (s && s.coins && !TESTING) PERM = s; } catch (e) {}
+PERM.names = PERM.names || {};
+function permRank() { permTop = Object.entries(PERM.coins).filter(([, c]) => c >= CFG.capaMin).sort((a, b) => b[1] - a[1]).slice(0, CFG.capaTop).map(([u]) => u); }
+permRank();
+function permLevel(uid) { const c = PERM.coins[uid] || 0; let l = 1; CFG.permLevels.forEach((m, i) => { if (m && c >= m) l = i + 1; }); if (permTop.includes(uid)) l = Math.max(l, CFG.capaLevel); return l; }
+const permExtra = uid => { const l = permLevel(uid); return l > 1 ? l : 0; };
+const lvlFor = (uid, dayCoins) => Math.max(dayCoins ? levelOf(dayCoins) : 1, permLevel(uid));
+function savePerm() { if (TESTING) return; try { localStorage.setItem(PKEY, JSON.stringify(PERM)); } catch (e) {} permDirty = Date.now(); }
+function addPerm(uid, name, coins) { PERM.coins[uid] = (PERM.coins[uid] || 0) + coins; if (name) PERM.names[uid] = name; permRank(); savePerm(); }
+function mergePerm(v) {
+  if (!v || !v.coins) return; let ch = false;
+  for (const u in v.coins) if ((v.coins[u] || 0) > (PERM.coins[u] || 0)) { PERM.coins[u] = v.coins[u]; if (v.names && v.names[u]) PERM.names[u] = v.names[u]; ch = true; }
+  if (ch) { permRank(); try { localStorage.setItem(PKEY, JSON.stringify(PERM)); } catch (e) {} for (const p of people.values()) setLvl(p, Math.max(p.lvl, permExtra(p.uid))); }
+}
+const OBSPASS = new URLSearchParams(location.hash.slice(1)).get('obspass') || '', OBSURL = Q.get('obs') || 'ws://localhost:4455';
+let obsWs = null, obsReady = false, obsReq = 0;
+async function sha256b64(s) { const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return btoa(String.fromCharCode(...new Uint8Array(h))); }
+function obsSend(type, data) { if (obsReady) obsWs.send(JSON.stringify({ op: 6, d: { requestType: type, requestId: 'p' + (++obsReq), requestData: data } })); }
+const obsBackup = () => obsSend('SetPersistentData', { realm: 'OBS_WEBSOCKET_DATA_REALM_PROFILE', slotName: PKEY, slotValue: PERM });
+function obsConnect() {
+  if (TESTING || Q.get('respaldo') === '0' || (obsWs && obsWs.readyState < 2)) return;
+  try { obsWs = new WebSocket(OBSURL); } catch (e) { return; }
+  obsWs.onmessage = async ev => { let m; try { m = JSON.parse(ev.data); } catch (e) { return; }
+    if (m.op === 0) { const d = { rpcVersion: 1, eventSubscriptions: 0 }, au = m.d && m.d.authentication;
+      if (au) { if (!OBSPASS) { console.warn('[baile3d] OBS pide contraseña: agrega #obspass=… al final del enlace para el respaldo'); obsWs.close(); return; }
+        d.authentication = await sha256b64(await sha256b64(OBSPASS + au.salt) + au.challenge); }
+      obsWs.send(JSON.stringify({ op: 1, d })); }
+    else if (m.op === 2) { obsReady = true; obsSend('GetPersistentData', { realm: 'OBS_WEBSOCKET_DATA_REALM_PROFILE', slotName: PKEY }); }
+    else if (m.op === 7 && m.d && m.d.requestType === 'GetPersistentData') { mergePerm(m.d.responseData && m.d.responseData.slotValue); obsBackup(); console.log('[baile3d] respaldo en OBS listo'); }
+  };
+  obsWs.onclose = () => { obsReady = false; setTimeout(obsConnect, 30000); };
+  obsWs.onerror = () => {};
+}
+setInterval(() => { if (permDirty && obsReady) { permDirty = 0; obsBackup(); } }, 10000);
+setTimeout(obsConnect, 1500);
+
+/* ── personas en la pista ↔ muñecos 3D ── */
+const capOf = p => p.cap || CFG.guestCap;
+function addEnergy(p, sec) { const add = clamp(Math.min(capOf(p), CFG.energyMax) - p.energy, 0, sec); p.energy += add; return add; }
+const fmtE = n => { n = Math.round(n); return n < 60 ? '+' + n + ' s' : n < 3600 ? '+' + Math.round(n / 60) + ' min' : '+' + Math.floor(n / 3600) + ' h ' + Math.round(n % 3600 / 60) + ' min'; };
+function floatText(p, txt, col, big) {
+  if (typeof txt === 'number') { const m = floats.find(f => f.p === p && f.sum && nowS() - f.t0 < 0.6); if (m) { m.sum += txt; m.txt = fmtE(m.sum); m.t0 = nowS(); return; } floats.push({ p, sum: txt, txt: fmtE(txt), col, t0: nowS(), life: 1.1 }); return; }
+  floats.push({ p, txt, col, t0: nowS(), life: big ? 1.6 : 1.1, big }); }
+function setLvl(p, l) { const up = l > p.lvl && p.lvl >= 1; p.lvl = l; const d = p.d; if (!d) return;
+  d.setLevel(Math.max(1, l)); d.setLook(p.hue, l === 0 || (p.guest && !p.coins && !isFan(p.uid)));
+  if (up && d.S) { floatText(p, '¡NIVEL ' + l + '!', '#ffd54a', true); for (let k = 0; k < 6; k++) spark(d.S.H.clone().add(V((Math.random() - 0.5) * 0.8, Math.random() * 0.6, 0)), 0xffd54a); } }
+function freeDancer() {                                    // el lugar libre más cerca del centro
+  return dancers.filter(d => !d.person && d.job && d.job.k === 'fuera').sort((a, c) => Math.abs(a.slotX) - Math.abs(c.slotX))[0] || null; }
+function bindDancer(p) {
+  const d = freeDancer(); if (!d) return false;
+  const B = getBounds(); d.person = p; p.d = d; d.name = p.name; d.nameW = 0;
+  d.setLevel(Math.max(1, p.lvl)); d.setLook(p.hue, p.lvl === 0 || (p.guest && !p.coins && !isFan(p.uid)));
+  const side = d.slotX < 0 ? -1 : 1; d.origin.set(side * (B.R + 0.7), 0, d.origin.z); d.resetPhysics(); d.grp.visible = true;
+  d.chute = null; startWalk(d, curB, d.slotX, 'entrar'); return true;
+}
+function unbind(d) { const p = d.person; if (!p) return; d.person = null; p.d = null; d.name = '';
+  if (p.leaving && people.get(p.uid) === p) people.delete(p.uid);
+  for (const x of people.values()) if (!x.d && !x.leaving) { bindDancer(x); break; } }   // alguien esperaba lugar
+function releaseJob(d) { const j = d.job; if (j && j.g) { j.g.claimed = false; if (j.g.held === d) { j.g.held = null; j.g.v.set(0, 0, 0); } } }
+function getBounds() { if (!bounds) { const f = worldAt(1, -0.958); bounds = { R: f.x, L: -f.x, top: worldAt(0, 1).y }; } return bounds; }
+function makePerson(uid, name, pic) {
+  const fan = isFan(uid), coins = DAY.coins[uid] || 0;
+  return { uid, name: String(name || uid).slice(0, 13), pic: pic || '', guest: !fan, coins, energy: 0, cap: 0,
+    lvl: Math.max(coins ? levelOf(coins) : fan ? 1 : 0, permExtra(uid)), hue: hueOf(uid), tiredAt: 0, leaving: false, lastEmoji: 0, lastTap: 0, d: null, forever: false };
+}
+const onFloor = () => [...people.values()].filter(p => !p.leaving);
+// prio: 3 = regaló (SIEMPRE entra), 2 = fijo, 1 = invitado (solo reemplaza a invitados que descansan)
+function getOrSpawn(uid, name, pic, prio) {
+  let p = people.get(uid);
+  if (p) { if (name && p.name === p.uid && name !== uid) { p.name = String(name).slice(0, 13); if (p.d) { p.d.name = p.name; p.d.nameW = 0; } (DAY.names = DAY.names || {})[uid] = name; }
+    if (p.leaving) { p.leaving = false; if (p.d) { releaseJob(p.d); startWalk(p.d, curB, p.d.slotX, 'volver'); } else bindDancer(p); }
+    return p; }
+  if (onFloor().length >= dancers.length) {
+    const live = onFloor();
+    const pool = live.filter(x => !isVip(x.uid) && ((x.energy <= 0 && (prio >= 2 || x.guest)) || (prio >= 2 && x.guest)))
+      .sort((a, b) => ((a.energy > 0) - (b.energy > 0)) || (b.guest - a.guest) || (a.energy - b.energy));
+    if (!pool[0] && prio >= 3) pool.push(...live.filter(x => !isVip(x.uid)).sort((a, b) => (b.guest - a.guest) || (a.energy - b.energy)));
+    if (!pool[0]) return null;
+    leave(pool[0], true);
+  }
+  p = makePerson(uid, name, pic); people.set(uid, p); bindDancer(p);   // si no hay muñeco libre todavía, entra apenas salga el otro
+  return p;
+}
+function leave(p, fast) {
+  if (p.leaving || (isVip(p.uid) && !fast)) return; p.leaving = true; const d = p.d;
+  if (!d) { people.delete(p.uid); return; }
+  releaseJob(d); d.chute = null; if (d.origin.y > 0) d.origin.y = 0;
+  const B = getBounds(), side = d.origin.x < 0 ? -1 : 1;
+  if (fast) startWalk(d, curB, side * (B.R + 0.8), 'salir');
+  else { const b0 = Math.ceil(curB); timed(d, 'despedida', b0, 2, bb => { const q = DANCE.basico(bb + 64); q.turn = 0; q.hR = [0.22 + 0.14 * Math.sin((bb - b0) * TAU * 1.5), 0.5, 0.12]; return q; }, { then: 'salir' }); }
+}
+function doSpecial(p, name) {                              // pasos especiales (regalos y emojis)
+  const d = p.d; if (!d || !idle(d)) return;
+  const b0 = curB, s = bb => bb - b0;
+  if (name === 'mortal') timed(d, 'mortal3', b0, 3, bb => { const q = clamp(s(bb) / 3, 0, 1), o = base(), c = q < 0.25 ? sstep(0, 0.25, q) : q > 0.8 ? Math.sin(PI * clamp((q - 0.8) / 0.2, 0, 1)) : 0;
+    const air = q > 0.25 && q < 0.8 ? Math.sin(PI * (q - 0.25) / 0.55) : 0, r = clamp((q - 0.28) / 0.48, 0, 1);
+    o.py = -0.3 * c + 1.0 * air; o.flip = -TAU * ease(r); o.lean = 0.3 * c; const tk = Math.sin(PI * r);
+    o.fL = [0.11, 0.5 * tk, 0.3 * tk]; o.fR = [0.11, 0.5 * tk, 0.3 * tk]; o.hL = lerp3([0.15, -0.45, -0.25], [0.12, -0.25, 0.35], tk); o.hR = o.hL.slice(); o.nod = 0.4 * tk; return o; });
+  else if (name === 'giro') timed(d, 'giro', b0, 4, bb => DANCE.giro(s(bb) + 64));
+  else if (name === 'dab') timed(d, 'dab', b0, 4, bb => DANCE.dab(s(bb) + 64));
+  else if (name === 'guitarrazo') timed(d, 'guitarrazo', b0, 8, bb => DANCE.guitarra(s(bb) + 6 + 64 * 16));
+  else timed(d, 'festejo', b0, 2, bb => DANCE.salto(s(bb) + 64));
+}
+const fiestaDance = b => nowS() < fiestaUntil ? ['disco', 'cumbia', 'runningman', 'manos'][Math.floor(b / 8) % 4] : null;
+function startFiesta() { fiestaUntil = Math.max(fiestaUntil, nowS()) + CFG.fiestaSec; choreo.dirty = true; for (const p of onFloor()) doSpecial(p, 'salto'); }
+function sitFloorPose(b) {                                 // cansado: sentado en el piso, respirando
+  const o = base(), br = Math.sin(b * PI * 0.5); o.py = 0.2 - STAND; o.lean = -0.12 + 0.04 * br; o.nod = 0.25 + 0.05 * br;
+  o.fL = [0.13, 0.0, 0.5]; o.fR = [0.12, 0.0, 0.42]; o.hL = [0.12, -0.5, -0.22]; o.hR = [0.12, -0.5, -0.22]; o.sq = 0.04 * br; return o; }
+let lastChoreo = 0;
+function brainUpdate(dt, b) {
+  const tn = nowS(), fiesta = tn < fiestaUntil;
+  if (!fiesta && fixed === null && lastChoreo && tn - lastChoreo > 2) { lastChoreo = tn; choreo.dirty = true; } if (!lastChoreo) lastChoreo = tn;
+  for (const p of [...people.values()]) {
+    if (p.leaving) continue;
+    if (!p.guest && !isFan(p.uid)) { p.guest = true; }                                         // se acabaron sus 15 min de fijo
+    p.forever = isFan(p.uid) || isVip(p.uid);
+    if (p.forever) p.energy = Math.max(p.energy, capOf(p));
+    else if (!fiesta) p.energy = Math.max(0, p.energy - dt);
+    const d = p.d; if (!d) continue;
+    if (p.energy <= 0) {
+      if (!p.tiredAt) p.tiredAt = tn;
+      if (!d.job) { d.job = { k: 'cansado', b0: b }; d.setAct(sitFloorPose); }
+      if (p.guest && tn - p.tiredAt > CFG.tiredSec) leave(p);
+    } else if (p.tiredAt) { p.tiredAt = 0; if (d.job && d.job.k === 'cansado') { d.job = null; d.endAct(); doSpecial(p, 'salto'); } }
+  }
+  if (fiesta && Math.random() < dt * 6) { const B = getBounds(); spark(V(lerp(B.L, B.R, Math.random()), 1 + Math.random() * 3, -0.5), new THREE.Color().setHSL(Math.random(), 1, 0.6).getHex()); }
+}
+// trabajos con tiempo que terminan en salir (despedida)
+const _timedEnd = d => { const j = d.job; if (j && j.then === 'salir') { const B = getBounds(), side = d.origin.x < 0 ? -1 : 1; startWalk(d, curB, side * (B.R + 0.8), 'salir'); return true; } return false; };
+
+/* ── eventos de TikFinity ── */
+function onGiftCoins(uid, name, pic, coins, giftName, giftId) {
+  const fanGift = isFanGift(giftName, giftId);
+  if (fanGift) { FANS[uid] = Date.now() + CFG.fixedMin * 60000; saveFans(); }
+  rollDay(); DAY.coins[uid] = (DAY.coins[uid] || 0) + coins; (DAY.names = DAY.names || {})[uid] = name; saveDay(); addPerm(uid, name, coins);
+  const p = getOrSpawn(uid, name, pic, 3); if (!p) return null;
+  const wasGuest = p.guest; p.coins = DAY.coins[uid];
+  if (isFan(uid)) p.guest = false;
+  setLvl(p, Math.max(isFan(uid) ? 1 : 0, lvlFor(uid, p.coins)));
+  if (wasGuest !== p.guest && p.d) p.d.setLook(p.hue, false);
+  const fest = isFest(giftName, giftId) ? 2 : 1, fresh = p.energy <= 0 && !p.cap;
+  const cap0 = capOf(p); p.cap = Math.min(CFG.energyMax, Math.max(cap0, CFG.giftCapMin, coins >= 10 ? coins * CFG.secPerCoin * fest : 0));
+  if (p.cap > cap0) p.energy *= p.cap / cap0;
+  const sec = coins >= 10 || fresh ? addEnergy(p, p.cap) : addEnergy(p, capOf(p) * Math.min(1, CFG.coinPct * coins * fest));
+  if (!fanGift && sec >= 1) floatText(p, sec, `hsl(${p.hue},90%,70%)`);
+  if (p.d && p.d.job && p.d.job.k === 'cansado') { p.d.job = null; p.d.endAct(); p.tiredAt = 0; }
+  doSpecial(p, coins >= 99 ? 'mortal' : coins >= 30 ? 'guitarrazo' : coins >= 5 ? 'giro' : 'salto');
+  if (coins >= CFG.fiestaCoins) startFiesta();
+  return p;
+}
+function launchGifts(p, src, coins, n) {                   // los regalos de verdad vuelan hacia el bailarín de quien los mandó
+  const k = Math.min(n, 8);
+  for (let i = 0; i < k; i++) setTimeout(() => { const d = p && p.d, B = getBounds();
+    const tx = d ? (d.job && d.job.k === 'entrar' ? d.slotX : d.origin.x) + (Math.random() - 0.5) * 0.15 : lerp(B.L + 0.5, B.R - 0.5, Math.random());
+    spawnGift(tx, d ? d.origin.z : 0, src || '🎁', coins); }, i * 140);
+}
+const EMOJI = [[/🤸|mortal|flip/i, 'mortal'], [/🎸|🤘|guitarra|rock/i, 'guitarrazo'], [/🔥|salta|jump/i, 'salto'], [/🌀|gira|vuelta/i, 'giro'], [/💃|🕺|baila|dance/i, null], [/👏|aplaus/i, 'salto']];
+function onEmoji(uid, name, pic, text) {
+  let sp = null, hit = false;
+  for (const [re, s] of EMOJI) if (re.test(text)) { hit = true; sp = s; break; }
+  if (!hit) return;
+  if (!sp) sp = ['giro', 'salto', 'dab', 'salto'][Math.floor(Math.random() * 4)];
+  let p = people.get(uid);
+  if (p && nowS() - p.lastEmoji < CFG.emojiCooldown) return;
+  if (!p && (CFG.guests || isFan(uid))) { p = getOrSpawn(uid, name, pic, isFan(uid) ? 2 : 1); if (p) addEnergy(p, capOf(p)); }
+  else if (p) addEnergy(p, CFG.emojiSec);
+  if (p) { p.lastEmoji = nowS(); doSpecial(p, sp); }
+}
+const combos = new Map(), seen = new Set();
+function onGift(d) {
+  const uid = (d.uniqueId || d.userId || '').toString(); if (!uid) return;
+  const coins = parseInt(d.diamondCount ?? d.gift?.diamond_count ?? 0, 10) || 0; if (!coins) return;
+  const cnt = parseInt(d.repeatCount || d.gift?.repeat_count || 1, 10) || 1;
+  const key = uid + '|' + (d.giftId ?? d.giftName ?? '?') + '|' + (d.groupId || '');
+  const prev = combos.get(key), was = prev ? prev.n : 0, delta = Math.max(0, cnt - was);
+  if (d.repeatEnd === false) combos.set(key, { n: cnt, t: Date.now() }); else combos.delete(key);
+  if (!delta) return;
+  const u2 = uid.toLowerCase(), p = onGiftCoins(u2, d.nickname || uid, d.profilePictureUrl || '', coins * delta, d.giftName, d.giftId);
+  launchGifts(p, d.giftPictureUrl || d.gift?.giftPictureUrl || '', coins, delta);
+}
+function onLike(d) {
+  const uid = (d.uniqueId || d.userId || '').toString().toLowerCase(); if (!uid) return;
+  DAY.act = Date.now();
+  let p = people.get(uid);
+  if (p && p.name === p.uid && d.nickname && d.nickname.toLowerCase() !== uid) { p.name = String(d.nickname).slice(0, 13); if (p.d) { p.d.name = p.name; p.d.nameW = 0; } (DAY.names = DAY.names || {})[uid] = d.nickname; }
+  if (!p) { if (!CFG.guests && !isFan(uid)) return; p = getOrSpawn(uid, d.nickname || uid, d.profilePictureUrl || '', isFan(uid) ? 2 : 1); if (!p) return; addEnergy(p, capOf(p)); p.lastTap = nowS(); return; }
+  if (p.leaving) return;
+  const tn = nowS(); if (tn - p.lastTap < CFG.tapGap) return; p.lastTap = tn;
+  addEnergy(p, CFG.tapPct * Math.min(capOf(p), CFG.giftCapMin));
+}
+function onChat(d) {
+  const uid = (d.uniqueId || d.userId || '').toString().toLowerCase(), txt = (d.comment || '').trim(), low = txt.toLowerCase();
+  if (txt.startsWith('!') && OWNERS.includes(uid)) {
+    const m = low.match(/^!bpm\s+(\d{2,3})/);
+    if (m) { const nb = clamp(+m[1], 60, 200), cb = beatNow(); BPM = nb; BPS = nb / 60; t0 = performance.now() / 1000 - cb / BPS; return; }
+    if (low === '!fiesta') { if (people.size) startFiesta(); return; }
+    if (low === '!reiniciar') { DAY = { day: dayKey(Date.now()), act: Date.now(), coins: {}, v: 2 }; saveDay(); for (const p of [...people.values()]) { p.coins = 0; leave(p, true); } return; }
+    if (low === '!respaldo') { permDirty = Date.now(); if (obsReady) { permDirty = 0; obsBackup(); } else obsConnect(); return; }
+    if (low === '!limpiar') { for (const p of [...people.values()]) leave(p, true); fiestaUntil = 0; return; }
+  }
+  onEmoji(uid, d.nickname || uid, d.profilePictureUrl || '', txt);
+}
+function handle(ev, d) { if (ev === 'gift') onGift(d); else if (ev === 'like') onLike(d); else if (ev === 'chat') onChat(d); }
+let ws = null, reTimer = null;
+function connect() {
+  try { ws = new WebSocket(CFG.wsUrl); } catch (e) { return retry(); }
+  ws.onopen = () => console.log('[Baile 3D] Conectado a TikFinity');
+  ws.onmessage = e => { let m; try { m = JSON.parse(e.data); } catch { return; } const d = m.data || {};
+    if (d.msgId) { const k = m.event + '|' + d.msgId + '|' + (d.uniqueId || '') + '|' + (d.likeCount || '') + '|' + (d.repeatCount || '') + '|' + d.repeatEnd;
+      if (seen.has(k)) return; seen.add(k); if (seen.size > 3000) seen.clear(); }
+    handle(m.event, d); };
+  ws.onerror = () => {}; ws.onclose = retry;
+}
+function retry() { clearTimeout(reTimer); reTimer = setTimeout(connect, 5000); }
+setInterval(() => { const t = Date.now(); for (const [k, v] of combos) if (t - v.t > 30000) combos.delete(k); }, 10000);
+// los de 1000+ monedas hoy vuelven solos
+setInterval(() => { const t = Date.now(); if (!(DAY.act && t - DAY.act <= DAY_GAP_MIN * 60e3) && DAY.day !== dayKey(t)) return;
+  for (const uid in DAY.coins) { if (!isVip(uid)) continue; const p = people.get(uid); if (p && !p.leaving) continue;
+    const np = getOrSpawn(uid, (DAY.names && DAY.names[uid]) || uid, '', 3); if (np) addEnergy(np, capOf(np)); } }, 4000);
+// si OBS recarga la fuente, la pista sigue (3 min)
+function savePista() { if (TESTING) return; try { localStorage.setItem(SKEY, JSON.stringify({ at: Date.now(), bpm: BPM,
+  d: onFloor().map(p => ({ uid: p.uid, name: p.name, guest: p.guest, coins: p.coins, energy: p.energy, cap: p.cap })) })); } catch (e) {} }
+setInterval(savePista, 3000);
+function loadPista() { try { const s = JSON.parse(localStorage.getItem(SKEY) || 'null'); if (!s || Date.now() - s.at > 3 * 60 * 1000 || TESTING) return;
+  for (const o of s.d || []) { const p = makePerson(o.uid, o.name, ''); Object.assign(p, { coins: Math.max(p.coins, o.coins || 0), energy: Math.max(o.energy || 0, 6), cap: o.cap || 0 });
+    p.lvl = Math.max(p.coins ? levelOf(p.coins) : (p.guest ? 0 : 1), permExtra(p.uid)); people.set(p.uid, p); } } catch (e) {} }
+
+/* ── pruebas sin live ── */
+const FAKE = ['Andrea', 'Lokito_23', 'Sumo', 'Luz', 'MarcoElPro', 'Kathy', 'Rolo', 'Vale', 'Pancho', 'Mery', 'Tito', 'Juanca', 'Nico', 'Flor', 'GuitarFan'];
+const TEST_IMG = { 1: '🌹', 5: '💖', 10: '🍩', 30: '🎸', 99: 'img/sombrero.png', 199: 'img/amplificado.png', 500: 'img/pistola.png', 1000: 'img/galaxia.png' };
+const pickR = a => a[Math.floor(Math.random() * a.length)];
+let testName = '';
+const who = () => { const n = testName || pickR(FAKE); return { uniqueId: n.toLowerCase(), nickname: n }; };
+function fakeGift(coins, name, count) { const b = { ...who(), giftPictureUrl: TEST_IMG[coins] || '' }, gid = 'g' + coins;
+  if (count > 1) { let c = 0; const iv = setInterval(() => { c++; handle('gift', { ...b, giftName: name, giftId: gid, diamondCount: coins, repeatCount: c, repeatEnd: c >= count, giftType: 1 }); if (c >= count) clearInterval(iv); }, 250); }
+  else handle('gift', { ...b, giftName: name, giftId: gid, diamondCount: coins, repeatCount: 1, giftType: 2 }); }
+const TESTS = [
+  ['q', 'Quiéreme ❤️', () => fakeGift(1, 'Heart Me', 1)], ['1', 'Rosa (1)', () => fakeGift(1, 'Rose', 1)], ['2', '10 rosas', () => fakeGift(1, 'Rose', 10)],
+  ['3', 'Corazón (5)', () => fakeGift(5, 'Finger Heart', 1)], ['4', 'Sombrero (99)', () => fakeGift(99, 'Hat and Mustache', 1)], ['5', 'Regalo 500', () => fakeGift(500, 'Money Gun', 1)],
+  ['6', 'Galaxia (1000)', () => fakeGift(1000, 'Galaxy', 1)], ['e', 'Emoji 💃', () => handle('chat', { ...who(), comment: pickR(['💃', '🕺', '🎸', '🔥', '🤸', '👏', 'baila!']) })],
+  ['l', 'Taps 👆', () => handle('like', { ...who(), likeCount: 15 })], ['f', '¡Fiesta!', () => { if (!people.size) fakeGift(1, 'Rose', 1); setTimeout(startFiesta, 50); }],
+  ['c', 'Limpiar', () => { for (const p of [...people.values()]) leave(p, true); fiestaUntil = 0; }],
+];
+addEventListener('keydown', e => { const t = TESTS.find(x => x[0] === e.key.toLowerCase()); if (t && e.target.tagName !== 'INPUT') t[2](); });
+if (Q.get('test') === '1') { const pn = document.getElementById('panel');
+  const inp = document.createElement('input'); inp.placeholder = 'nombre (opcional)'; inp.oninput = () => testName = inp.value.trim(); pn.appendChild(inp);
+  for (const [k, label, fn] of TESTS) { const bt = document.createElement('button'); bt.textContent = label + ' [' + k.toUpperCase() + ']'; bt.onclick = fn; pn.appendChild(bt); } }
+function demoTick() { const r = Math.random();
+  if (r < 0.4) handle('like', { ...who(), likeCount: 5 + Math.floor(Math.random() * 40) });
+  else if (r < 0.47) fakeGift(1, 'Heart Me', 1);
+  else if (r < 0.7) handle('chat', { ...who(), comment: pickR(['💃', '🕺', '🎸', '🔥', '🤸', '👏', 'hola', 'baila']) });
+  else if (r < 0.97) fakeGift(pickR([1, 1, 1, 5, 10, 30]), 'Rose', Math.random() < 0.4 ? 3 + Math.floor(Math.random() * 6) : 1);
+  else fakeGift(pickR([99, 199, 500, 1000]), 'Big', 1); }
+loadPista();
+setTimeout(() => { getBounds(); for (const p of people.values()) if (!p.d) bindDancer(p); }, 300);
+if (Q.get('demo') === '1') setInterval(demoTick, num('demoms', 1300)); else if (Q.get('test') !== '1' || Q.get('ws') === '1') connect();
+
+window.__s3d = { dancers, DANCE, ORDER, render, renderer, scene, gifts, people, handle, setDance: d => { fixed = d; choreo.dirty = true; } };
+</script>
+</body>
+</html>

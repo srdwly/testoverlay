@@ -906,17 +906,45 @@ function climbPose(b, side) {
   return p;
 }
 const gifts = [], sparks = [];
-const GSZ = num('regalo', 1.8);                // tamaño de los regalos
-const GIFT_COLS = [0xe3122b, 0x2f7bff, 0xffc21a, 0x2ec27e, 0xb04cff, 0xff7a1a];
+/* REGALOS LANZADOS como en Rosas 7: salen desde abajo (el celular del espectador), enormes cerca de la cámara, hacen un arco
+   girando como ficha y caen sobre la escena. El tamaño va en metros para que choquen con los muñecos: una rosa (1 moneda)
+   mide como una cabeza y los caros crecen igual que en Rosas 7 (1 + 0,45·log10(monedas), hasta ×2,8). ?regalo= multiplica. */
+const GSZ = num('regalo', 1), G_R1 = 0.17 * GSZ, G_MAX = 2.8, G_TH = 0.22, G_LAYERS = 6, G_NEAR = num('cerca', 6), G_MAXN = clamp(Math.round(num('maxregalos', 40)), 5, 120);
+const GIFT_DEMO = [[1, '🌹', 34], [5, '💖', 12], [10, '🍩', 10], [30, '🎸', 8], [99, 'img/sombrero.png', 10], [199, 'img/amplificado.png', 6], [500, 'img/pistola.png', 4], [1000, 'img/galaxia.png', 3]];
+const GIFT_W = GIFT_DEMO.reduce((s, g) => s + g[2], 0);
+const gTex = new Map(), gPlane = new THREE.PlaneGeometry(2, 2);
+function giftMats(src) {                                   // cara, canto y reverso (se arman una vez por imagen)
+  if (gTex.has(src)) return gTex.get(src);
+  let tex;
+  if (src.length <= 3) { const c = document.createElement('canvas'); c.width = c.height = 128; const x = c.getContext('2d');
+    x.font = '100px "Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji",serif'; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(src, 64, 70);
+    tex = new THREE.CanvasTexture(c); }
+  else { tex = new THREE.TextureLoader().load(src); }
+  tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+  const mk = (col, side) => new THREE.MeshBasicMaterial({ map: tex, color: col, alphaTest: 0.45, side, transparent: false });
+  const m = { face: mk(0xffffff, THREE.FrontSide), back: mk(0x9f97ad, THREE.FrontSide), edge: mk(0x5b4232, THREE.DoubleSide) };
+  gTex.set(src, m); return m;
+}
+const rndGift = () => { let k = Math.random() * GIFT_W; for (const g of GIFT_DEMO) if ((k -= g[2]) < 0) return g; return GIFT_DEMO[0]; };
+const gSize = coins => G_R1 * Math.min(G_MAX, 1 + 0.45 * Math.log10(Math.max(1, coins))) * (0.9 + Math.random() * 0.2);
 let bounds = null, lastOB = null, nextGift = 4, nextEvent = 10, nameOf = ['Mari', 'Don Lucho', 'Rosita', 'Jhonny', 'La Pao', 'Ceci', 'Wilmer', 'Pame', 'Kathy', 'Rolo'], spawnCount = 0;
 function worldAt(nx, ny) { const v = V(nx, ny, 0.5).unproject(cam), d = v.sub(cam.position).normalize(), t = -cam.position.z / d.z; return cam.position.clone().addScaledVector(d, t); }
-function spawnGift(x) {
-  const m = new THREE.Group(), box = new THREE.BoxGeometry(1, 1, 1), rib = toon(0xfff3c4);
-  part(box, toon(GIFT_COLS[Math.floor(Math.random() * GIFT_COLS.length)]), m, 0, 0, 0, 0.22, 0.2, 0.22, 0.02);
-  part(box, rib, m, 0, 0, 0, 0.05, 0.205, 0.225, 0.004); part(box, rib, m, 0, 0, 0, 0.225, 0.205, 0.05, 0.004);
-  part(SPH, rib, m, 0.04, 0.12, 0, 0.045, 0.032, 0.028, 0.01); part(SPH, rib, m, -0.04, 0.12, 0, 0.045, 0.032, 0.028, 0.01);
-  m.scale.setScalar(GSZ); scene.add(m);
-  gifts.push({ m, p: V(x, bounds.top + 0.3, (Math.random() - 0.5) * 0.4), v: V((Math.random() - 0.5) * 0.8, -2, 0), w: V(Math.random() * 6 - 3, Math.random() * 6 - 3, Math.random() * 6 - 3), r: 0.13 * GSZ, age: 0, rest: 0, cd: 0 });
+function camPoint(nx, ny, dist) { const d = V(nx, ny, 0.5).unproject(cam).sub(cam.position).normalize(); return cam.position.clone().addScaledVector(d, dist); }
+function spawnGift(tx, tz) {
+  const [coins, src] = rndGift(), r = gSize(coins), M = giftMats(src), m = new THREE.Group(), inner = new THREE.Group(); m.add(inner);
+  for (let i = 0; i <= G_LAYERS; i++) { const k = i / G_LAYERS - 0.5, last = i === G_LAYERS;
+    const pl = new THREE.Mesh(gPlane, last ? M.face : M.edge); pl.position.z = k * G_TH; inner.add(pl);
+    if (last) { const bk = new THREE.Mesh(gPlane, M.back); bk.rotation.y = PI; bk.position.z = -0.5 * G_TH; inner.add(bk); } }
+  m.scale.setScalar(r); scene.add(m);
+  if (gifts.length >= G_MAXN) { const old = gifts.find(g => !g.thr && !g.fade); if (old) old.fade = 0.001; }
+  // lanzamiento: igual que Rosas 7 en pantalla (sale de abajo, avanza con easeOut haciendo un arco) y además se acerca desde la cámara:
+  // empieza G_NEAR veces más grande y llega a su tamaño real justo encima del bailarín
+  const T = V(tx, 2.7 + Math.random() * 1.1, tz), Tn = T.clone().project(cam);
+  const S = V((Math.random() - 0.5) * 0.56, -1.25, 0), S3 = camPoint(S.x, S.y, cam.position.distanceTo(T) / (1 + G_NEAR));
+  const axis = V(Math.random() - 0.5, Math.random() - 0.5, 0).normalize();
+  m.quaternion.setFromAxisAngle(axis, 0.2 + Math.random() * 0.9);
+  gifts.push({ m, inner, p: S3, v: V(0, 0, 0), w: V(Math.random() * 5 - 2.5, (9 + Math.random() * 7) * (Math.random() < 0.5 ? -1 : 1), 0), r, coins, age: 0, rest: 0, cd: 0,
+    thr: { t: 0, dur: 0.75 + Math.random() * 0.25, S, Tn, T, D: cam.position.distanceTo(T) }, tilt: (Math.random() - 0.5) * 0.35 });
 }
 function spark(pos, col = 0xffffff) { const sp = new THREE.Sprite(new THREE.SpriteMaterial(Object.assign({ map: glowTex, color: col }, ADD))); sp.position.copy(pos); scene.add(sp); sparks.push({ sp, age: 0 }); }
 const idle = d => !d.job && d.grp.visible;
@@ -933,7 +961,7 @@ function director(b) {
   // regalos que caen (60% justo encima de alguien)
   if (b > nextGift) { nextGift = b + 1.5 + Math.random() * 3; const vis = dancers.filter(d => d.grp.visible && !d.job);
     const n = 1 + Math.floor(Math.random() * 3); for (let k = 0; k < n; k++) { const tgt = vis.length && Math.random() < 0.6 ? vis[Math.floor(Math.random() * vis.length)] : null;
-      spawnGift(tgt ? tgt.origin.x + (Math.random() - 0.5) * 0.1 : lerp(bounds.L + 0.4, bounds.R - 0.4, Math.random())); } }
+      spawnGift(tgt ? tgt.origin.x + (Math.random() - 0.5) * 0.1 : lerp(bounds.L + 0.4, bounds.R - 0.4, Math.random()), tgt ? tgt.origin.z : (Math.random() - 0.5) * 0.8); } }
   // eventos: trepar + mortal + paracaídas, choque de manos, alguien se va y entra otro
   if (b > nextEvent) { nextEvent = b + 8 + Math.random() * 6; const r = Math.random(), vis = dancers.filter(idle);
     if (r < 0.45 && vis.length && !dancers.some(d => d.job && ['ir', 'subir', 'colgar', 'mortal', 'paraca'].includes(d.job.k))) {
@@ -949,7 +977,7 @@ function director(b) {
     else { const vis2 = dancers.filter(idle); if (vis2.length) { const d = vis2[Math.floor(Math.random() * vis2.length)], side = d.slotX < 0 ? -1 : 1; startWalk(d, b, side * (bounds.R + 0.8), 'salir'); } }
   }
   // patadas: un regalo quieto cerca de los pies de alguien que baila
-  for (const d of dancers) if (idle(d)) { const g = gifts.find(g => g.rest > 0.4 && !g.claimed && Math.abs(g.p.x - d.origin.x) < 0.45 + g.r && g.age < 11);
+  for (const d of dancers) if (idle(d)) { const g = gifts.find(g => g.rest > 0.4 && !g.claimed && Math.abs(g.p.x - d.origin.x) < 0.45 + g.r && g.age < 16 && !g.fade);
     if (g) { g.claimed = true; const b0 = Math.ceil(b), side = Math.sign(g.p.x - d.origin.x) || 1, foot = side > 0 ? 'fL' : 'fR';
       d.job = { k: 'patear', b0, g, side };
       d.setAct(bb => { const s = clamp(bb - b0, 0, 1), p = DANCE.basico(bb + 64); p.yaw = side * 0.9 * sstep(0, 0.25, s) * (1 - sstep(0.8, 1, s));
@@ -978,24 +1006,40 @@ function director(b) {
       d.origin.x = clamp(d.origin.x + j.vx * dt, bounds.L + 0.35, bounds.R - 0.35); d.origin.y += j.vy * dt;
       if (j.k === 'paraca' && d.origin.y <= 0) { d.origin.y = 0; d.chute.down = true; d.bump(0.8); d.job = { k: 'aterrizar', b0: b }; d.endAct(); }
     } else if (j.k === 'aterrizar') { if (tj > 0.7) startWalk(d, b, d.slotX, 'volver'); }
-    else if (j.k === 'patear') { if (!j.hit && b >= j.b0 + 0.52) { j.hit = true; const g = j.g; g.v.set(j.side * (2.2 + Math.random() * 1.2), 3 + Math.random() * 1.5, (Math.random() - 0.5) * 0.6); g.w.set(Math.random() * 14 - 7, Math.random() * 14 - 7, Math.random() * 14 - 7); g.rest = 0; g.claimed = false; spark(g.p.clone(), 0xfff1a8); }
+    else if (j.k === 'patear') { if (!j.hit && b >= j.b0 + 0.52) { j.hit = true; const g = j.g, hv = Math.sqrt(G_R1 / g.r); g.v.set(j.side * (2.2 + Math.random() * 1.2) * hv, (3 + Math.random() * 1.5) * hv, (Math.random() - 0.5) * 0.6); g.w.set(Math.random() * 14 - 7, Math.random() * 14 - 7, Math.random() * 14 - 7); g.rest = 0; g.claimed = false; spark(g.p.clone(), 0xfff1a8); }
       if (b >= j.b0 + 1) { d.job = null; d.endAct(); } }
     else if (j.k === 'chocar') { if (!j.hit && b >= j.b0 + 1 && d.slotX < j.mate.slotX) { j.hit = true; const a = d.S.haR.clone().lerp(j.mate.S.haL, 0.5); spark(a, 0xffe27a); d.bump(0.35); j.mate.bump(0.35); }
       if (b >= j.b0 + 2) { d.job = null; d.endAct(); } }
   }
   // física de los regalos
+  const _q = new THREE.Quaternion(), _e = new THREE.Euler(), _wq = new THREE.Quaternion(), _wv = V(0, 0, 0);
   for (let k = gifts.length - 1; k >= 0; k--) { const g = gifts[k]; g.age += dt; g.cd -= dt;
-    g.v.y -= 9.8 * dt; g.p.addScaledVector(g.v, dt);
-    for (const d of dancers) if (d.grp.visible && d.S && g.cd <= 0) { const n = g.p.clone().sub(d.S.H), L = n.length(), R = HEADR + g.r;
-      if (L < R) { n.divideScalar(L || 1); g.p.copy(d.S.H).addScaledVector(n, R); const vn = g.v.dot(n);
-        if (vn < 0) { g.v.addScaledVector(n, -1.6 * vn); g.v.y = Math.max(g.v.y, 2.6); g.v.x += n.x * 1.2 + (Math.random() - 0.5); d.bump(clamp(-vn / 4, 0.5, 1.4)); g.cd = 0.25; g.w.multiplyScalar(1.5); } } }
-    if (g.p.y < g.r * 0.9) { g.p.y = g.r * 0.9; if (g.v.y < 0) g.v.y *= -0.35; g.v.x *= 0.82; g.v.z *= 0.82; g.w.multiplyScalar(0.75); if (Math.abs(g.v.y) < 0.5) g.v.y = 0; }
-    if (g.p.x < bounds.L + g.r || g.p.x > bounds.R - g.r) { g.p.x = clamp(g.p.x, bounds.L + g.r, bounds.R - g.r); g.v.x *= -0.5; }
-    const resting = g.p.y <= g.r * 0.91 && g.v.length() < 0.25; g.rest = resting ? g.rest + dt : 0;
-    if (resting) { g.m.rotation.x = lerp(g.m.rotation.x, Math.round(g.m.rotation.x / (PI / 2)) * PI / 2, 0.2); g.m.rotation.z = lerp(g.m.rotation.z, Math.round(g.m.rotation.z / (PI / 2)) * PI / 2, 0.2); }
-    else { g.m.rotation.x += g.w.x * dt; g.m.rotation.y += g.w.y * dt; g.m.rotation.z += g.w.z * dt; }
-    g.m.position.copy(g.p); const life = 1 - sstep(11, 12, g.age); g.m.scale.setScalar(life * GSZ);
-    if (g.age > 12) { scene.remove(g.m); gifts.splice(k, 1); } }
+    if (g.thr) {                                              // en el aire, lanzado desde el celular
+      const T = g.thr; T.t += dt; const t = Math.min(1, T.t / T.dur), e = easeOut(t);
+      const nx = lerp(T.S.x, T.Tn.x, e), ny = lerp(T.S.y, T.Tn.y, e) + 0.32 * Math.sin(PI * t);     // arco en pantalla (como Rosas 7)
+      g.p.copy(camPoint(nx, ny, T.D / (1 + G_NEAR * (1 - e))));                              // cerca de la cámara = enorme
+      if (t >= 1) { g.thr = null; g.p.copy(T.T); g.v.set((Math.random() - 0.5) * 0.6, -1, 0); }
+    } else {
+      g.v.y -= 9.8 * dt; g.p.addScaledVector(g.v, dt);
+      for (const d of dancers) if (d.grp.visible && d.S && g.cd <= 0) { const n = g.p.clone().sub(d.S.H), L = n.length(), R = HEADR + g.r * 0.85;
+        if (L < R) { n.divideScalar(L || 1); g.p.copy(d.S.H).addScaledVector(n, R); const vn = g.v.dot(n);
+          if (vn < 0) { g.v.addScaledVector(n, -1.6 * vn); g.v.y = Math.max(g.v.y, 2.6); g.v.x += n.x * 1.2 + (Math.random() - 0.5); d.bump(clamp(-vn / 4 * Math.sqrt(g.r / G_R1), 0.5, 1.6)); g.cd = 0.25; g.w.multiplyScalar(1.5); spark(g.p.clone().addScaledVector(n, -g.r * 0.6), 0xfff1a8); } } }
+      for (let j = 0; j < k; j++) { const o = gifts[j]; if (o.thr) continue;      // se apilan sin atravesarse
+        const n = g.p.clone().sub(o.p), L = n.length(), R = (g.r + o.r) * 0.82; if (L >= R || L < 1e-4) continue;
+        n.divideScalar(L); const push = (R - L) / 2; g.p.addScaledVector(n, push); o.p.addScaledVector(n, -push);
+        const rv = g.v.clone().sub(o.v).dot(n); if (rv < 0) { g.v.addScaledVector(n, -rv * 0.6); o.v.addScaledVector(n, rv * 0.6); } }
+      if (g.p.y < g.r) { const hard = g.v.y < -2; g.p.y = g.r; if (g.v.y < 0) g.v.y *= -0.3; g.v.x *= 0.82; g.v.z *= 0.82; g.w.multiplyScalar(0.7); if (Math.abs(g.v.y) < 0.5) g.v.y = 0;
+        if (hard && !g.landed) { g.landed = true; spark(V(g.p.x, 0.05, g.p.z), 0xffffff); } }
+      if (g.p.x < bounds.L + g.r || g.p.x > bounds.R - g.r) { g.p.x = clamp(g.p.x, bounds.L + g.r, bounds.R - g.r); g.v.x *= -0.5; }
+    }
+    const resting = !g.thr && g.p.y <= g.r * 1.02 && g.v.length() < 0.3; g.rest = resting ? g.rest + dt : 0;
+    if (resting) {                                            // quieto: la ficha se para mirando a la cámara, un poco inclinada (como la pila de Rosas 7)
+      _e.set(0, Math.atan2(cam.position.x - g.p.x, cam.position.z - g.p.z), g.tilt); _q.setFromEuler(_e); g.m.quaternion.slerp(_q, Math.min(1, dt * 6)); g.w.multiplyScalar(0.8);
+    } else { const sp = g.w.length(); if (sp > 1e-3) { _wv.copy(g.w).divideScalar(sp); _wq.setFromAxisAngle(_wv, sp * dt); g.m.quaternion.premultiply(_wq); } g.w.multiplyScalar(g.thr ? 0.995 : 0.99); }
+    g.m.position.copy(g.p);
+    if (g.fade) g.fade += dt; const life = g.fade ? 1 - clamp(g.fade / 0.5, 0, 1) : 1 - sstep(17, 18, g.age);
+    g.m.scale.setScalar(life * g.r);
+    if (life <= 0) { scene.remove(g.m); gifts.splice(k, 1); } }
   for (let k = sparks.length - 1; k >= 0; k--) { const s = sparks[k]; s.age += dt; const q = s.age / 0.35; s.sp.scale.setScalar(0.2 + 0.9 * q); s.sp.material.opacity = 1 - q; if (q >= 1) { scene.remove(s.sp); sparks.splice(k, 1); } }
 }
 function drawNames() {

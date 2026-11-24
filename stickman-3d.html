@@ -12,15 +12,31 @@
    Manos y pies van a un punto exacto con IK de dos huesos: los pies se quedan plantados
    en el piso aunque el cuerpo baje, y al saltar las piernas cuelgan solas.
 
-   Bailes (todos al mismo pulso, ?bpm=110):
+   Movimiento con los principios clásicos de animación:
+     · superposición y seguimiento: la cadera manda, el pecho, los brazos y la cabeza llegan un
+       poquito después y con un pequeño rebote (resortes), así nada se mueve "en bloque"
+     · aplastar y estirar: el cuerpo se comprime al tomar impulso y al caer, y se estira en el aire
+     · anticipación: se agachan antes de saltar, se tuercen al revés antes de girar, el robot
+       "carga" antes de cada golpe
+     · arcos: brazos y manos viajan en curvas, no en línea recta
+     · entradas y salidas suaves, y cambio de baile mezclado durante un tiempo entero
+     · acción secundaria: capa de tela, puntas de la bandana y púa de la cadena se mueven solas
+
+   Bailes (todos al mismo pulso, ?bpm=100):
      paso básico, cumbia, caporal, robot, disco, running man, moonwalk,
      guitarra al aire, floss, manos arriba, giro, salto con aplauso.
 
+   Niveles (iguales a la pista de baile; cada nivel suma lo anterior):
+     2 bandana · 3 lentes · 4 sombrero · 5 capa · 6 cadena de oro con púa · 7 fuego en los pies
+     · 8 aura · 9 cuerpo dorado y aureola · 10 LEYENDA (arcoíris, aura de colores y foco propio)
+
    ENLACE: stickman-3d.html          → 5 bailando juntos; cambian de baile cada 8 tiempos
-     ?galeria=1   todos los bailes a la vez, cada uno en su cuadro (vista de 3/4)
+     ?galeria=1        todos los bailes a la vez, cada uno en su cuadro (vista de 3/4)
+     ?galeria=niveles  los 9 niveles con accesorios, cada uno bailando
      ?n=5         cuántos stickmans (1 a 8)
+     ?nivel=7     todos con ese nivel (sin esto, cada uno muestra un nivel distinto)
      ?baile=cumbia  fija un baile · ?mezcla=1 cada uno baila algo distinto
-     ?bpm=110     velocidad · ?panel=0 sin botones · ?fondo=1 fondo oscuro
+     ?bpm=100     velocidad · ?panel=0 sin botones · ?fondo=1 fondo oscuro
      ?escala=1    tamaño · ?altura=3 cámara más arriba (más vista desde arriba)
 
    Usa three.js desde cdn.jsdelivr.net (como MediaPipe en los otros overlays).
@@ -34,6 +50,7 @@
   #panel { position: absolute; left: 16px; top: 16px; display: flex; flex-wrap: wrap; gap: 10px; max-width: 1040px; z-index: 5; }
   #panel button { font: 700 24px system-ui, Arial; padding: 10px 16px; border-radius: 14px; border: 0; background: rgba(20,20,30,.75); color: #fff; cursor: pointer; }
   #panel button.on, #panel button:hover { background: #e3122b; }
+  #panel .sep { flex-basis: 100%; height: 0; }
 </style>
 <script type="importmap">{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js" } }</script>
 </head>
@@ -45,7 +62,7 @@ import * as THREE from 'three';
 const Q = new URLSearchParams(location.search);
 const num = (k, d) => { const v = parseFloat(Q.get(k)); return isFinite(v) ? v : d; };
 if (Q.get('fondo') === '1') document.body.classList.add('fondo');
-const W = 1080, H = 1920, GAL = Q.get('galeria') === '1';
+const W = 1080, H = 1920, GMODE = Q.get('galeria'), GAL = GMODE === '1' || GMODE === 'niveles';
 const stage = document.getElementById('stage');
 function fit() { stage.style.transform = `scale(${innerWidth / 1080})`; }
 addEventListener('resize', fit); fit();
@@ -55,13 +72,18 @@ const clamp = (v, a, b) => v < a ? a : v > b ? b : v, lerp = (a, b, t) => a + (b
 const fr = x => x - Math.floor(x);
 const sstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
 const ease = t => t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
+const easeOut = t => 1 - (1 - t) ** 3;
 const backOut = x => { const c1 = 1.7, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); };
 const onBeat = b => (1 + Math.cos(TAU * b)) / 2;              // 1 justo en el tiempo, 0 entre tiempos
 const lerp3 = (a, b, t) => [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+// mano que viaja en ARCO: además de ir de a a b, se abomba hacia "bulge" a mitad de camino
+const arc3 = (a, b, t, bulge) => { const s = Math.sin(PI * clamp(t, 0, 1)); const o = lerp3(a, b, t); return [o[0] + bulge[0] * s, o[1] + bulge[1] * s, o[2] + bulge[2] * s]; };
+// salto con física: sube rápido y cae como con gravedad (parábola)
+const para = q => 4 * q * (1 - q);
 
 /* ════════════════ MEDIDAS (en metros, más o menos) ════════════════ */
 const L1 = 0.46, L2 = 0.46, SPINE = 0.5, NECK = 0.09, HEADR = 0.17, UA = 0.3, FA = 0.29, SHW = 0.16, HPW = 0.095, STAND = 0.9, ANK = 0.05;
-const BPM = num('bpm', 110), BPS = BPM / 60;
+const BPM = num('bpm', 100), BPS = BPM / 60;
 
 /* ════════════════ POSE ════════════════
    Todo se mide desde el piso, mirando hacia +z (hacia la cámara). "Afuera" = hacia el lado de ese brazo/pierna.
@@ -71,12 +93,15 @@ const BPM = num('bpm', 110), BPS = BPM / 60;
      nod turn tilt   cabeza (asentir, girar, ladear)
      hL hR      mano [afuera, arriba, adelante] desde el hombro, en el marco del pecho
      fL fR      pie [afuera, alto, adelante] desde el centro, en el marco del cuerpo
-     pL pR      hacia dónde apunta el codo (opcional)      guitar  1 = con guitarra       */
+     pL pR      hacia dónde apunta el codo (opcional)
+     guitar     1 = con guitarra (las manos se van solas al mástil y a las cuerdas)
+     strum      mano que rasguea (-1 abajo … 1 arriba) · fret  mano del mástil (0 cerca … 1 lejos)
+     sq         aplastar (+) / estirar (−); lo calcula solo la capa de movimiento            */
 function base() {
   return { mx: 0, mz: 0, yaw: 0, px: 0, py: 0, pz: 0, hipYaw: 0, hipRoll: 0, lean: 0.04, roll: 0, twist: 0, nod: 0, turn: 0, tilt: 0,
-    hL: [0.05, -0.56, 0.06], hR: [0.05, -0.56, 0.06], fL: [0.11, 0, 0.02], fR: [0.11, 0, 0.02], pL: null, pR: null, guitar: 0 };
+    hL: [0.05, -0.56, 0.06], hR: [0.05, -0.56, 0.06], fL: [0.11, 0, 0.02], fR: [0.11, 0, 0.02], pL: null, pR: null, guitar: 0, strum: 0, fret: 0.5, sq: 0 };
 }
-const NUMK = ['mx', 'mz', 'yaw', 'px', 'py', 'pz', 'hipYaw', 'hipRoll', 'lean', 'roll', 'twist', 'nod', 'turn', 'tilt', 'guitar'];
+const NUMK = ['mx', 'mz', 'yaw', 'px', 'py', 'pz', 'hipYaw', 'hipRoll', 'lean', 'roll', 'twist', 'nod', 'turn', 'tilt', 'guitar', 'strum', 'fret', 'sq'];
 const ARRK = ['hL', 'hR', 'fL', 'fR'];
 function mixPose(A, B, t) {
   const o = base();
@@ -87,16 +112,20 @@ function mixPose(A, B, t) {
 }
 // pies con x absoluta (centro del cuerpo): izquierda = +x
 function feetAbs(p, lx, rx, ly = 0, ry = 0, lz = 0.02, rz = 0.02) { p.fL = [lx, ly, lz]; p.fR = [-rx, ry, rz]; }
-// paso a un lado y junta (4 tiempos): devuelve x de cada pie, el centro y cuál pie se levanta
+// paso a un lado y junta (4 tiempos): devuelve x de cada pie, el centro y cuál pie se levanta.
+// El pie viaja en arco (sube en el medio) y el centro del cuerpo lo sigue un poco después.
 function stepTouch(b, w) {
-  const i = Math.floor(b) % 4, s = fr(b), e = ease(s), lift = 0.07 * Math.sin(PI * s);
+  const i = Math.floor(b) % 4, s = fr(b), e = ease(s), lift = 0.08 * Math.sin(PI * s);
   let L, R, lL = 0, lR = 0;
   if (i === 0) { L = lerp(-w + 0.11, w + 0.11, e); R = -w - 0.11; lL = lift; }
   else if (i === 1) { L = w + 0.11; R = lerp(-w - 0.11, w - 0.11, e); lR = lift; }
   else if (i === 2) { L = w + 0.11; R = lerp(w - 0.11, -w - 0.11, e); lR = lift; }
   else { L = lerp(w + 0.11, -w + 0.11, e); R = -w - 0.11; lL = lift; }
-  return { L, R, lL, lR, c: (L + R) / 2 };
+  const c = w * Math.sin(PI * (b - 0.35) / 2) * 0.9;          // el peso se mueve en curva suave, no a saltos
+  return { L, R, lL, lR, c };
 }
+// brazo que gira en un círculo frente/atrás del hombro (ángulo 0 = colgando, + = adelante/arriba)
+const swingArm = (th, out = 0.2, r = 0.55) => [out, -r * Math.cos(th), r * Math.sin(th)];
 
 /* ════════════════ BAILES ════════════════ */
 const ROBOT = [
@@ -109,62 +138,70 @@ const ROBOT = [
   { hL: [0.3, -0.3, 0.0], hR: [0.3, 0.28, 0.02], yaw: -0.8, turn: 0.8, twist: 0.2 },
   { hL: [0.3, 0.28, 0.02], hR: [0.3, 0.28, 0.02], py: -0.16, nod: -0.25 },
 ].map(k => Object.assign(base(), { lean: 0, fL: [0.17, 0, 0.02], fR: [0.17, 0, 0.02] }, k));
+function mixInto(p, A, B, t) { for (const k of NUMK) p[k] = lerp(A[k], B[k], t); for (const k of ARRK) p[k] = lerp3(A[k], B[k], t); return p; }
 
 const DANCE = {
   basico(b) {
     const p = base(), d = onBeat(b), sw = Math.sin(PI * b), st = stepTouch(b, 0.14);
     feetAbs(p, st.L, st.R, st.lL, st.lR); p.px = st.c;
-    p.py = -0.08 * d; p.nod = 0.13 * d - 0.04; p.roll = -0.06 * sw; p.twist = 0.14 * sw; p.hipRoll = 0.05 * sw;
-    p.hL = [0.1, -0.38 + 0.05 * d, 0.2 + 0.12 * sw]; p.hR = [0.1, -0.38 + 0.05 * d, 0.2 - 0.12 * sw];
+    p.py = -0.08 * d; p.nod = 0.13 * d - 0.04; p.roll = -0.07 * sw; p.twist = 0.16 * sw; p.hipRoll = 0.06 * sw;
+    const up = Math.max(0, sw), dn = Math.max(0, -sw);                         // la mano que va adelante sube en arco
+    p.hL = [0.1 + 0.03 * up, -0.4 + 0.05 * d + 0.08 * up, 0.18 + 0.14 * sw]; p.hR = [0.1 + 0.03 * dn, -0.4 + 0.05 * d + 0.08 * dn, 0.18 - 0.14 * sw];
     return p;
   },
   cumbia(b) {
     const p = base(), i = Math.floor(b) % 4, s = fr(b), e = ease(s), d = onBeat(b);
-    const kL = i === 0 ? e : i === 1 ? 1 - e : 0, kR = i === 2 ? e : i === 3 ? 1 - e : 0, up = 0.06 * Math.sin(PI * s);
+    const kL = i === 0 ? e : i === 1 ? 1 - e : 0, kR = i === 2 ? e : i === 3 ? 1 - e : 0, up = 0.07 * Math.sin(PI * s);
     p.fL = [0.13 + 0.03 * kL, i < 2 ? up : 0, 0.04 - 0.3 * kL]; p.fR = [0.13 + 0.03 * kR, i >= 2 ? up : 0, 0.04 - 0.3 * kR];
-    p.hipYaw = 0.32 * (kL - kR); p.twist = -0.2 * (kL - kR); p.py = -0.1 - 0.05 * d; p.hipRoll = 0.07 * Math.sin(PI * b / 2);
-    p.yaw = 0.35 * Math.sin(TAU * b / 16); p.roll = 0.06 * Math.sin(PI * b); p.nod = 0.07 * d; p.tilt = 0.1 * Math.sin(PI * b / 2);
-    p.hL = [0.15, -0.3 + 0.04 * d, 0.22 + 0.13 * (kR - kL)]; p.hR = [0.15, -0.3 + 0.04 * d, 0.22 + 0.13 * (kL - kR)];
+    p.hipYaw = 0.32 * (kL - kR); p.twist = -0.22 * (kL - kR); p.py = -0.1 - 0.05 * d; p.hipRoll = 0.08 * Math.sin(PI * b / 2);
+    p.yaw = 0.35 * Math.sin(TAU * b / 16); p.roll = 0.07 * Math.sin(PI * b); p.nod = 0.07 * d; p.tilt = 0.1 * Math.sin(PI * b / 2);
+    const aL = kR - kL;                                                         // brazos en arco, contrarios al pie
+    p.hL = [0.15 + 0.04 * Math.abs(aL), -0.3 + 0.04 * d + 0.05 * Math.max(0, aL), 0.22 + 0.14 * aL];
+    p.hR = [0.15 + 0.04 * Math.abs(aL), -0.3 + 0.04 * d + 0.05 * Math.max(0, -aL), 0.22 - 0.14 * aL];
     return p;
   },
   caporal(b) {
-    const p = base(), k = Math.floor(b) % 2, s = fr(b), hop = Math.sin(PI * s);
-    p.py = 0.2 * hop - 0.1 * (1 - hop);
-    const lifted = [0.11, 0.48 * hop, 0.3 * hop], stand = [0.11, 0, 0];
+    const p = base(), k = Math.floor(b) % 2, s = fr(b), h = para(s);
+    p.py = -0.12 + 0.36 * h;                                                     // toca el piso agachado, vuela en parábola
+    const knee = Math.sin(PI * clamp(s * 1.15, 0, 1));                            // la rodilla sube rápido y baja justo antes de caer
+    const lifted = [0.11, 0.5 * knee, 0.3 * knee], stand = [0.11, 0, 0];
     p.fL = k ? stand : lifted; p.fR = k ? lifted : stand;
-    const upA = [0.24, -0.5 + 0.95 * hop, 0.22 + 0.22 * hop], backA = [0.2, -0.5, -0.28 * hop];
-    p.hR = k ? backA : upA; p.hL = k ? upA : backA;
-    p.lean = -0.12 * hop; p.nod = -0.12 * hop; p.twist = (k ? 0.2 : -0.2) * hop;
+    p.hR = swingArm(0.8 + 1.35 * Math.sin(PI * b), 0.2); p.hL = swingArm(0.8 - 1.35 * Math.sin(PI * b), 0.2);   // brazos en círculo, opuestos a la rodilla
+    p.lean = 0.1 - 0.22 * h; p.nod = 0.1 - 0.22 * h; p.twist = 0.22 * Math.sin(PI * b);
     p.yaw = 0.45 * Math.tanh(3 * Math.sin(PI * b / 4));
-    const T = b % 16; if (T > 14) p.yaw += TAU * ease((T - 14) / 2);          // vuelta completa cada 16 tiempos
+    const T = b % 16;                                                            // vuelta completa cada 16 tiempos (con anticipación)
+    if (T > 13.5) p.yaw += -0.35 * sstep(13.5, 14, T) * (1 - sstep(14, 14.4, T)) + TAU * ease(clamp((T - 14) / 1.8, 0, 1));
     return p;
   },
   robot(b) {
-    const i = Math.floor(b) % 8, s = fr(b), q = backOut(clamp(s / 0.18, 0, 1));
-    const p = mixPose(ROBOT[(i + 7) % 8], ROBOT[i], 1);
-    const A = ROBOT[(i + 7) % 8], B = ROBOT[i];                                // cambio de golpe con rebotito
-    for (const k of NUMK) p[k] = lerp(A[k], B[k], q);
-    for (const k of ARRK) p[k] = lerp3(A[k], B[k], q);
-    p.py += -0.03 * onBeat(b);
+    const i = Math.floor(b) % 8, s = fr(b), q = backOut(clamp(s / 0.2, 0, 1));
+    const p = mixInto(base(), ROBOT[(i + 7) % 8], ROBOT[i], q);                // golpe seco con rebotito
+    if (s > 0.8) { const a = mixInto(base(), ROBOT[i], ROBOT[(i + 1) % 8], -0.1 * sstep(0.8, 1, s)); mixInto(p, p, a, 1); }   // "carga" antes del siguiente
+    p.py += -0.03 * onBeat(b); p.pL = [0.35, -0.3, -0.7];
     return p;
   },
   disco(b) {
-    const p = base(), up = Math.floor(b) % 2 === 0, s = fr(b), q0 = sstep(0, 0.3, s), q = up ? q0 : 1 - q0;
-    p.yaw = -0.3; p.hR = lerp3([-0.14, -0.45, 0.26], [0.34, 0.44, 0.22], q);
-    p.hL = [-0.01, -0.4, -0.02]; p.pL = [1, 0.1, -0.3];                                        // mano en la cintura
-    p.hipRoll = -0.12 * (2 * q - 1); p.px = 0.06 * (2 * q - 1); p.roll = 0.08 * (2 * q - 1);
-    p.turn = -0.35 * q + 0.1; p.nod = -0.35 * q + 0.15; p.py = -0.05 * (1 - q);
-    p.fL = [0.15, 0, 0.02]; p.fR = [0.11, 0.05 * q, 0.08];
+    const p = base(), up = Math.floor(b) % 2 === 0, s = fr(b);
+    const go = backOut(clamp(s / 0.32, 0, 1)), wind = s > 0.82 ? sstep(0.82, 1, s) : 0;
+    const lo = [-0.14, -0.45, 0.26], hi = [0.34, 0.44, 0.22];
+    let q = up ? go : 1 - go;
+    q += up ? 0.1 * wind : -0.1 * wind;                                           // se prepara al revés antes de apuntar
+    p.yaw = -0.3; p.hR = arc3(lo, hi, q, [0.06, -0.05, 0.16]);
+    p.hL = [-0.01, -0.4, -0.02]; p.pL = [1, 0.1, -0.3];                         // mano en la cintura
+    const c = clamp(q, -0.1, 1.1) * 2 - 1;
+    p.hipRoll = -0.13 * c; p.px = 0.06 * c; p.roll = 0.09 * c;
+    p.turn = -0.35 * q + 0.1; p.nod = -0.35 * q + 0.15; p.py = -0.06 * (1 - q) - 0.02;
+    p.fL = [0.15, 0, 0.02]; p.fR = [0.11, 0.05 * clamp(q, 0, 1), 0.08];
     return p;
   },
   runningman(b) {
     const p = base(), k = Math.floor(b) % 2, s = fr(b);
-    const up = [0.11, 0.38 * Math.sin(PI * s), lerp(-0.35, 0.18, ease(s))], slide = [0.11, 0, lerp(0.18, -0.35, s)];
+    const up = [0.11, 0.4 * Math.sin(PI * s) ** 0.8, lerp(-0.35, 0.18, ease(s))], slide = [0.11, 0, lerp(0.18, -0.35, ease(s))];
     p.fL = k ? slide : up; p.fR = k ? up : slide;
-    p.yaw = 0.55; p.lean = 0.14; p.py = -0.07 - 0.05 * Math.cos(TAU * s);
+    p.yaw = 0.55; p.lean = 0.14; p.py = -0.08 - 0.06 * Math.cos(TAU * s);
     const fw = Math.sin(PI * b);
-    p.hL = [0.12, -0.25 - 0.1 * fw, 0.2 - 0.15 * fw]; p.hR = [0.12, -0.25 + 0.1 * fw, 0.2 + 0.15 * fw];
-    p.nod = 0.1 * onBeat(b);
+    p.hL = swingArm(0.9 - 0.7 * fw, 0.12, 0.42); p.hR = swingArm(0.9 + 0.7 * fw, 0.12, 0.42);
+    p.nod = 0.1 * onBeat(b); p.twist = -0.12 * fw;
     return p;
   },
   moonwalk(b) {
@@ -175,54 +212,65 @@ const DANCE = {
     const flat = [0.07, 0.06 * (1 - rise), 0.12 - 0.24 * s], toe = [0.07, 0.06 * rise, -0.12 + 0.24 * s];
     p.fL = k ? toe : flat; p.fR = k ? flat : toe;
     const w = Math.sin(PI * b);
-    p.py = -0.03; p.lean = 0.06; p.nod = 0.08 * w;
-    p.hL = [0.06, -0.5, 0.1 + 0.1 * w]; p.hR = [0.06, -0.5, 0.1 - 0.1 * w];
+    p.py = -0.03 - 0.02 * onBeat(b); p.lean = 0.07; p.nod = 0.08 * w; p.hipRoll = 0.04 * w;
+    p.hL = [0.06, -0.5, 0.1 + 0.12 * w]; p.hR = [0.06, -0.5, 0.1 - 0.12 * w];
     return p;
   },
   guitarra(b) {
     const p = base(), bang = onBeat(b) ** 2, T = b % 8;
     p.guitar = 1; p.yaw = 0.35;
     p.fL = [0.25, 0, 0.1]; p.fR = [0.25, 0, -0.06];
-    p.py = -0.15 - 0.04 * bang; p.lean = 0.14 + 0.12 * bang; p.nod = 0.5 * bang - 0.12;
-    p.hL = [0.3, -0.14 + 0.03 * Math.sin(PI * b), 0.36]; p.hR = [-0.14, -0.4 + 0.08 * Math.sin(2 * TAU * b), 0.2];
-    p.pL = [0.4, -0.6, -0.4];
-    if (T > 6 && T < 7.6) { const q = (T - 6) / 1.6, j = Math.sin(PI * q); p.py += 0.5 * j; p.fL[1] += 0.25 * j; p.fR[1] += 0.3 * j; p.lean -= 0.2 * j; p.nod -= 0.3 * j; }
+    p.py = -0.15 - 0.05 * bang; p.lean = 0.12 + 0.1 * bang; p.nod = 0.5 * bang - 0.12;
+    p.strum = Math.sin(2 * TAU * b) * 0.9; p.fret = 0.5 + 0.25 * Math.sin(PI * b / 2);
+    if (T > 5.5 && T < 7.8) {                                                     // salto de rockero: se agacha, vuela, cae y absorbe
+      const pre = sstep(5.5, 6, T) * (1 - sstep(6, 6.15, T)), q = clamp((T - 6.1) / 1.2, 0, 1), air = T > 6.1 && T < 7.3 ? para(q) : 0;
+      const land = T > 7.3 ? Math.sin(PI * clamp((T - 7.3) / 0.5, 0, 1)) : 0;
+      p.py += -0.12 * pre + 0.55 * air - 0.1 * land; p.fL[1] += 0.12 * air; p.fR[1] += 0.18 * air; p.fL[2] -= 0.08 * air; p.fR[2] -= 0.1 * air;
+      p.lean += 0.15 * pre - 0.22 * air + 0.12 * land; p.nod -= 0.35 * air;
+    }
     return p;
   },
   floss(b) {
     const p = base(), side = -Math.cos(PI * b), c = Math.sin(PI * b), X = 0.34 * side;
-    p.hL = [X - SHW, -0.5, 0.2 * c]; p.hR = [-SHW - X, -0.5, -0.2 * c];
-    p.px = -0.07 * side; p.hipRoll = 0.14 * side; p.hipYaw = -0.12 * side; p.roll = -0.05 * side;
+    p.hL = [X - SHW, -0.5 + 0.04 * Math.abs(c), 0.2 * c]; p.hR = [-SHW - X, -0.5 + 0.04 * Math.abs(c), -0.2 * c];
+    const hs = -Math.cos(PI * (b - 0.08));                                       // la cadera va un pelo antes que los brazos
+    p.px = -0.07 * hs; p.hipRoll = 0.14 * hs; p.hipYaw = -0.12 * hs; p.roll = -0.05 * side;
     p.py = -0.05 * onBeat(b); p.lean = 0.05; p.nod = 0.06 * onBeat(b);
     p.fL = [0.13, 0, 0.02]; p.fR = [0.13, 0, 0.02];
     return p;
   },
   manos(b) {
-    const p = base(), st = stepTouch(b, 0.14), sw = Math.sin(PI * b / 2 + PI / 2 * 0), d = onBeat(b);
+    const p = base(), st = stepTouch(b, 0.14), d = onBeat(b);
     feetAbs(p, st.L, st.R, st.lL, st.lR); p.px = st.c;
     const swing = Math.sin(PI * (b - 0.5) / 2);
-    p.roll = -0.22 * swing; p.hipRoll = 0.1 * swing; p.py = -0.06 * d; p.nod = -0.15 + 0.08 * d;
-    p.hL = [0.06 - 0.12 * swing, 0.5, 0.06]; p.hR = [0.06 + 0.12 * swing, 0.5, 0.06];
+    p.roll = -0.24 * swing; p.hipRoll = 0.1 * swing; p.py = -0.06 * d; p.nod = -0.15 + 0.08 * d;
+    p.hL = [0.06 - 0.12 * swing, 0.48 + 0.04 * d, 0.06 + 0.05 * Math.cos(PI * b / 2)]; p.hR = [0.06 + 0.12 * swing, 0.48 + 0.04 * d, 0.06 - 0.05 * Math.cos(PI * b / 2)];
     return p;
   },
   giro(b) {
-    const T = b % 4; if (T < 2) return DANCE.basico(b);
-    const p = base(), q = (T - 2) / 2, e = ease(q), j = Math.sin(PI * q);
-    p.yaw = TAU * e; p.py = 0.03 * j;
-    p.hL = [0.5 - 0.1 * j, 0.05, 0.18]; p.hR = [0.5 - 0.1 * j, 0.05, 0.18];
-    p.fL = [0.09, 0, 0.0]; p.fR = [0.06, 0.38 * j, 0.06]; p.nod = -0.1 * j;
-    return p;
+    const T = b % 4; if (T < 1.5) return DANCE.basico(b);
+    const p = DANCE.basico(b);
+    if (T < 2) {                                                                  // anticipación: se tuerce al revés y baja
+      const a = sstep(1.5, 2, T); p.yaw = -0.45 * a; p.py -= 0.08 * a; p.hL = lerp3(p.hL, [0.4, -0.1, 0.25], a); p.hR = lerp3(p.hR, [0.4, -0.1, 0.25], a); return p;
+    }
+    const q = (T - 2) / 2, e = backOut(clamp(q / 0.85, 0, 1)), j = Math.sin(PI * q), tuck = Math.sin(PI * clamp(q / 0.8, 0, 1));
+    const o = base();
+    o.yaw = -0.45 * (1 - e) + TAU * e; o.py = 0.04 * j - 0.05 * (q > 0.85 ? Math.sin(PI * (q - 0.85) / 0.15) : 0);
+    const out = [0.5, 0.05, 0.18], inA = [0.05, -0.1, 0.32];                     // brazos abiertos → se recogen al girar (gira más rápido) → se abren
+    o.hL = lerp3(out, inA, tuck); o.hR = lerp3(out, inA, tuck);
+    o.fL = [0.09, 0, 0.0]; o.fR = [0.06, 0.4 * j, 0.06]; o.nod = -0.1 * j;
+    return o;
   },
   salto(b) {
     const p = base(), T = b % 2;
     let crouch = 0, air = 0, clap = 0;
     if (T < 0.45) crouch = sstep(0, 0.45, T);
-    else if (T < 1.4) { air = Math.sin(PI * (T - 0.45) / 0.95); clap = sstep(0.55, 0.85, T) * (1 - sstep(1.2, 1.4, T)); crouch = 1 - sstep(0.45, 0.6, T); }
-    else crouch = Math.sin(PI * clamp((T - 1.4) / 0.6, 0, 1)) * 0.7;
-    p.py = -0.22 * crouch + 0.5 * air; p.lean = 0.3 * crouch - 0.08 * air; p.nod = 0.2 * crouch - 0.25 * air;
+    else if (T < 1.35) { const q = (T - 0.45) / 0.9; air = para(q); crouch = 1 - sstep(0.45, 0.55, T); clap = sstep(0.6, 0.85, T) * (1 - sstep(1.15, 1.35, T)); }
+    else crouch = Math.sin(PI * clamp((T - 1.35) / 0.65, 0, 1)) * 0.8;
+    p.py = -0.24 * crouch + 0.5 * air; p.lean = 0.32 * crouch - 0.08 * air; p.nod = 0.2 * crouch - 0.25 * air;
     p.fL = [0.13, 0.2 * air, 0.02]; p.fR = [0.13, 0.2 * air, 0.02];
     const low = [0.15, -0.45, -0.28], high = [0.15, 0.48, 0.12], meet = [-SHW + 0.04, 0.52, 0.12];
-    const h = lerp3(lerp3([0.06, -0.55, 0.06], low, crouch), high, air);
+    const h = arc3(lerp3([0.06, -0.55, 0.06], low, crouch), high, air, [0.1, 0, 0.2]);
     p.hL = lerp3(h, meet, clap); p.hR = lerp3(h, meet, clap);
     return p;
   },
@@ -230,6 +278,7 @@ const DANCE = {
 const ORDER = ['basico', 'cumbia', 'caporal', 'robot', 'disco', 'runningman', 'moonwalk', 'guitarra', 'floss', 'manos', 'giro', 'salto'];
 const NAME = { basico: 'Paso básico', cumbia: 'Cumbia', caporal: 'Caporal', robot: 'Robot', disco: 'Disco', runningman: 'Running man',
   moonwalk: 'Moonwalk', guitarra: 'Guitarra al aire', floss: 'Floss', manos: 'Manos arriba', giro: 'Giro', salto: 'Salto y aplauso' };
+const LVNAME = { 1: 'Nivel 1', 2: 'Bandana', 3: 'Lentes', 4: 'Sombrero', 5: 'Capa', 6: 'Cadena con púa', 7: 'Fuego', 8: 'Aura', 9: 'Dorado y aureola', 10: 'LEYENDA' };
 
 /* ════════════════ ESQUELETO 3D ════════════════ */
 const V = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
@@ -243,19 +292,35 @@ function ik(A, T, l1, l2, pole) {                    // devuelve el codo/rodilla
   const perp = pole.clone().sub(dir.clone().multiplyScalar(pole.dot(dir))).normalize();
   return A.clone().add(dir.multiplyScalar(l1 * cosA)).add(perp.multiplyScalar(l1 * sinA));
 }
+// guitarra: caja delante del torso (sin tocarlo), mástil hacia la izquierda y arriba.
+// Devuelve el marco de la guitarra y dónde van las manos: una sobre las cuerdas, la otra agarrando el mástil.
+const G_THICK = 0.035, G_FRONT = 0.062 + G_THICK + 0.07;
+function guitarFrame(P, chestQ, p) {
+  const fwd = V(0, 0, 1).applyQuaternion(chestQ), up = V(0, 1, 0).applyQuaternion(chestQ), left = V(1, 0, 0).applyQuaternion(chestQ);
+  const G = P.clone().addScaledVector(up, 0.14).addScaledVector(fwd, G_FRONT).addScaledVector(left, -0.05);
+  const nd = left.clone().multiplyScalar(0.84).addScaledVector(up, 0.46).addScaledVector(fwd, 0.16).normalize();
+  const n = fwd.clone().addScaledVector(nd, -fwd.dot(nd)).normalize(), yv = n.clone().cross(nd).normalize();
+  const fretT = G.clone().addScaledVector(nd, 0.36 + 0.24 * p.fret).addScaledVector(yv, -0.045).addScaledVector(n, -0.005);
+  const strumT = G.clone().addScaledVector(nd, 0.03).addScaledVector(yv, 0.07 * p.strum - 0.01).addScaledVector(n, G_THICK + 0.062);
+  return { G, nd, n, yv, fretT, strumT };
+}
 function solve(p, origin) {
   const rootQ = qE(0, p.yaw, 0), root = origin.clone().add(V(p.mx, 0, p.mz));
   const toRoot = v => v.applyQuaternion(rootQ).add(root);
   const pelvisQ = qE(0, p.yaw + p.hipYaw, p.hipRoll), chestQ = qE(p.lean, p.yaw + p.hipYaw + p.twist, p.roll);
   const headQ = chestQ.clone().multiply(qE(p.nod, p.turn, p.tilt));
+  const sq = clamp(p.sq, -0.18, 0.2), spine = SPINE * (1 - 0.55 * sq);
   const P = toRoot(V(p.px, STAND + p.py, p.pz));
-  const N = P.clone().add(V(0, SPINE, 0).applyQuaternion(chestQ));
-  const Hd = N.clone().add(V(0, NECK + HEADR, 0).applyQuaternion(headQ));
-  const S = { P, N, H: Hd, headQ, chestQ, rootQ };
+  const N = P.clone().add(V(0, spine, 0).applyQuaternion(chestQ));
+  const Hd = N.clone().add(V(0, NECK + HEADR * (1 - 0.7 * sq), 0).applyQuaternion(headQ));
+  const S = { P, N, H: Hd, headQ, chestQ, rootQ, pelvisQ, sq };
+  const g = clamp(p.guitar, 0, 1), GF = g > 0.01 ? guitarFrame(P, chestQ, p) : null; S.GF = GF;
   for (const [s, k] of [[1, 'L'], [-1, 'R']]) {
-    const sh = P.clone().add(V(s * SHW, SPINE - 0.05, 0).applyQuaternion(chestQ));
-    const h = p['h' + k], hand = sh.clone().add(V(s * h[0], h[1], h[2]).applyQuaternion(chestQ));
-    const pp = p['p' + k] || [0.35, -0.3, -0.7], pole = V(s * pp[0], pp[1], pp[2]).applyQuaternion(chestQ);
+    const sh = P.clone().add(V(s * SHW, spine - 0.05, 0).applyQuaternion(chestQ));
+    const h = p['h' + k]; let hand = sh.clone().add(V(s * h[0], h[1], h[2]).applyQuaternion(chestQ));
+    let pp = p['p' + k] || [0.35, -0.3, -0.7];
+    if (GF) { hand.lerp(k === 'L' ? GF.fretT : GF.strumT, g); if (k === 'L') pp = [0.3, -0.8, -0.3]; else pp = [0.6, -0.2, -0.6]; }
+    const pole = V(s * pp[0], pp[1], pp[2]).applyQuaternion(chestQ);
     const el = ik(sh, hand, UA, FA, pole);
     const hip = P.clone().add(V(s * HPW, 0, 0).applyQuaternion(pelvisQ));
     const f = p['f' + k], ank = toRoot(V(s * f[0], f[1] + ANK, f[2]));
@@ -266,6 +331,74 @@ function solve(p, origin) {
   return S;
 }
 
+/* ════════════════ CAPA DE MOVIMIENTO (principios de animación) ════════════════ */
+// resorte amortiguado: llega al objetivo con un pequeño rebote (seguimiento / follow-through)
+function spring(st, key, target, dt, hz, zeta) {
+  let s = st[key]; if (!s || dt <= 0 || dt > 0.25) { st[key] = { x: target, v: 0 }; return target; }
+  const w = TAU * hz, n = Math.max(1, Math.ceil(dt / (1 / 240))), h = dt / n;
+  for (let i = 0; i < n; i++) { s.v += (w * w * (target - s.x) - 2 * zeta * w * s.v) * h; s.x += s.v * h; }
+  return s.x;
+}
+const LAG = { chest: 0.025, arms: 0.04, head: 0.06 };        // cuánto llega tarde cada parte (en tiempos)
+
+/* ════════════════ FÍSICA SIMPLE (tela y cuerdas) ════════════════ */
+const GRAV = V(0, -9.8, 0);
+function pushCapsule(pt, a, b, r) {
+  const ab = b.clone().sub(a), t = clamp(pt.clone().sub(a).dot(ab) / Math.max(1e-6, ab.lengthSq()), 0, 1);
+  const c = a.clone().addScaledVector(ab, t), d = pt.clone().sub(c), L = d.length();
+  if (L < r) { if (L < 1e-5) d.set(0, 0, -1); else d.divideScalar(L); pt.copy(c).addScaledVector(d, r); return true; }
+  return false;
+}
+class Rope {                                              // cadena de puntos colgando de un ancla
+  constructor(n, seg) { this.n = n; this.seg = seg; this.p = []; this.o = []; }
+  step(anchor, dt, collide, wind) {
+    if (!this.p.length || dt <= 0 || dt > 0.25) { this.p = []; this.o = []; for (let i = 0; i < this.n; i++) { const q = anchor.clone().add(V(0, -this.seg * i, -0.001 * i)); this.p.push(q); this.o.push(q.clone()); } return; }
+    const g = GRAV.clone().add(wind || V()).multiplyScalar(dt * dt);
+    this.p[0].copy(anchor); this.o[0].copy(anchor);
+    for (let i = 1; i < this.n; i++) { const v = this.p[i].clone().sub(this.o[i]).multiplyScalar(0.97); this.o[i].copy(this.p[i]); this.p[i].add(v).add(g); }
+    for (let it = 0; it < 4; it++) for (let i = 1; i < this.n; i++) {
+      const a = this.p[i - 1], c = this.p[i], d = c.clone().sub(a), L = d.length() || 1e-6, diff = (L - this.seg) / L;
+      if (i === 1) c.addScaledVector(d, -diff); else { a.addScaledVector(d, diff / 2); c.addScaledVector(d, -diff / 2); }
+      if (collide) collide(c);
+    }
+  }
+}
+class Cloth {                                             // capa: rejilla de puntos con restricciones (Verlet)
+  constructor(cols, rows) { this.c = cols; this.r = rows; this.p = []; this.o = []; this.cons = []; this.ok = false; }
+  init(pins, down, len) {
+    this.p = []; this.o = []; this.cons = [];
+    for (let j = 0; j < this.r; j++) for (let i = 0; i < this.c; i++) {
+      const t = j / (this.r - 1), flare = 1 + 0.45 * t, mid = pins[(this.c - 1) >> 1];
+      const q = pins[i].clone().sub(mid).multiplyScalar(flare).add(mid).addScaledVector(down, len * t);
+      this.p.push(q); this.o.push(q.clone());
+    }
+    const id = (i, j) => j * this.c + i, add = (a, b) => this.cons.push([a, b, this.p[a].distanceTo(this.p[b])]);
+    for (let j = 0; j < this.r; j++) for (let i = 0; i < this.c; i++) {
+      if (i < this.c - 1) add(id(i, j), id(i + 1, j));
+      if (j < this.r - 1) add(id(i, j), id(i, j + 1));
+      if (j < this.r - 2) add(id(i, j), id(i, j + 2));                    // rigidez para que no se arrugue como papel
+      if (i < this.c - 1 && j < this.r - 1) { add(id(i, j), id(i + 1, j + 1)); add(id(i + 1, j), id(i, j + 1)); }
+    }
+    this.ok = true;
+  }
+  step(pins, dt, colliders, down, wind) {
+    if (!this.ok || dt <= 0 || dt > 0.25) { this.init(pins, down, 0.72); return; }
+    const n = 2, h = dt / n;
+    for (let sub = 0; sub < n; sub++) {
+      const g = GRAV.clone().add(wind).multiplyScalar(h * h);
+      for (let k = this.c; k < this.p.length; k++) { const v = this.p[k].clone().sub(this.o[k]).multiplyScalar(0.985); this.o[k].copy(this.p[k]); this.p[k].add(v).add(g); }
+      for (let i = 0; i < this.c; i++) { this.p[i].copy(pins[i]); this.o[i].copy(pins[i]); }
+      for (let it = 0; it < 5; it++) {
+        for (const [a, b, rest] of this.cons) {
+          const pa = this.p[a], pb = this.p[b], d = pb.clone().sub(pa), L = d.length() || 1e-6, diff = (L - rest) / L * 0.5;
+          if (a < this.c) pb.addScaledVector(d, -diff * 2); else if (b < this.c) pa.addScaledVector(d, diff * 2); else { pa.addScaledVector(d, diff); pb.addScaledVector(d, -diff); }
+        }
+        for (let k = this.c; k < this.p.length; k++) { const q = this.p[k]; for (const [a, b, r] of colliders) pushCapsule(q, a, b, r); if (q.y < 0.012) q.y = 0.012; }
+      }
+    }
+  }
+}
+
 /* ════════════════ DIBUJO (three.js) ════════════════ */
 const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: true, alpha: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(1); renderer.setSize(W, H, false); renderer.setClearColor(0x000000, 0);
@@ -274,86 +407,263 @@ scene.add(new THREE.HemisphereLight(0xffffff, 0x8a7f99, 1.25));
 const sun = new THREE.DirectionalLight(0xffffff, 2.2); sun.position.set(-3, 6, 5); scene.add(sun);
 const grad = new THREE.DataTexture(new Uint8Array([90, 90, 90, 255, 175, 175, 175, 255, 255, 255, 255, 255]), 3, 1);
 grad.minFilter = grad.magFilter = THREE.NearestFilter; grad.needsUpdate = true;
+const toon = c => new THREE.MeshToonMaterial({ color: c, gradientMap: grad });
 const CYL = new THREE.CylinderGeometry(1, 1, 1, 14, 1, true), SPH = new THREE.SphereGeometry(1, 18, 12);
 const OUTM = new THREE.MeshBasicMaterial({ color: 0x14090d, side: THREE.BackSide });
 const OL = 0.022;                                                        // grosor del borde negro
 const HUES = [355, 200, 45, 140, 290, 25, 175, 320];
-const shadowTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d');
-  const r = g.createRadialGradient(32, 32, 0, 32, 32, 32); r.addColorStop(0, 'rgba(0,0,0,0.45)'); r.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = r; g.fillRect(0, 0, 64, 64);
+function radialTex(stops, size = 128) { const c = document.createElement('canvas'); c.width = c.height = size; const g = c.getContext('2d');
+  const r = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2); stops.forEach(([o, col]) => r.addColorStop(o, col)); g.fillStyle = r; g.fillRect(0, 0, size, size);
+  return new THREE.CanvasTexture(c); }
+const shadowTex = radialTex([[0, 'rgba(0,0,0,0.45)'], [1, 'rgba(0,0,0,0)']], 64);
+const glowTex = radialTex([[0, 'rgba(255,255,255,1)'], [0.25, 'rgba(255,255,255,0.55)'], [0.6, 'rgba(255,255,255,0.18)'], [1, 'rgba(255,255,255,0)']]);
+const flameTex = radialTex([[0, 'rgba(255,255,255,1)'], [0.3, 'rgba(255,255,255,0.7)'], [1, 'rgba(255,255,255,0)']], 64);
+const beamTex = (() => { const c = document.createElement('canvas'); c.width = 4; c.height = 128; const g = c.getContext('2d');
+  const l = g.createLinearGradient(0, 0, 0, 128); l.addColorStop(0, 'rgba(255,255,255,0.55)'); l.addColorStop(1, 'rgba(255,255,255,0.02)'); g.fillStyle = l; g.fillRect(0, 0, 4, 128);
   return new THREE.CanvasTexture(c); })();
+const ADD = { transparent: true, blending: THREE.AdditiveBlending, depthWrite: false };
 
+// pieza con borde negro (para accesorios)
+function part(geo, mat, parent, x = 0, y = 0, z = 0, sx = 1, sy = 1, sz = 1, ol = OL) {
+  const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); parent.add(m);
+  const o = new THREE.Mesh(geo, OUTM); o.position.copy(m.position); o.scale.set(sx + ol, sy + ol, sz + ol); parent.add(o);
+  return m;
+}
 function makeGuitar() {
   const g = new THREE.Group();
-  const red = new THREE.MeshToonMaterial({ color: 0xe3122b, gradientMap: grad }), wood = new THREE.MeshToonMaterial({ color: 0xc9a36b, gradientMap: grad }), blk = new THREE.MeshToonMaterial({ color: 0x14090d, gradientMap: grad });
-  const add = (geo, mat, x, y, z, sx = 1, sy = 1, sz = 1) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.scale.set(sx, sy, sz); g.add(m);
-    const o = new THREE.Mesh(geo, OUTM); o.position.copy(m.position); o.scale.set(sx + OL, sy + OL, sz + OL); g.add(o); return m; };
-  const disc = new THREE.CylinderGeometry(1, 1, 1, 24); disc.rotateX(PI / 2);
-  add(disc, red, -0.1, 0, 0, 0.17, 0.17, 0.07); add(disc, red, 0.08, 0, 0, 0.13, 0.13, 0.07); add(disc, blk, 0.0, 0, 0.04, 0.05, 0.05, 0.01);
-  const box = new THREE.BoxGeometry(1, 1, 1); add(box, wood, 0.42, 0, 0, 0.55, 0.045, 0.03); add(box, blk, 0.73, 0, 0, 0.1, 0.08, 0.035);
+  const red = toon(0xe3122b), wood = toon(0xc9a36b), blk = toon(0x14090d);
+  const disc = new THREE.CylinderGeometry(1, 1, 1, 28); disc.rotateX(PI / 2);
+  part(disc, red, g, -0.1, 0, 0, 0.17, 0.17, 2 * G_THICK); part(disc, red, g, 0.08, 0, 0, 0.13, 0.13, 2 * G_THICK); part(disc, blk, g, 0.0, 0, G_THICK, 0.05, 0.05, 0.006, 0.004);
+  const box = new THREE.BoxGeometry(1, 1, 1);
+  part(box, wood, g, 0.42, 0, 0.0, 0.58, 0.045, 0.03); part(box, blk, g, 0.75, 0, 0, 0.1, 0.08, 0.035);
+  part(box, blk, g, -0.16, 0, G_THICK, 0.025, 0.09, 0.008, 0.004);                    // puente
   g.visible = false; return g;
+}
+function pickShape() {                                   // púa de guitarra (triángulo redondeado, punta abajo)
+  const s = new THREE.Shape(); s.moveTo(-0.034, 0); s.quadraticCurveTo(0, 0.012, 0.034, 0); s.quadraticCurveTo(0.03, -0.045, 0, -0.07); s.quadraticCurveTo(-0.03, -0.045, -0.034, 0);
+  const g = new THREE.ExtrudeGeometry(s, { depth: 0.01, bevelEnabled: true, bevelThickness: 0.004, bevelSize: 0.004, bevelSegments: 2 }); g.translate(0, 0, -0.005); return g;
 }
 
 class Dancer {
-  constructor(i, origin) {
-    this.origin = origin; this.grp = new THREE.Group(); scene.add(this.grp);
-    const col = new THREE.Color().setHSL(HUES[i % HUES.length] / 360, 0.85, 0.58);
-    this.mat = new THREE.MeshToonMaterial({ color: col, gradientMap: grad });
+  constructor(i, origin, lvl = 1) {
+    this.i = i; this.origin = origin; this.grp = new THREE.Group(); scene.add(this.grp);
+    this.hue = HUES[i % HUES.length];
+    this.mat = toon(new THREE.Color().setHSL(this.hue / 360, 0.85, 0.58));
     this.bones = []; this.joints = [];
-    const mk = (geo, mat) => { const m = new THREE.Mesh(geo, mat); this.grp.add(m); return m; };
-    const bone = r => { const b = { r, m: mk(CYL, this.mat), o: mk(CYL, OUTM) }; this.bones.push(b); return b; };
-    const joint = r => { const j = { r, m: mk(SPH, this.mat), o: mk(SPH, OUTM) }; this.joints.push(j); return j; };
+    const mk = (geo, mat, par = this.grp) => { const m = new THREE.Mesh(geo, mat); par.add(m); return m; };
+    this.mk = mk;
+    const bone = (r, mat = this.mat) => { const b = { r, m: mk(CYL, mat), o: mk(CYL, OUTM) }; this.bones.push(b); return b; };
+    const joint = (r, mat = this.mat) => { const j = { r, m: mk(SPH, mat), o: mk(SPH, OUTM) }; this.joints.push(j); return j; };
+    this.bone = bone; this.joint = joint;
     this.B = { torso: bone(0.062), clav: bone(0.045), hipb: bone(0.05) };
     for (const k of ['L', 'R']) { this.B['ua' + k] = bone(0.043); this.B['fa' + k] = bone(0.04); this.B['th' + k] = bone(0.052); this.B['sh' + k] = bone(0.048); this.B['ft' + k] = bone(0.045); }
     this.J = {};
     for (const k of ['N', 'P']) this.J[k] = joint(0.062);
     for (const k of ['L', 'R']) { this.J['sh' + k] = joint(0.045); this.J['el' + k] = joint(0.043); this.J['ha' + k] = joint(0.058); this.J['hip' + k] = joint(0.052);
       this.J['kn' + k] = joint(0.052); this.J['an' + k] = joint(0.048); this.J['to' + k] = joint(0.045); }
-    this.head = joint(HEADR);
+    // cabeza: todo lo que va en la cabeza cuelga de headG (se mueve y se aplasta junto con ella)
+    this.headG = new THREE.Group(); this.grp.add(this.headG);
+    this.head = { m: mk(SPH, this.mat, this.headG), o: mk(SPH, OUTM, this.headG) }; this.head.m.scale.setScalar(HEADR); this.head.o.scale.setScalar(HEADR + OL);
     const eyeM = new THREE.MeshBasicMaterial({ color: 0x14090d });
-    this.eyes = [mk(SPH, eyeM), mk(SPH, eyeM)]; this.eyes.forEach(e => e.scale.setScalar(0.024));
-    this.mouth = mk(new THREE.TorusGeometry(0.06, 0.013, 6, 14, PI), eyeM);
+    this.eyes = [mk(SPH, eyeM, this.headG), mk(SPH, eyeM, this.headG)];
+    this.eyes[0].position.set(0.062, 0.035, HEADR * 0.9); this.eyes[1].position.set(-0.062, 0.035, HEADR * 0.9); this.eyes.forEach(e => e.scale.setScalar(0.024));
+    this.mouth = mk(new THREE.TorusGeometry(0.06, 0.013, 6, 14, PI), eyeM, this.headG); this.mouth.position.set(0, -0.02, HEADR * 0.93); this.mouth.quaternion.copy(qE(0.35, 0, PI));
     this.guitar = makeGuitar(); this.grp.add(this.guitar);
     this.shadow = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false }));
     this.shadow.rotation.x = -PI / 2; this.grp.add(this.shadow);
     this.dance = 'basico'; this.prev = null; this.switchB = -9;
+    this.st = {}; this.lastB = null; this.lastY = null; this.lastV = 0;
+    this.buildProps(); this.setLevel(lvl);
   }
+
+  /* ── accesorios por nivel ── */
+  buildProps() {
+    const H = this.headG, red = toon(0xe3122b), dark = toon(0x20151a);
+    this.mGlass = toon(0x0b0b0f); this.mGold = toon(0xffcf3a);
+    // bandana: cinta alrededor de la cabeza + dos puntas que cuelgan atrás (se mueven solas)
+    this.bandM = toon(0xe3122b);
+    this.band = new THREE.Group(); H.add(this.band);
+    const ring = new THREE.TorusGeometry(HEADR * 0.99, 0.03, 8, 28); ring.rotateX(PI / 2);
+    part(ring, this.bandM, this.band, 0, 0.105, 0, 1.0, 1.4, 1.0, 0.012);
+    part(SPH, this.bandM, this.band, 0, 0.1, -HEADR * 0.95, 0.035, 0.035, 0.03, 0.012);           // nudo
+    this.tails = [new Rope(4, 0.045), new Rope(4, 0.05)];
+    this.tailB = [[], []]; for (const t of [0, 1]) for (let k = 0; k < 3; k++) this.tailB[t].push(this.bone(0.016, this.bandM));
+    // lentes de sol
+    this.glasses = new THREE.Group(); H.add(this.glasses);
+    const box = new THREE.BoxGeometry(1, 1, 1);
+    for (const s of [1, -1]) { part(box, this.mGlass, this.glasses, s * 0.06, 0.035, HEADR * 0.96, 0.088, 0.052, 0.018, 0.012);
+      part(box, this.mGlass, this.glasses, s * 0.112, 0.045, HEADR * 0.55, 0.012, 0.012, 0.17, 0.006); }
+    part(box, this.mGlass, this.glasses, 0, 0.045, HEADR * 0.99, 0.04, 0.012, 0.012, 0.006);
+    // sombrero (fedora oscuro con cinta roja)
+    this.hat = new THREE.Group(); H.add(this.hat); this.hat.position.set(0, HEADR * 0.58, 0); this.hat.rotation.x = -0.12;
+    part(new THREE.CylinderGeometry(1, 1, 1, 32), dark, this.hat, 0, 0, 0, 0.29, 0.022, 0.29, 0.014);
+    part(new THREE.CylinderGeometry(0.85, 1, 1, 28), dark, this.hat, 0, 0.09, 0, 0.17, 0.17, 0.16, 0.014);
+    part(new THREE.CylinderGeometry(1, 1, 1, 28, 1, true), red, this.hat, 0, 0.035, 0, 0.176, 0.04, 0.166, 0.004);
+    // capa de tela
+    this.cloth = new Cloth(5, 8);
+    const cg = new THREE.BufferGeometry(), np = 5 * 8, idx = [], uv = [];
+    cg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(np * 3), 3));
+    for (let j = 0; j < 8; j++) for (let i = 0; i < 5; i++) { uv.push(i / 4, j / 7); if (i < 4 && j < 7) { const a = j * 5 + i; idx.push(a, a + 5, a + 1, a + 1, a + 5, a + 6); } }
+    cg.setIndex(idx); cg.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+    this.capeM = new THREE.MeshToonMaterial({ color: 0xc2102a, gradientMap: grad, side: THREE.DoubleSide });
+    this.cape = this.mk(cg, this.capeM); this.cape.frustumCulled = false;
+    // cadena de oro con púa
+    this.chain = this.mk(new THREE.TorusGeometry(0.125, 0.011, 6, 36), this.mGold);
+    this.pendRope = new Rope(2, 0.05);
+    this.pick = new THREE.Group(); this.grp.add(this.pick);
+    part(pickShape(), red, this.pick, 0, 0, 0, 1, 1, 1, 0.0); const rim = new THREE.Mesh(pickShape(), new THREE.MeshBasicMaterial({ color: 0xffd54a, side: THREE.BackSide })); rim.scale.set(1.25, 1.18, 1.4); rim.position.y = 0.006; this.pick.add(rim);
+    part(SPH, this.mGold, this.pick, 0, 0.004, 0, 0.012, 0.012, 0.012, 0.004);
+    // fuego en los pies (partículas)
+    this.fireN = 90; this.fire = []; const fg = new THREE.BufferGeometry();
+    fg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(this.fireN * 3), 3)); fg.setAttribute('color', new THREE.BufferAttribute(new Float32Array(this.fireN * 3), 3));
+    this.flames = new THREE.Points(fg, new THREE.PointsMaterial(Object.assign({ map: flameTex, size: 0.6, vertexColors: true, sizeAttenuation: true }, ADD)));
+    this.flames.frustumCulled = false; this.grp.add(this.flames);
+    for (let k = 0; k < this.fireN; k++) this.fire.push({ age: 9, life: 1, p: V(0, -9, 0), v: V() });
+    this.fireAcc = 0;
+    // aura: brillo detrás del cuerpo + anillos de energía
+    this.aura = new THREE.Sprite(new THREE.SpriteMaterial(Object.assign({ map: glowTex, opacity: 0.5 }, ADD))); this.grp.add(this.aura);
+    this.rings = [0, 1].map(k => { const m = new THREE.Mesh(new THREE.TorusGeometry(0.5 - 0.06 * k, 0.012, 6, 40, 2.3), new THREE.MeshBasicMaterial(Object.assign({ opacity: 0.85 }, ADD))); this.grp.add(m); return m; });
+    // aureola
+    this.halo = new THREE.Group(); H.add(this.halo);
+    const hr = new THREE.TorusGeometry(0.125, 0.017, 8, 36); hr.rotateX(PI / 2);
+    this.haloM = new THREE.MeshBasicMaterial({ color: 0xffe27a }); this.halo.add(new THREE.Mesh(hr, this.haloM));
+    this.haloGlow = new THREE.Sprite(new THREE.SpriteMaterial(Object.assign({ map: glowTex, color: 0xffe27a, opacity: 0.55 }, ADD))); this.haloGlow.scale.set(0.5, 0.25, 1); this.halo.add(this.haloGlow);
+    // foco propio (leyenda): cono de luz desde arriba + círculo de luz en el piso
+    this.spot = new THREE.Group(); this.grp.add(this.spot);
+    const cone = new THREE.ConeGeometry(0.85, 3.6, 40, 1, true); cone.translate(0, 1.8, 0);
+    this.spotM = new THREE.MeshBasicMaterial(Object.assign({ map: beamTex, side: THREE.DoubleSide, opacity: 0.32 }, ADD));
+    this.spot.add(new THREE.Mesh(cone, this.spotM));
+    const pool = new THREE.Mesh(new THREE.CircleGeometry(0.9, 40), new THREE.MeshBasicMaterial(Object.assign({ map: glowTex, opacity: 0.4 }, ADD))); pool.rotation.x = -PI / 2; pool.position.y = 0.004;
+    this.poolM = pool.material; this.spot.add(pool);
+  }
+  setLevel(l) {
+    this.lvl = l = clamp(Math.round(l), 1, 10);
+    this.band.visible = l >= 2; this.tailB.flat().forEach(b => { b.m.visible = b.o.visible = l >= 2; });
+    this.bandM.color.set(l >= 4 ? 0x111111 : 0xe3122b);
+    this.glasses.visible = l >= 3; this.mGlass.color.set(l >= 6 ? 0xe8b020 : 0x0b0b0f);
+    this.hat.visible = l >= 4; this.eyes.forEach(e => e.visible = l < 3);
+    this.cape.visible = l >= 5; this.cloth.ok = false;
+    this.chain.visible = this.pick.visible = l >= 6;
+    this.flames.visible = l >= 7; this.aura.visible = l >= 8; this.rings.forEach(r => r.visible = l >= 8);
+    this.halo.visible = l >= 9; this.halo.position.set(0, HEADR + (l >= 4 ? 0.3 : 0.12), 0);
+    this.spot.visible = l >= 10;
+    if (l < 9) this.mat.color.setHSL(this.hue / 360, 0.85, 0.58);
+  }
+
   setBone(b, a, c) {
     const d = c.clone().sub(a), len = d.length(), mid = a.clone().add(c).multiplyScalar(0.5);
     const q = new THREE.Quaternion().setFromUnitVectors(V(0, 1, 0), len > 1e-6 ? d.divideScalar(len) : V(0, 1, 0));
     for (const [m, r] of [[b.m, b.r], [b.o, b.r + OL]]) { m.position.copy(mid); m.quaternion.copy(q); m.scale.set(r, len, r); }
   }
   setJoint(j, pos) { j.m.position.copy(pos); j.m.scale.setScalar(j.r); j.o.position.copy(pos); j.o.scale.setScalar(j.r + OL); }
+
+  sample(b) {                                         // pose del baile, con mezcla suave de un tiempo entero al cambiar de baile
+    const bb = b + 64, p = DANCE[this.dance](bb), t = (b - this.switchB) / 1.0;      // +64 tiempos: nunca negativo (mismo compás)
+    if (this.prev && t < 1) return mixPose(DANCE[this.prev](bb), p, ease(clamp(t, 0, 1)));
+    return p;
+  }
+  // la capa de movimiento: cadera a tiempo, pecho/brazos/cabeza un poquito después y con resortes
+  animate(b) {
+    const dt = this.lastB === null ? 0 : (b - this.lastB) / BPS; this.lastB = b;
+    const p = this.sample(b), pc = this.sample(b - LAG.chest), pa = this.sample(b - LAG.arms), ph = this.sample(b - LAG.head), st = this.st;
+    p.lean = spring(st, 'lean', pc.lean, dt, 4.5, 0.6); p.roll = spring(st, 'roll', pc.roll, dt, 4.5, 0.6); p.twist = spring(st, 'twist', pc.twist, dt, 4.5, 0.6);
+    p.nod = spring(st, 'nod', ph.nod, dt, 3.2, 0.42); p.turn = spring(st, 'turn', ph.turn, dt, 3.6, 0.5); p.tilt = spring(st, 'tilt', ph.tilt, dt, 3.2, 0.42);
+    for (const k of ['hL', 'hR']) p[k] = pa[k].map((v, n) => spring(st, k + n, v, dt, 5, 0.62));
+    // aplastar y estirar según la aceleración vertical de la cadera
+    const y = STAND + p.py; let a = 0;
+    if (dt > 0 && dt < 0.25 && this.lastY !== null) { const v = (y - this.lastY) / dt; a = (v - this.lastV) / dt; this.lastV = v; } else this.lastV = 0;
+    this.lastY = y;
+    p.sq = spring(st, 'sq', clamp(a * 0.009, -0.14, 0.16), dt, 6, 0.45);
+    this.dt = dt; this.t = b / BPS;
+    return p;
+  }
+
   draw(p) {
-    const S = solve(p, this.origin), B = this.B, J = this.J;
+    const S = solve(p, this.origin), B = this.B, J = this.J, dt = this.dt || 0, t = this.t || 0;
     this.setBone(B.torso, S.P, S.N); this.setBone(B.clav, S.shL, S.shR); this.setBone(B.hipb, S.hipL, S.hipR);
     for (const k of ['L', 'R']) {
       this.setBone(B['ua' + k], S['sh' + k], S['el' + k]); this.setBone(B['fa' + k], S['el' + k], S['ha' + k]);
       this.setBone(B['th' + k], S['hip' + k], S['kn' + k]); this.setBone(B['sh' + k], S['kn' + k], S['an' + k]); this.setBone(B['ft' + k], S['an' + k], S['to' + k]);
       for (const n of ['sh', 'el', 'ha', 'hip', 'kn', 'an', 'to']) this.setJoint(J[n + k], S[n + k]);
     }
-    this.setJoint(J.N, S.N); this.setJoint(J.P, S.P); this.setJoint(this.head, S.H);
-    // cara
-    const at = (x, y, z) => S.H.clone().add(V(x, y, z).applyQuaternion(S.headQ));
-    this.eyes[0].position.copy(at(0.062, 0.035, HEADR * 0.9)); this.eyes[1].position.copy(at(-0.062, 0.035, HEADR * 0.9));
-    this.mouth.position.copy(at(0, -0.02, HEADR * 0.93)); this.mouth.quaternion.copy(S.headQ).multiply(qE(0.35, 0, PI));
-    // guitarra: caja delante de la cadera, mástil hacia la mano izquierda
-    this.guitar.visible = p.guitar > 0.05;
-    if (this.guitar.visible) {
-      const body = S.P.clone().add(V(-0.04, 0.12, 0.17).applyQuaternion(S.chestQ));
-      const x = S.haL.clone().sub(body).normalize(), fwd = V(0, 0, 1).applyQuaternion(S.chestQ);
-      const z = fwd.sub(x.clone().multiplyScalar(fwd.dot(x))).normalize(), y = z.clone().cross(x);
-      this.guitar.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z)); this.guitar.position.copy(body);
-      this.guitar.scale.setScalar(Math.min(1, p.guitar));
-    }
+    this.setJoint(J.N, S.N); this.setJoint(J.P, S.P);
+    // cabeza (se aplasta un poco más que el cuerpo: se nota más el rebote)
+    this.headG.position.copy(S.H); this.headG.quaternion.copy(S.headQ);
+    const sq = S.sq; this.headG.scale.set(1 + 0.45 * sq, 1 - 0.8 * sq, 1 + 0.45 * sq);
+    // guitarra
+    this.guitar.visible = !!S.GF;
+    if (S.GF) { const F = S.GF;
+      this.guitar.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(F.nd, F.yv, F.n)); this.guitar.position.copy(F.G);
+      this.guitar.scale.setScalar(clamp(p.guitar, 0, 1)); }
     // sombra
     const h = Math.max(0, Math.min(S.anL.y, S.anR.y) - ANK);
     this.shadow.position.set((S.anL.x + S.anR.x) / 2, 0.002, (S.anL.z + S.anR.z) / 2);
     this.shadow.scale.setScalar(0.85 * (1 - 0.5 * clamp(h / 0.6, 0, 1)));
+    this.drawProps(S, dt, t);
   }
-  pose(b) {                                           // con mezcla suave de medio tiempo al cambiar de baile
-    const p = DANCE[this.dance](b), t = (b - this.switchB) / 0.6;
-    if (this.prev && t < 1) return mixPose(DANCE[this.prev](b), p, ease(clamp(t, 0, 1)));
-    return p;
+
+  drawProps(S, dt, t) {
+    const l = this.lvl, fwd = V(0, 0, 1).applyQuaternion(S.chestQ), up = V(0, 1, 0).applyQuaternion(S.chestQ), left = V(1, 0, 0).applyQuaternion(S.chestQ);
+    const hueNow = l >= 10 ? (t * 0.39 + this.hue / 360) % 1 : null;
+    if (l >= 10) this.mat.color.setHSL(hueNow, 0.95, 0.6);
+    else if (l >= 9) this.mat.color.setHSL(45 / 360, 0.95, 0.56 + 0.08 * Math.sin(t * 4));
+    const headCol = (pt, r) => { const d = pt.clone().sub(S.H), L = d.length(); if (L < r) pt.copy(S.H).addScaledVector(d.divideScalar(L || 1), r); };
+    // puntas de la bandana
+    if (l >= 2) {
+      const sway = V(Math.sin(t * 7) * 1.5, 0, Math.cos(t * 5) * 1.2);
+      for (const k of [0, 1]) {
+        const anchor = S.H.clone().add(V((k ? -0.022 : 0.022) * (1 + 0.5 * S.sq), 0.095, -HEADR * 0.97).applyQuaternion(S.headQ));
+        this.tails[k].step(anchor, dt, pt => headCol(pt, HEADR + 0.02), sway);
+        const P = this.tails[k].p; if (P.length) for (let s = 0; s < 3; s++) this.setBone(this.tailB[k][s], P[s], P[s + 1]);
+      }
+    }
+    // capa: va de hombro a hombro por la espalda y choca con el cuerpo
+    if (l >= 5) {
+      const back = fwd.clone().multiplyScalar(-1), pins = [];
+      for (let i = 0; i < 5; i++) { const u = i / 4; pins.push(S.shR.clone().lerp(S.shL, u).addScaledVector(left, (u - 0.5) * 0.08).addScaledVector(back, 0.075 + 0.02 * Math.sin(PI * u)).addScaledVector(up, 0.02)); }
+      const col = [[S.P, S.N, 0.11], [S.hipL, S.hipR, 0.1], [S.hipL, S.knL, 0.085], [S.hipR, S.knR, 0.085], [S.knL, S.anL, 0.07], [S.knR, S.anR, 0.07],
+        [S.shL, S.elL, 0.065], [S.shR, S.elR, 0.065], [S.shL, S.shR, 0.08]];
+      const wind = back.clone().multiplyScalar(0.6 + 0.4 * Math.sin(t * 2.3)).add(V(Math.sin(t * 1.7) * 0.4, 0, 0));
+      this.cloth.step(pins, dt, col, V(0, -1, 0), wind);
+      const pos = this.cape.geometry.attributes.position; this.cloth.p.forEach((q, k) => pos.setXYZ(k, q.x, q.y, q.z));
+      pos.needsUpdate = true; this.cape.geometry.computeVertexNormals(); this.cape.geometry.computeBoundingSphere();
+    }
+    // cadena y púa (la púa cuelga y se balancea delante del pecho)
+    if (l >= 6) {
+      const cc = S.N.clone().addScaledVector(up, -0.045);
+      this.chain.position.copy(cc); this.chain.quaternion.copy(S.chestQ).multiply(qE(PI / 2 + 0.5, 0, 0));
+      const anchor = cc.clone().addScaledVector(up, -0.06).addScaledVector(fwd, 0.105);
+      this.pendRope.step(anchor, dt, pt => pushCapsule(pt, S.P, S.N, 0.062 + 0.035));
+      const end = this.pendRope.p[1] || anchor.clone().addScaledVector(up, -0.05);
+      const y = anchor.clone().sub(end).normalize(), z = fwd.clone().addScaledVector(y, -fwd.dot(y)).normalize(), x = y.clone().cross(z);
+      this.pick.position.copy(end).addScaledVector(y, 0.008); this.pick.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+    }
+    // fuego en los pies
+    if (l >= 7) {
+      const pos = this.flames.geometry.attributes.position, colA = this.flames.geometry.attributes.color;
+      this.fireAcc += dt * 95;
+      for (const f of this.fire) {
+        if (f.age >= f.life && this.fireAcc >= 1) { this.fireAcc -= 1; const a = Math.random() < 0.5 ? S.anL : S.anR;
+          f.p.copy(a).add(V((Math.random() - 0.5) * 0.14, -0.03, (Math.random() - 0.5) * 0.14)); f.v.set((Math.random() - 0.5) * 0.15, 0.5 + Math.random() * 0.5, (Math.random() - 0.5) * 0.15);
+          f.age = 0; f.life = 0.45 + Math.random() * 0.35; }
+        f.age += dt; f.p.addScaledVector(f.v, dt); f.v.x *= 0.96;
+      }
+      const c = new THREE.Color();
+      this.fire.forEach((f, k) => { const q = clamp(f.age / f.life, 0, 1), alive = f.age < f.life;
+        pos.setXYZ(k, f.p.x, alive ? f.p.y : -9, f.p.z);
+        if (hueNow !== null) c.setHSL((hueNow + q * 0.3) % 1, 1, 0.55 * (1 - q)); else c.setRGB(1.0 * (1 - q * 0.6), (0.85 - 0.75 * q) * (1 - q * 0.5), 0.35 * (1 - q) ** 3).multiplyScalar(1 - q * 0.7);
+        colA.setXYZ(k, c.r, c.g, c.b); });
+      pos.needsUpdate = colA.needsUpdate = true;
+    }
+    // aura y anillos
+    if (l >= 8) {
+      const c = new THREE.Color(); if (hueNow !== null) c.setHSL(hueNow, 1, 0.6); else if (l >= 9) c.setHSL(45 / 360, 1, 0.6); else c.setHSL(this.hue / 360, 1, 0.6);
+      const pulse = 1 + 0.07 * Math.sin(t * 5), mid = S.P.clone().addScaledVector(up, 0.25);
+      this.aura.position.copy(mid); this.aura.scale.set(1.6 * pulse, 2.5 * pulse, 1); this.aura.material.color.copy(c);
+      this.rings.forEach((r, k) => { r.position.copy(mid); r.rotation.set(1.25 + 0.15 * k, (k ? -2.4 : 3) * t, 0.2 * Math.sin(t + k)); r.material.color.copy(c).offsetHSL(0.08, 0, 0.15); });
+    }
+    if (l >= 9) { const k = 0.8 + 0.2 * Math.sin(t * 5); this.haloM.color.setRGB(k, k * 0.89, k * 0.48); this.halo.position.y = HEADR + (l >= 4 ? 0.3 : 0.12) + 0.015 * Math.sin(t * 3); }
+    if (l >= 10) { this.spot.position.set(S.P.x, 0, S.P.z); this.spotM.color.setHSL(hueNow, 1, 0.55); this.poolM.color.setHSL(hueNow, 1, 0.55); }
   }
   setDance(d, b) { if (d === this.dance) return; this.prev = this.dance; this.dance = d; this.switchB = b; }
 }
@@ -364,20 +674,25 @@ const dancers = [];
 let cam, cells = [];
 const t0 = performance.now() / 1000;
 const beatNow = () => (performance.now() / 1000 - t0) * BPS;
+const LVL_DEMO = [10, 7, 5, 3, 9, 2, 6, 4];
 
 if (GAL) {
-  ORDER.forEach((d, i) => { const dn = new Dancer(i, V(i * 30, 0, 0)); dn.dance = d; dancers.push(dn);
-    const c = new THREE.PerspectiveCamera(30, 360 / 480, 0.1, 100), az = 0.5;
-    c.position.set(i * 30 + Math.sin(az) * 6.2, 1.8, Math.cos(az) * 6.2); c.lookAt(i * 30, 0.95, 0);
+  const list = GMODE === 'niveles'
+    ? [[2, 'basico'], [3, 'disco'], [4, 'cumbia'], [5, 'giro'], [6, 'caporal'], [7, 'runningman'], [8, 'robot'], [9, 'guitarra'], [10, 'salto']]
+    : ORDER.map(d => [1, d]);
+  const oy = GMODE === 'niveles' ? 240 : 0;
+  list.forEach(([lv, d], i) => { const dn = new Dancer(i, V(i * 30, 0, 0), lv); dn.dance = d; dancers.push(dn);
+    const c = new THREE.PerspectiveCamera(30, 360 / 480, 0.1, 100), az = num('az', GMODE === 'niveles' ? 0.65 : 0.5);
+    c.position.set(i * 30 + Math.sin(az) * 6.4, 1.85, Math.cos(az) * 6.4); c.lookAt(i * 30, 1.0, 0);
     const disc = new THREE.Mesh(new THREE.CircleGeometry(0.95, 40), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.12, depthWrite: false }));
     disc.rotation.x = -PI / 2; disc.position.set(i * 30, 0.001, 0); scene.add(disc);
-    cells.push({ cam: c, x: (i % 3) * 360, y: Math.floor(i / 3) * 480 }); });
+    cells.push({ cam: c, x: (i % 3) * 360, y: oy + Math.floor(i / 3) * 480, label: GMODE === 'niveles' ? `Nv${lv} · ${LVNAME[lv]}` : NAME[d] }); });
   uctx.font = "800 30px system-ui, Arial"; uctx.textAlign = "center"; uctx.lineJoin = "round";
-  cells.forEach((c, i) => { uctx.lineWidth = 6; uctx.strokeStyle = 'rgba(0,0,0,0.55)'; uctx.strokeText(NAME[ORDER[i]], c.x + 180, c.y + 46); uctx.fillStyle = '#fff'; uctx.fillText(NAME[ORDER[i]], c.x + 180, c.y + 46);
+  cells.forEach(c => { uctx.lineWidth = 6; uctx.strokeStyle = 'rgba(0,0,0,0.55)'; uctx.strokeText(c.label, c.x + 180, c.y + 46); uctx.fillStyle = '#fff'; uctx.fillText(c.label, c.x + 180, c.y + 46);
     uctx.strokeStyle = 'rgba(255,255,255,0.18)'; uctx.lineWidth = 2; uctx.strokeRect(c.x + 4, c.y + 4, 352, 472); });
 } else {
-  const N = clamp(Math.round(num('n', 5)), 1, 8), gap = 1.75;
-  for (let i = 0; i < N; i++) dancers.push(new Dancer(i, V((i - (N - 1) / 2) * gap, 0, (i % 2) * -0.6)));
+  const N = clamp(Math.round(num('n', 5)), 1, 8), gap = 1.75, lv = Q.get('nivel');
+  for (let i = 0; i < N; i++) dancers.push(new Dancer(i, V((i - (N - 1) / 2) * gap, 0, (i % 2) * -0.6), lv ? num('nivel', 1) : LVL_DEMO[i]));
   const span = Math.max(4.5, N * gap + 1), D = span / 2 / (Math.tan(11 * PI / 180) * (W / H)) / num('escala', 1), cy = num('altura', 3);
   cam = new THREE.PerspectiveCamera(22, W / H, 0.1, 400); cam.position.set(0, cy, D);
   let ly = D * 0.18; const target = -(1880 / 1920 * 2 - 1);                 // piso a la altura de 1880 px
@@ -395,7 +710,7 @@ function choreo(b) {
 
 function render(b) {
   choreo(b);
-  for (const dn of dancers) dn.draw(dn.pose(b));
+  for (const dn of dancers) dn.draw(dn.animate(b));
   if (GAL) {
     renderer.setScissorTest(true); renderer.clear();
     cells.forEach(c => { renderer.setViewport(c.x, H - c.y - 480, 360, 480); renderer.setScissor(c.x, H - c.y - 480, 360, 480); renderer.render(scene, c.cam); });
@@ -406,11 +721,14 @@ if (Q.get('captura') !== '1') requestAnimationFrame(frame);           // ?captur
 
 // botones
 if (Q.get('panel') !== '0' && !GAL) {
-  const pn = document.getElementById('panel'), btns = [];
-  const mkB = (txt, fn) => { const b = document.createElement('button'); b.textContent = txt; b.onclick = () => { fn(); btns.forEach(x => x.classList.remove('on')); b.classList.add('on'); }; pn.appendChild(b); btns.push(b); return b; };
+  const pn = document.getElementById('panel'), btns = [], lbtns = [];
+  const mkB = (txt, fn, group = btns) => { const b = document.createElement('button'); b.textContent = txt; b.onclick = () => { fn(); group.forEach(x => x.classList.remove('on')); b.classList.add('on'); }; pn.appendChild(b); group.push(b); return b; };
   mkB('Rotar', () => { fixed = null; mezcla = false; choreo.dirty = true; }).classList.add('on');
   mkB('Mezcla', () => { fixed = null; mezcla = true; choreo.dirty = true; });
   ORDER.forEach(d => mkB(NAME[d], () => { fixed = d; choreo.dirty = true; }));
+  const sep = document.createElement('div'); sep.className = 'sep'; pn.appendChild(sep);
+  mkB('Niveles variados', () => dancers.forEach((d, i) => d.setLevel(LVL_DEMO[i])), lbtns);
+  for (let l = 1; l <= 10; l++) mkB('Nv' + l, () => dancers.forEach(d => d.setLevel(l)), lbtns);
 }
 window.__s3d = { dancers, DANCE, ORDER, render, setDance: d => { fixed = d; choreo.dirty = true; } };
 </script>

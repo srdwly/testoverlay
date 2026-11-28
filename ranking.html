@@ -278,11 +278,17 @@ function dayKey(t) {
 }
 function fresh() {
   const t = NOW();
-  return { v: 1, liveStart: t, last: 0, day: dayKey(t), coins: {}, taps: {}, dayCoins: {}, pend: {} };
+  return { v: 1, liveStart: t, last: 0, day: dayKey(t), coins: {}, taps: {}, dayCoins: {}, pend: {}, ids: {} };
 }
 let S = fresh();
 function load() {
   try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.v === 1) { S = Object.assign(fresh(), s); if (!S.act) S.act = S.last || 0; } } catch (e) {}
+  // Unifica claves antiguas (mayúsculas / @) para que nadie quede partido en dos filas
+  for (const k of ['coins', 'taps', 'dayCoins']) {
+    const out = {};
+    for (const [uid, u] of Object.entries(S[k] || {})) mergeInto(out, normId(uid) || uid, u);
+    S[k] = out;
+  }
 }
 let saveTimer = null;
 function saveNow() { saveTimer = null; try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
@@ -301,26 +307,64 @@ function rollover() {
   return changed;
 }
 
+/* ── Quién es ─────────────────────────────────────────────
+   Hay usuarios cuyo nombre visible está vacío o hecho solo de caracteres
+   invisibles (ㅤ, espacios raros): antes salían SIN nombre en la lista.
+   También hay eventos que traen solo el userId numérico o el usuario dentro
+   de d.user. Aquí se arma siempre una clave única (el @ en minúsculas) y un
+   nombre que se pueda leer (si no hay apodo visible → @usuario). */
+const INVIS = /[\s\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u180E\u200B-\u200F\u202A-\u202E\u2060-\u206F\u2800\u3164\uFE00-\uFE0F\uFEFF\uFFA0]/g;
+const cleanName = n => (n == null ? '' : String(n)).replace(INVIS, '') ? String(n).trim() : '';
+const normId = id => (id == null ? '' : String(id)).trim().replace(/^@/, '').toLowerCase();
+function mergeInto(map, uid, u) {
+  const t = map[uid];
+  if (!t) { map[uid] = { ...u }; return; }
+  t.n += u.n || 0;
+  if (!cleanName(t.name) || (t.name === '@' + uid && cleanName(u.name))) t.name = u.name;
+  if (!t.pic && u.pic) t.pic = u.pic;
+}
+function who(d) {
+  const src = d.user || {};
+  const handle = normId(d.uniqueId || src.uniqueId || src.displayId);
+  const num = String(d.userId || src.userId || src.id || '');
+  if (!S.ids) S.ids = {};
+  if (handle && num && S.ids[num] !== handle) {
+    S.ids[num] = handle;
+    // si antes llegó solo con el número, se junta con su @
+    for (const k of ['coins', 'taps', 'dayCoins']) {
+      const m = S[k], old = 'id:' + num;
+      if (m[old]) { const u = m[old]; delete m[old]; mergeInto(m, handle, u); }
+    }
+    for (const p of Object.values(S.pend)) if (p.uid === 'id:' + num) p.uid = handle;
+  }
+  const uid = handle || (num && S.ids[num]) || (num ? 'id:' + num : '');
+  const nick = cleanName(d.nickname || src.nickname);
+  const shown = handle || (uid && !uid.startsWith('id:') ? uid : '');
+  return { uid, name: nick || (shown ? '@' + shown : 'anónimo'), real: !!nick, pic: d.profilePictureUrl || src.profilePictureUrl || '' };
+}
+const showName = (uid, u) => cleanName(u.name) || (uid && !uid.startsWith('id:') ? '@' + uid : 'anónimo');
+
 /* ── Sumar ──────────────────────────────────────────────── */
-function bump(map, uid, name, pic, n) {
+function bump(map, uid, name, pic, n, real = true) {
   const u = map[uid] || (map[uid] = { name, pic: '', n: 0 });
-  if (name) u.name = name;
+  // un evento sin apodo no pisa el apodo que ya conocemos
+  if (name && (real || !cleanName(u.name))) u.name = name;
   if (pic) u.pic = pic;
   u.n += n;
 }
 const flashes = new Set();
-function addCoins(uid, name, pic, n) {
-  if (!n) return;
+function addCoins(uid, name, pic, n, real = true) {
+  if (!n || !uid) return;
   rollover();
-  bump(S.coins, uid, name, pic, n);
-  bump(S.dayCoins, uid, name, pic, n);
+  bump(S.coins, uid, name, pic, n, real);
+  bump(S.dayCoins, uid, name, pic, n, real);
   S.last = S.act = NOW();
   flashes.add(uid); save(); renderSoon();
 }
-function addTaps(uid, name, pic, n) {
-  if (!n) return;
+function addTaps(uid, name, pic, n, real = true) {
+  if (!n || !uid) return;
   rollover();
-  bump(S.taps, uid, name, pic, n);
+  bump(S.taps, uid, name, pic, n, real);
   S.last = S.act = NOW();
   save(); renderSoon();
 }
@@ -328,28 +372,26 @@ function addTaps(uid, name, pic, n) {
 /* Combos: mientras alguien manda una racha de regalos se muestra en vivo
    (pendiente) y al terminar el combo se guarda el total. */
 function onGift(d) {
-  const uid = d.uniqueId || d.userId || '';
+  const { uid, name, pic, real } = who(d);
   if (!uid) return;
-  const name = d.nickname || d.uniqueId || 'anónimo';
-  const pic = d.profilePictureUrl || '';
   const coins = parseInt(d.diamondCount ?? d.gift?.diamond_count ?? 0, 10) || 0;
   const count = parseInt(d.repeatCount || d.gift?.repeat_count || 1, 10) || 1;
   const key = uid + '|' + (d.giftId ?? d.gift?.gift_id ?? d.giftName ?? '?') + '|' + (d.groupId || '');
   if (!coins) return;
   rollover();
   if (d.repeatEnd === false) {                         // combo en curso
-    S.pend[key] = { uid, name, pic, n: coins * count, t: NOW() };
+    S.pend[key] = { uid, name, pic, real, n: coins * count, t: NOW() };
     S.last = S.act = NOW();
     flashes.add(uid); save(); renderSoon();
     return;
   }
   delete S.pend[key];                                  // combo terminado (o regalo suelto)
-  addCoins(uid, name, pic, coins * count);
+  addCoins(uid, name, pic, coins * count, real);
 }
 function flushPending() {
   const t = NOW();
   for (const [k, p] of Object.entries(S.pend)) {
-    if (t - p.t > CFG.comboTimeoutSec * 1000) { delete S.pend[k]; addCoins(p.uid, p.name, p.pic, p.n); }
+    if (t - p.t > CFG.comboTimeoutSec * 1000) { delete S.pend[k]; addCoins(p.uid, p.name, p.pic, p.n, p.real !== false); }
   }
 }
 
@@ -375,14 +417,16 @@ function withPending(map) {
   for (const [uid, u] of Object.entries(map)) out[uid] = { ...u, live: false };
   for (const p of Object.values(S.pend)) {
     const u = out[p.uid] || (out[p.uid] = { name: p.name, pic: p.pic, n: 0 });
+    if (p.real !== false && cleanName(p.name)) u.name = p.name;
     u.n += p.n; u.live = true; if (!u.pic) u.pic = p.pic;
   }
   return out;
 }
-function topN(map, n) { return Object.entries(map).sort((a, b) => b[1].n - a[1].n).slice(0, n); }
+function topN(map, n) { return Object.entries(map).sort((a, b) => b[1].n - a[1].n).slice(0, n).map(([uid, u]) => [uid, { ...u, name: showName(uid, u) }]); }
 function avatar(u, extra = '') {
   const style = u.pic ? ` style="background-image:url('${esc(u.pic)}')"` : '';
-  return `<div class="av"${style}>${u.pic ? '' : esc((u.name || '?').trim().charAt(0).toUpperCase())}${extra}</div>`;
+  const letter = [...(u.name || '?').replace(/^@/, '').trim()][0] || '?';
+  return `<div class="av"${style}>${u.pic ? '' : esc(letter.toUpperCase())}${extra}</div>`;
 }
 const MEDALS = ['🥇', '🥈', '🥉'];
 const PICK = n => `<svg viewBox="0 0 100 110" class="pick"><path d="M50 5C80 5 96 17 96 38C96 64 68 95 50 105C32 95 4 64 4 38C4 17 20 5 50 5Z"/></svg><b>${n}</b>`;
@@ -551,7 +595,7 @@ function connect() {
 function scheduleReconnect() { clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connect, 5000); }
 function handle(ev, d) {
   if (ev === 'gift') onGift(d);
-  else if (ev === 'like') addTaps(d.uniqueId || d.userId || '', d.nickname || d.uniqueId || 'anónimo', d.profilePictureUrl || '', parseInt(d.likeCount || 1, 10) || 1);
+  else if (ev === 'like') { const w = who(d); addTaps(w.uid, w.name, w.pic, parseInt(d.likeCount || d.count || 1, 10) || 1, w.real); }
   else if (ev === 'chat') onChat(d);
 }
 window.__ranking = { handle, get state() { return S; }, act, render };   // para pruebas

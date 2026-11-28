@@ -291,7 +291,7 @@ function load() {
   }
 }
 let saveTimer = null;
-function saveNow() { saveTimer = null; try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
+function saveNow() { saveTimer = null; if (!leader) return; try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} }
 function save() { if (!saveTimer) saveTimer = setTimeout(saveNow, 400); }
 
 /* Live nuevo / día nuevo */
@@ -534,16 +534,27 @@ document.querySelectorAll('.tools button').forEach(b => b.addEventListener('clic
    Si pones ?ver=monedas y ?ver=taps como fuentes separadas, todas leen el
    mismo guardado; una sola se conecta a TikFinity para no sumar doble. */
 let leader = false;
+/* Quién cuenta: con Web Locks (OBS 30+ / Chrome) el turno es de una sola fuente
+   hasta que se cierra, sin depender de relojes. Antes se usaba un candado con
+   reloj de 5 s: si OBS frenaba los temporizadores de una fuente oculta, otra
+   fuente tomaba el turno, las dos contaban un rato y se pisaban el guardado
+   (gente que desaparecía o ranking que dejaba de actualizarse). */
+const WEBLOCK = !!(navigator.locks && navigator.locks.request) && Q.get('lock') !== 'reloj';
+let hasLock = false;
+if (WEBLOCK) navigator.locks.request(KEY + '_leader', () => new Promise(() => { hasLock = true; heartbeat(); })).catch(() => {});
 function heartbeat() {
-  let lock = null;
-  try { lock = JSON.parse(localStorage.getItem(LOCK_KEY)); } catch (e) {}
-  const t = Date.now();
-  if (!lock || lock.id === ME || t - lock.t > 5000) {
-    try { localStorage.setItem(LOCK_KEY, JSON.stringify({ id: ME, t })); } catch (e) {}
-    try { lock = JSON.parse(localStorage.getItem(LOCK_KEY)); } catch (e) {}
-  }
   const was = leader;
-  leader = !!lock && lock.id === ME;
+  if (WEBLOCK) leader = hasLock;
+  else {
+    let lock = null;
+    try { lock = JSON.parse(localStorage.getItem(LOCK_KEY)); } catch (e) {}
+    const t = Date.now();
+    if (!lock || lock.id === ME || t - lock.t > 30000) {
+      try { localStorage.setItem(LOCK_KEY, JSON.stringify({ id: ME, t })); } catch (e) {}
+      try { lock = JSON.parse(localStorage.getItem(LOCK_KEY)); } catch (e) {}
+    }
+    leader = !!lock && lock.id === ME;
+  }
   if (leader && !was) { load(); if (rollover()) saveNow(); render(); if (DEMO) startDemo(); else connect(); }
   if (!leader && was) { stopDemo(); try { ws && ws.close(); } catch (e) {} }
   if (leader) {
@@ -558,11 +569,11 @@ function heartbeat() {
   }
 }
 addEventListener('beforeunload', () => {
-  if (leader) { saveNow(); try { localStorage.removeItem(LOCK_KEY); } catch (e) {} }
+  if (leader) { saveNow(); if (!WEBLOCK) try { localStorage.removeItem(LOCK_KEY); } catch (e) {} }
 });
 
 /* ── TikFinity ──────────────────────────────────────────── */
-let ws, reconnectTimer;
+let ws, reconnectTimer, lastMsg = 0;
 const seen = new Set();
 /* ?diag=1 → línea de diagnóstico arriba a la izquierda */
 const stat = { conn: false, n: 0, t: 0, ev: '' };
@@ -573,14 +584,21 @@ if (Q.get('diag') === '1') {
   setInterval(() => {
     const ago = stat.t ? Math.round((Date.now() - stat.t) / 1000) + ' s' : '—';
     const act = S.act ? Math.round((NOW() - S.act) / 60000) + ' min' : '—';
-    el.textContent = `Ranking · ${leader ? 'CUENTA (esta fuente)' : 'solo muestra (otra fuente cuenta)'} · TikFinity ${leader ? (stat.conn ? '✓' : '✗') : '-'}\nEventos: ${stat.n} · último: ${stat.ev} hace ${ago} · sin actividad: ${act} · día ${S.day}`;
+    el.textContent = `Ranking · ${leader ? 'CUENTA (esta fuente)' : 'solo muestra (otra fuente cuenta)'} · TikFinity ${leader ? (stat.conn ? '✓' : '✗') : '-'}${stat.reconn ? ' · reconexiones: ' + stat.reconn : ''} · turno: ${WEBLOCK ? 'lock' : 'reloj'}\nEventos: ${stat.n} · último: ${stat.ev} hace ${ago} · sin actividad: ${act} · día ${S.day}`;
   }, 1000);
 }
 function connect() {
   if (!leader) return;
-  try { ws = new WebSocket(CFG.wsUrl); } catch (e) { return scheduleReconnect(); }
-  ws.onopen = () => { stat.conn = true; clearTimeout(reconnectTimer); console.log('[Ranking] Conectado a TikFinity'); };
+  clearTimeout(reconnectTimer);
+  // nunca dos conexiones a la vez (contaría doble)
+  if (ws) { const old = ws; ws = null; old.onclose = old.onmessage = null; try { old.close(); } catch (e) {} }
+  let me;
+  try { me = ws = new WebSocket(CFG.wsUrl); } catch (e) { return scheduleReconnect(); }
+  lastMsg = Date.now();
+  ws.onopen = () => { stat.conn = true; lastMsg = Date.now(); clearTimeout(reconnectTimer); console.log('[Ranking] Conectado a TikFinity'); };
   ws.onmessage = evt => {
+    if (ws !== me || !leader) return;
+    lastMsg = Date.now();
     let msg; try { msg = JSON.parse(evt.data); } catch { return; }
     const d = msg.data || {};
     // Filtro de repetidos: solo si llega EXACTAMENTE el mismo mensaje (mismo id, usuario y cantidad)
@@ -590,9 +608,16 @@ function connect() {
     handle(msg.event, d);
   };
   ws.onerror = () => {};
-  ws.onclose = () => { stat.conn = false; if (leader) scheduleReconnect(); };
+  ws.onclose = () => { if (ws !== me) return; stat.conn = false; if (leader) scheduleReconnect(); };
 }
 function scheduleReconnect() { clearTimeout(reconnectTimer); reconnectTimer = setTimeout(connect, 5000); }
+/* Si la conexión queda abierta pero muda (TikFinity se reinició o se colgó),
+   se reconecta sola: 90 s sin ningún mensaje → conexión nueva. */
+
+const SILENCE_MS = (+Q.get('silencio') || 90) * 1000;
+setInterval(() => {
+  if (leader && !DEMO && ws && Date.now() - lastMsg > SILENCE_MS) { console.log('[Ranking] TikFinity sin mensajes, reconectando'); stat.reconn = (stat.reconn || 0) + 1; connect(); }
+}, 5000);
 function handle(ev, d) {
   if (ev === 'gift') onGift(d);
   else if (ev === 'like') { const w = who(d); addTaps(w.uid, w.name, w.pic, parseInt(d.likeCount || d.count || 1, 10) || 1, w.real); }
